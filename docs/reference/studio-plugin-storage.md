@@ -7,8 +7,8 @@ How Studio stores plugins and their data. Rule numbers cite [studio-plugin-rules
 | **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
-| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql` |
-| **Tests** | `src/__tests__/db/studio-storage.test.ts` (`npm run test:db`) |
+| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql`, `20261001181829_studio_publication.sql` (student visibility, storage quota, kill switch; Step 5B) and `20261001192059_studio_student_quota.sql` (per-student quota, limits as settings; Step 5C) |
+| **Tests** | `src/__tests__/db/studio-storage.test.ts` and `src/__tests__/db/studio-publication.test.ts` (`npm run test:db`) |
 
 ## The model
 
@@ -21,6 +21,11 @@ Project, then version, then installation, then approval, then record.
 | Installation | `studio_plugin_installations` | One project attached to exactly one course section, pointing at its current version |
 | Approval | `studio_plugin_approvals` | Permission for one installation to activate one version. Kept forever as history |
 | Record | `studio_plugin_records` | Plugin data. Belongs to one installation, never to a version |
+| Usage | `studio_plugin_usage` | One row per installation: how many records and bytes it stores, kept exact by a trigger (Step 5B) |
+| Student usage | `studio_plugin_student_usage` | One row per student per installation: their own `perStudent` records and bytes (Step 5C) |
+| Limits | `studio_plugin_limits` | One settings row: the installation and per-student storage limits the trigger enforces (Step 5C) |
+
+An installation also carries `student_visibility` (`hidden` or `visible`), which says whether the section's students may open it. That, and the storage quota, are described in [studio-plugin-publication.md](./studio-plugin-publication.md).
 
 One version can be installed in many sections. Each installation has its own approvals and its own records, and no installation can read another's (rule 2.4).
 
@@ -28,7 +33,7 @@ Collections are not tables. A record's `collection` column names a collection it
 
 ## Security model
 
-- **Server-only.** Row-level security is on for all five tables with no client policies, and every client grant is revoked. Only the service role reaches them. This is the documented exception in `.claude/rules/security-migrations.md`.
+- **Server-only.** Row-level security is on for all eight tables with no client policies, and every client grant is revoked. Only the service role reaches them. This is the documented exception in `.claude/rules/security-migrations.md`.
 - **The trusted server decides who sees what.** It resolves the viewer's role in the section, picks the version, and applies each collection's access rule from the manifest (rule 3.3). A record doesn't store its own visibility. That layer is described in [studio-plugin-server.md](./studio-plugin-server.md).
 - **Authoritative IDs come from server or database state, never plugin input.** Institution, section, installation, version, author and owner are filled in by the server from what it loaded. The plugin supplies none of them (rule 2.1).
 - **The database is the second line of defense.** It refuses these on its own, whatever the server code does:
@@ -44,6 +49,10 @@ Collections are not tables. A record's `collection` column names a collection it
 | A record stamped with a different section or institution than its installation | Records guard trigger |
 | A record in a collection its version doesn't declare, or a `perStudent` record whose owner isn't enrolled in that section | Records guard trigger |
 | Any write to an archived installation | Records guard trigger, and `studio_activate_version` |
+| A new installation that starts visible to students, or an archived one becoming visible | Installation guard trigger, and `studio_set_student_visibility` |
+| A visibility change by someone outside the institution, or naming another section | Installation guard trigger, and `studio_set_student_visibility` |
+| A version with an empty student or professor bundle | `studio_plugin_versions_bundles_not_empty` check |
+| A record write past its installation's limits, or past its student's own allowance, even from concurrent requests | Usage trigger: conditional updates under row locks, in the write's own transaction, reading `studio_plugin_limits` (and refusing every write if that row is missing) |
 | Changing a published version or an approval | Update-refusing trigger |
 | Any client read, write or function call | Revoked grants and revoked function execute |
 
@@ -76,7 +85,7 @@ Only operations that need more than one statement are functions. They are not an
 | Plugin attempts | Manifest v1 can't declare them. They arrive with grading, together with the rule-8.4 pinning they enable |
 | Grading | Its own slice (rules 5.x) |
 | Breaking collection changes | Need a decision on existing records and on students mid-attempt |
-| Record size limit | Set by the slice that writes records (rule 10.2) |
+| Record size limit | Done: 16 KiB per record (Step 3B), per installation (Step 5B) and per student (Step 5C) |
 | Field-level validation of `data` against the manifest | Done in the server layer (Step 3B, `record-schema.ts`). The database only checks that `data` is an object and the collection is declared |
 | Permanent project deletion | Versions can't be deleted while approvals reference them, so a project with installations can't be deleted yet |
 | Partial capability approval | Needs a denied-capability column and plugins that handle refusal |

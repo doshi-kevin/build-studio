@@ -1,0 +1,4 @@
+# Studio's runtime files are served byte for byte, and vendor.js is pinned by its SHA-256
+# (src/lib/studio/kit/vendor-hash.ts). Line-ending conversion on checkout would change
+# the bytes and break the pin, so git treats them as binary.
+public/studio-runtime/** -text

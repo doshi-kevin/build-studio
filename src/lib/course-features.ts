@@ -27,6 +27,7 @@ import {
   UsersRound,
   Headphones,
   Blocks,
+  Puzzle,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -50,6 +51,9 @@ export interface CourseFeature {
    *  but surfaced inline elsewhere (e.g. primers live on lecture rows in Modules),
    *  so it must NOT appear as a navigable link in either sidebar. */
   inlineOnly?: boolean
+  /** Set on a Studio plugin's tab (studioToolFeature). Not in COURSE_FEATURES: plugin
+   *  tabs come from the section's installations, not this registry. */
+  studioTool?: { hiddenFromStudents: boolean }
 }
 
 export const COURSE_FEATURES: CourseFeature[] = [
@@ -263,9 +267,64 @@ export function orderFeatures(features: CourseFeature[], order: string[]): Cours
   )
 }
 
+/** A Studio plugin installation shown as a course tab. Display only: whether a student
+ * may open it is decided by the server (src/lib/studio/context.ts), never by the nav. */
+export interface StudioTool {
+  installationId: string
+  name: string
+  hiddenFromStudents: boolean
+}
+
+/** The `sidebarOrder` key for a plugin tab. Ordering only; it grants nothing. */
+export const STUDIO_TOOL_KEY = /^studio:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function studioToolFeature(tool: StudioTool, audience: 'student' | 'professor'): CourseFeature {
+  return {
+    key: `studio:${tool.installationId}`,
+    label: tool.name,
+    // Not Blocks: that's the Studio builder, and both sit in the professor's sidebar.
+    icon: Puzzle,
+    route: audience === 'student' ? `/tools/${tool.installationId}` : `/studio/${tool.installationId}`,
+    description: tool.name,
+    category: 'additional',
+    studioTool: { hiddenFromStudents: tool.hiddenFromStudents },
+  }
+}
+
+/**
+ * The professor's features plus plugin tabs, in their order. A tool the professor
+ * hasn't placed yet goes right after Studio, where they just built it, rather than
+ * under the admin features at the bottom. Once dragged, their order wins.
+ */
+export function orderWithTools(features: CourseFeature[], tools: CourseFeature[], order: string[]): CourseFeature[] {
+  const ordered = orderFeatures([...features, ...tools], order)
+  const ranked = new Set(order)
+  const unplaced = ordered.filter((f) => f.studioTool && !ranked.has(f.key))
+  if (unplaced.length === 0) return ordered
+  const rest = ordered.filter((f) => !unplaced.includes(f))
+  const studio = rest.findIndex((f) => f.key === 'studio')
+  rest.splice(studio === -1 ? rest.length : studio + 1, 0, ...unplaced)
+  return rest
+}
+
+/**
+ * The one sidebar tab to highlight: the longest route the URL is at or inside. Plugin
+ * pages live under /studio/<id>, so a plain prefix test would light up Studio too.
+ */
+export function activeFeatureKey(features: CourseFeature[], basePath: string, pathname: string): string | undefined {
+  return features
+    .filter((f) => {
+      const href = `${basePath}${f.route}`
+      return pathname === href || pathname.startsWith(`${href}/`)
+    })
+    .sort((a, b) => b.route.length - a.route.length)[0]?.key
+}
+
 /**
  * The student sidebar's feature list: basics, then whatever the professor
- * published, in the professor's display order.
+ * published, in the professor's display order. Plugin tabs (`tools`, already
+ * filtered to what students may see) sort by the same order, after anything
+ * unlisted.
  *
  * Extracted from the component so the backwards-compatibility rule is testable.
  * Sections predating `sidebarOrder` fall back to basics-then-`enabledFeatures`,
@@ -275,6 +334,7 @@ export function orderFeatures(features: CourseFeature[], order: string[]): Cours
 export function studentSidebarFeatures(
   enabledFeatures: string[],
   sidebarOrder: string[],
+  tools: StudioTool[] = [],
 ): CourseFeature[] {
   const studentBasic = BASIC_FEATURES.filter((f) => !f.professorOnly)
   const enabled = new Set(enabledFeatures)
@@ -284,7 +344,8 @@ export function studentSidebarFeatures(
   const order = sidebarOrder.length > 0
     ? sidebarOrder
     : [...studentBasic.map((f) => f.key), ...enabledFeatures]
-  return orderFeatures([...studentBasic, ...enabledAdditional], order)
+  const toolTabs = tools.map((t) => studioToolFeature(t, 'student'))
+  return orderFeatures([...studentBasic, ...enabledAdditional, ...toolTabs], order)
 }
 
 /** Feature keys a course assistant (TA/grader) is allowed to see and access on

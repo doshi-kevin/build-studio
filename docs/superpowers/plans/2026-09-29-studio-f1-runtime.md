@@ -14,8 +14,15 @@
 > - **Project, version and installation are separate.** One version can be installed in several sections, and each installation belongs to one section (rule 2.4). Task 3's `studio_plugins` row (one plugin per section) and its migration are superseded by Step 2A's database design. Don't run Task 3 as written.
 > - **Capability approval belongs to the installation, not the version** (rule 1.5). `approved_capabilities` and `approved_by` move off `studio_plugin_versions`. Tasks 7 and 8 check approval against the installation.
 > - **The manifest is the one in `studio-plugin-manifest.md`.** It has per-view capabilities and no top-level `capabilities` list. Task 1 is done (see its note).
-> - **Task 7 is partly superseded by Step 3B.** Data access goes through `src/lib/studio/records.ts` and `lifecycle.ts` (`docs/reference/studio-plugin-server.md`). `callPluginCapability` must call those, never query `studio_plugin_*` itself; a tripwire test refuses it.
-> - **Network isolation needs more than the sandbox and `connect-src`.** Task 2's frame builder must meet N1 to N11 in the rules doc appendix, and Task 9 must probe each of them.
+> - **Task 7 is superseded by Steps 3B and 4C.** There is no `callPluginCapability`. The bridge is `POST /api/studio/bridge` with `dispatch()` and the method registry in `src/lib/studio/bridge/`, routing records through `records.ts`. It never queries Studio tables itself; a tripwire test refuses that.
+> - **Step 4 replaced this plan's runtime design (2026-10-01). Read `docs/reference/studio-plugin-runtime.md` before Tasks 2, 4, 5, 6, 8 or 9.**
+>   - No `srcdoc`: the frame document is served by its own route (`src/app/studio-frame/v1/...`) with an HTTP security policy, built by `src/lib/studio/runtime/frame-document.ts`. Task 2's `buildSrcdoc` is superseded.
+>   - Not same-origin: frames load from a dedicated runtime origin (`STUDIO_RUNTIME_ORIGIN`), authorized by signed tickets, never by the session.
+>   - No app stylesheet URLs: the frame may load only `/studio-runtime/v1/` (`kit.css` and fonts, arriving with the plugin kit). Task 4 builds the kit into that path.
+>   - Not a server action: the bridge will be a route handler, `POST /api/studio/bridge`, with an internal `dispatch()`. Task 7's `callPluginCapability` is superseded.
+>   - The host is `src/lib/studio/runtime/host.ts` (with `PluginHost.tsx`), and the runtime is `public/studio-runtime/v1/runtime.js`, hand-written for v1. Task 6's build step applies to the kit and to plugin bundles, not the v1 runtime.
+>   - Task 9's probes exist: `e2e/studio-runtime`, in Chromium, Firefox and WebKit (`npm run e2e:studio-runtime`).
+> > - **Network isolation needs more than the sandbox and `connect-src`.** Task 2's frame builder must meet N1 to N11 in the rules doc appendix, and Task 9 must probe each of them.
 
 **Repository rules that apply throughout:**
 - Work on `feature/studio`. Never commit or push unless the user asks. Where a task says **Checkpoint**, stop, run the checks, and offer a commit.

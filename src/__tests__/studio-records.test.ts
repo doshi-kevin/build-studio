@@ -24,7 +24,7 @@ const { resolveViewer } = await import('@/lib/studio/context')
 const db = await import('@/lib/studio/db')
 const { logEvent } = await import('@/lib/supabase/event-logger')
 const records = await import('@/lib/studio/records')
-const { RECORD_NOT_AVAILABLE } = records
+const { RECORD_NOT_AVAILABLE, RECORD_FULL, RECORD_FULL_STUDENT } = records
 
 const parsed = parseManifest({
   ...exitTicket,
@@ -59,6 +59,9 @@ function viewAs(role: ViewerRole, state: InstallationState = 'active') {
     institutionId: INSTITUTION,
     versionId: VERSION,
     manifest,
+    // context.ts also turns this off for an archived section, a lost entitlement and a
+    // completed enrollment; studio-context.test.ts covers those. Here, archive stands in.
+    writable: state === 'active',
   } as StudioViewer
   vi.mocked(resolveViewer).mockResolvedValue(viewer)
   return viewer
@@ -214,6 +217,45 @@ describe('staff', () => {
     await records.updateRecord({ ...target(collection), recordId: RECORD, data })
     await records.deleteRecord({ ...target(collection), recordId: RECORD })
     expect(DB_CALLS().slice(2)).toEqual([0, 0, 0])
+  })
+})
+
+describe('storage quota (the usage trigger refuses the write)', () => {
+  const full = { ok: false as const, error: { code: '54000', message: 'Studio storage quota reached', full: 'installation' as const } }
+
+  it('a create the quota refuses says so, and is logged with identifiers only', async () => {
+    viewAs('student')
+    vi.mocked(db.insertRecord).mockResolvedValue(full)
+    expect(await records.createRecord({ ...target('responses'), data: ANSWER })).toEqual({ ok: false, error: RECORD_FULL })
+    expect(logEvent).toHaveBeenCalledTimes(1)
+    const event = vi.mocked(logEvent).mock.calls[0][0]
+    expect(event.eventType).toBe('studio.record.quota_refused')
+    expect(event.metadata).toEqual({ installationId: INSTALLATION, versionId: VERSION, collection: 'responses', operation: 'create', limit: 'installation' })
+    expect(JSON.stringify(event)).not.toContain(SECRET)
+  })
+
+  it('a student who used their own allowance is told it’s theirs, not the class’s', async () => {
+    viewAs('student')
+    vi.mocked(db.insertRecord).mockResolvedValue({ ok: false, error: { ...full.error, full: 'student' } })
+    expect(await records.createRecord({ ...target('responses'), data: ANSWER })).toEqual({ ok: false, error: RECORD_FULL_STUDENT })
+  })
+
+  it('an update the quota refuses says so too', async () => {
+    viewAs('student')
+    vi.mocked(db.updateRecord).mockResolvedValue(full)
+    expect(await records.updateRecord({ ...target('responses'), recordId: RECORD, data: ANSWER })).toEqual({
+      ok: false,
+      error: RECORD_FULL,
+    })
+  })
+
+  it('any other database failure stays a generic failure, not a quota message', async () => {
+    viewAs('student')
+    vi.mocked(db.insertRecord).mockResolvedValue({ ok: false, error: { code: '23514', message: 'check_violation' } })
+    const result = await records.createRecord({ ...target('responses'), data: ANSWER })
+    expect(result.ok).toBe(false)
+    expect(result).not.toEqual({ ok: false, error: RECORD_FULL })
+    expect(logEvent).not.toHaveBeenCalled()
   })
 })
 

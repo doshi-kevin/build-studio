@@ -1,7 +1,7 @@
 /**
  * Who may do what to plugin records. Pure: no database, no session. The record
- * service resolves the role and the installation state from trusted data, then asks
- * this function. The table it encodes is in docs/reference/studio-plugin-server.md.
+ * service resolves the role and whether the viewer may write from trusted data, then
+ * asks this function. The table it encodes is in docs/reference/studio-plugin-server.md.
  */
 import type { SectionRole } from '@/lib/auth/section-access'
 
@@ -9,6 +9,12 @@ export type ViewerRole = SectionRole | 'student'
 export type CollectionAccess = 'perStudent' | 'shared' | 'staffOnly'
 export type RecordOperation = 'list' | 'get' | 'create' | 'update' | 'delete'
 export type InstallationState = 'active' | 'archived'
+/** `readOnly` whenever the viewer may not write: an archived installation or section, a
+ * lost Studio entitlement, or a completed enrollment (context.ts, `writable`). */
+export type WriteMode = 'writable' | 'readOnly'
+
+/** Staff see the professor view; students see the student view (rule 9.4). */
+export const viewOf = (role: ViewerRole): 'student' | 'professor' => (role === 'student' ? 'student' : 'professor')
 
 export type Decision =
   | { allow: false }
@@ -34,10 +40,10 @@ export function decide(
   role: ViewerRole,
   access: CollectionAccess,
   operation: RecordOperation,
-  state: InstallationState,
+  mode: WriteMode,
 ): Decision {
-  // An archived installation keeps its history readable and accepts no new work (rule 3.6).
-  if (state === 'archived' && !isRead(operation)) return DENY
+  // Read-only keeps history readable and accepts no new work (rule 3.6).
+  if (mode === 'readOnly' && !isRead(operation)) return DENY
 
   if (role === 'student') {
     if (access === 'perStudent') return OWN

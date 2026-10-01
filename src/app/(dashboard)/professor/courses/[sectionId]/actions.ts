@@ -21,7 +21,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 import { logEvent } from '@/lib/supabase/event-logger'
 import { ensureDefaultCourseChannel } from '@/lib/discussion/default-channel'
-import { COURSE_FEATURES, ADDITIONAL_FEATURES } from '@/lib/course-features'
+import { COURSE_FEATURES, ADDITIONAL_FEATURES, STUDIO_TOOL_KEY } from '@/lib/course-features'
+import { STUDIO_SECTION_INSTALLATIONS_LISTED } from '@/lib/studio/limits'
 
 /** Reads a string[] out of the settings JSONB, tolerating absent/garbage values. */
 function readKeys(settings: Record<string, unknown>, key: string): string[] {
@@ -239,7 +240,12 @@ export async function reorderCourseFeatures(
 
     // Drop unknown keys and dedupe — this array is written wholesale and then
     // re-read on every page load for the section.
-    const cleanKeys = [...new Set(orderedKeys.filter((k) => VALID_FEATURE_KEYS.has(k)))]
+    // Studio plugin tabs order by `studio:<installationId>`. Display only: the key
+    // grants nothing, so its shape is all that's checked, and the list stays bounded.
+    const cleanKeys = [...new Set(orderedKeys.filter((k) => VALID_FEATURE_KEYS.has(k) || STUDIO_TOOL_KEY.test(k)))].slice(
+      0,
+      VALID_FEATURE_KEYS.size + STUDIO_SECTION_INSTALLATIONS_LISTED,
+    )
 
     // Key-scoped patch — see the note in toggleCourseFeature.
     const { error: updateError } = await adminDb

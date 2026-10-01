@@ -36,6 +36,8 @@ const AI_MARKERS = [
 /** Every production module allowed to reach an AI provider, with the location
  *  of the kill-switch guard that covers it. */
 const ALLOWED: Record<string, string> = {
+  // ── Studio validator (guard inside the classifier, before the model call) ──
+  'lib/studio/validator/purpose-ai.ts': 'guarded inline (studio-validator)',
   // ── Routes (guard inline in the route, before any model/token spend) ──
   'app/api/chat/route.ts': 'guarded inline (athena-student)',
   'app/api/professor-assistant/route.ts': 'guarded inline (athena-professor)',

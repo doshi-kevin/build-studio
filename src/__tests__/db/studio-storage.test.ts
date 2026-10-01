@@ -84,8 +84,9 @@ async function install(sectionId: string, versionId: string) {
   return id
 }
 
+/** These installations are never shown to students, so activation expects 'hidden'. */
 function activate(installationId: string, versionId: string, approve: boolean, actor = A.users.professor.id) {
-  return sql('select public.studio_activate_version($1, $2, $3, $4)', [installationId, versionId, actor, approve])
+  return sql(`select public.studio_activate_version($1, $2, $3, $4, 'hidden')`, [installationId, versionId, actor, approve])
 }
 
 interface RecordInput {
@@ -380,7 +381,7 @@ describe('client roles reach nothing (server-only tables)', () => {
           (t) => `select 1 from public.studio_plugin_${t} limit 1`,
         ),
         `select public.studio_install_plugin(gen_random_uuid(), gen_random_uuid(), gen_random_uuid())`,
-        `select public.studio_activate_version(gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), true)`,
+        `select public.studio_activate_version(gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), true, 'hidden')`,
       ]) {
         await sql('begin')
         try {

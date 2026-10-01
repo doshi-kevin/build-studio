@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   decide,
   type CollectionAccess,
-  type InstallationState,
+  type WriteMode,
   type RecordOperation,
   type ViewerRole,
 } from '@/lib/studio/policy'
@@ -16,7 +16,7 @@ const ROLES: ViewerRole[] = ['student', 'professor', 'ta', 'grader']
 type Row = [Cell, Cell, Cell, Cell]
 type Table = Record<CollectionAccess, Record<RecordOperation, Row>>
 
-const ACTIVE: Table = {
+const WRITABLE: Table = {
   perStudent: {
     list: ['own', 'all', 'all', 'all'],
     get: ['own', 'all', 'all', 'all'],
@@ -40,8 +40,9 @@ const ACTIVE: Table = {
   },
 }
 
-// Archived: still readable by whoever could read it, writable by nobody.
-const ARCHIVED: Table = {
+// Read-only (archived installation or section, lost entitlement, completed enrollment):
+// still readable by whoever could read it, writable by nobody.
+const READ_ONLY: Table = {
   perStudent: {
     list: ['own', 'all', 'all', 'all'],
     get: ['own', 'all', 'all', 'all'],
@@ -71,21 +72,21 @@ const EXPECTED = {
   '-': { allow: false },
 } as const
 
-const cases = (Object.entries({ active: ACTIVE, archived: ARCHIVED }) as [InstallationState, Table][]).flatMap(
-  ([state, table]) =>
+const cases = (Object.entries({ writable: WRITABLE, readOnly: READ_ONLY }) as [WriteMode, Table][]).flatMap(
+  ([mode, table]) =>
     (Object.entries(table) as [CollectionAccess, Record<RecordOperation, Row>][]).flatMap(([access, ops]) =>
       (Object.entries(ops) as [RecordOperation, Row][]).flatMap(([operation, row]) =>
-        ROLES.map((role, i) => ({ state, access, operation, role, cell: row[i] })),
+        ROLES.map((role, i) => ({ mode, access, operation, role, cell: row[i] })),
       ),
     ),
 )
 
 describe('decide', () => {
-  it('covers every role, access rule, operation and state', () => {
+  it('covers every role, access rule, operation and write mode', () => {
     expect(cases).toHaveLength(4 * 3 * 5 * 2)
   })
 
-  it.each(cases)('$state $access $operation as $role: $cell', ({ state, access, operation, role, cell }) => {
-    expect(decide(role, access, operation, state)).toEqual(EXPECTED[cell])
+  it.each(cases)('$mode $access $operation as $role: $cell', ({ mode, access, operation, role, cell }) => {
+    expect(decide(role, access, operation, mode)).toEqual(EXPECTED[cell])
   })
 })

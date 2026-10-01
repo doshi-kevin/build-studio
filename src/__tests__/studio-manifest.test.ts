@@ -64,8 +64,12 @@ describe('version', () => {
     expect(issuesAfter('bridgeVersion', 'v2')).toEqual([expect.stringMatching(/^bridgeVersion: /)])
   })
 
-  it('rejects a manifest format it does not know', () => {
-    expect(issuesAfter('manifestVersion', 2)).toEqual([expect.stringMatching(/^manifestVersion: /)])
+  it.each([0, 3, '1'])('rejects manifest format %j, which it does not know', (manifestVersion) => {
+    expect(issuesAfter('manifestVersion', manifestVersion)).toEqual(['manifestVersion: Must be 1 or 2'])
+  })
+
+  it('reads a version 1 manifest as version 1, never as version 2', () => {
+    expect(issuesAfter('manifestVersion', 2)).toEqual(expect.arrayContaining([expect.stringMatching(/^purpose: /)]))
   })
 })
 

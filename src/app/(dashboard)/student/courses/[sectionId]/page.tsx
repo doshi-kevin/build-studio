@@ -16,6 +16,8 @@ import { logger } from '@/lib/logger'
 import { parseAboutContent } from '@/lib/validations/course-about'
 import { resolveAboutAssetUrls, stripPrivateAssetFields } from '@/lib/supabase/about-assets'
 import { BlockPreview } from '@/components/professor/about/BlockPreview'
+import { StudentPastTools } from '@/components/student/courses/StudentPastTools'
+import { studentPastTools } from '@/lib/studio/navigation'
 
 interface StudentCourseRootPageProps {
   params: Promise<{ sectionId: string }>
@@ -47,14 +49,21 @@ export default async function StudentCourseRootPage({ params }: StudentCourseRoo
     )
   }
 
-  const aboutContent = stripPrivateAssetFields(
-    await resolveAboutAssetUrls(adminDb, parseAboutContent(section.settings)),
-  )
+  const [aboutContent, pastTools] = await Promise.all([
+    resolveAboutAssetUrls(adminDb, parseAboutContent(section.settings)).then(stripPrivateAssetFields),
+    // Studio tools the professor removed after showing them: history, below the page.
+    studentPastTools(sectionId),
+  ])
 
   logger.info('StudentCourseRootPage: Loaded', { sectionId })
 
   /* No page heading of its own. The hero block already renders the course title
      as the page's <h1>; adding "About this Course" above it put two <h1>s on
      every course page, one of them saying less than the other. */
-  return <BlockPreview blocks={aboutContent.blocks} />
+  return (
+    <>
+      <BlockPreview blocks={aboutContent.blocks} />
+      <StudentPastTools sectionId={sectionId} tools={pastTools} />
+    </>
+  )
 }

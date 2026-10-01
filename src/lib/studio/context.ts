@@ -9,9 +9,9 @@
 import 'server-only'
 import { createClient } from '@/lib/supabase/server'
 import { canWriteAsProfessor, verifySectionAccess } from '@/lib/auth/section-access'
-import { isEnrolled } from '@/lib/live-classroom/room-auth'
 import { logger } from '@/lib/logger'
-import { loadInstallation, loadVersion } from './db'
+import { studioAccess } from './access'
+import { loadEnrollmentStatus, loadInstallation, loadSectionState, loadVersion } from './db'
 import { parseManifest, type StudioManifest } from './manifest'
 import type { InstallationState, ViewerRole } from './policy'
 import { isPublishedToStudents } from './publication'
@@ -28,9 +28,19 @@ export type StudioViewer = Readonly<{
   installationState: InstallationState
   sectionId: string
   institutionId: string
+  projectId: string
   versionId: string
   manifest: StudioManifest
+  /** Whether this viewer may write right now. False when the installation is archived,
+   * the section is archived, the school has lost the Studio entitlement, or the viewer
+   * is a student whose enrollment is completed. Reads are unaffected. */
+  writable: boolean
+  /** Why `writable` is false, for the professor's notice; null when writable. Students
+   * are shown a generic notice instead. */
+  readOnlyReason: ReadOnlyReason | null
 }> & { readonly [viewerBrand]: true }
+
+export type ReadOnlyReason = 'installation_archived' | 'section_archived' | 'not_entitled' | 'enrollment_completed'
 
 export type StudioProfessor = Readonly<{
   userId: string
@@ -38,7 +48,8 @@ export type StudioProfessor = Readonly<{
   institutionId: string
 }> & { readonly [professorBrand]: true }
 
-async function sessionUserId(): Promise<string | null> {
+/** The signed-in user's ID from the session cookie, or null. */
+export async function sessionUserId(): Promise<string | null> {
   const supabase = await createClient()
   const {
     data: { user },
@@ -46,8 +57,10 @@ async function sessionUserId(): Promise<string | null> {
   return user?.id ?? null
 }
 
-/** Who is viewing this installation, in which role, under which version. Null for
- * every reason a viewer can't have one, so callers can't tell "missing" from "denied". */
+/** Who is viewing this installation, in which role, under which version, and whether
+ * they may write. Null for every reason a viewer can't have one (no session, unknown
+ * installation, not in the section, hidden from students, Studio switched off), so
+ * callers can't tell "missing" from "denied". */
 export async function resolveViewer(installationId: string): Promise<StudioViewer | null> {
   const userId = await sessionUserId()
   if (!userId) return null
@@ -57,16 +70,33 @@ export async function resolveViewer(installationId: string): Promise<StudioViewe
 
   const access = await verifySectionAccess(installation.sectionId, userId)
   let role: ViewerRole
+  let enrollment: 'enrolled' | 'completed' | null = null
   if (access.ok) {
     role = access.role
-  } else if (
-    (await isEnrolled(access.adminDb, installation.sectionId, userId)) &&
-    (await isPublishedToStudents(installation))
-  ) {
-    role = 'student'
   } else {
-    return null
+    // Visibility and the release gate first: they need no query.
+    if (!isPublishedToStudents(installation)) return null
+    enrollment = await loadEnrollmentStatus(installation.sectionId, userId)
+    if (!enrollment) return null
+    role = 'student'
   }
+
+  // The kill switch stops every viewer, professors included.
+  const studio = await studioAccess(installation.institutionId)
+  if (studio === 'off') return null
+  const section = await loadSectionState(installation.sectionId)
+  if (!section) return null
+
+  const readOnlyReason: ReadOnlyReason | null =
+    installation.status !== 'active'
+      ? 'installation_archived'
+      : section.archived
+        ? 'section_archived'
+        : studio !== 'full'
+          ? 'not_entitled'
+          : role === 'student' && enrollment !== 'enrolled'
+            ? 'enrollment_completed'
+            : null
 
   // Always the installation's current version. The request never names one.
   const version = await loadVersion(installation.currentVersionId)
@@ -86,9 +116,27 @@ export async function resolveViewer(installationId: string): Promise<StudioViewe
     installationState: installation.status,
     sectionId: installation.sectionId,
     institutionId: installation.institutionId,
+    projectId: installation.projectId,
     versionId: version.id,
     manifest: parsed.manifest,
+    writable: readOnlyReason === null,
+    readOnlyReason,
   } as StudioViewer
+}
+
+/** Another published version of this installation's project, for the professor to
+ * preview before activating it (rule 8.3). Only the section's professor, only a version
+ * of the same project in the same institution, and only one whose manifest still parses.
+ * Approval isn't needed: a preview runs on sample data and reaches no one else. */
+export async function candidateVersion(
+  viewer: StudioViewer,
+  versionId: string,
+): Promise<{ versionId: string; manifest: StudioManifest } | null> {
+  if (viewer.role !== 'professor') return null
+  const version = await loadVersion(versionId)
+  if (!version || version.projectId !== viewer.projectId || version.institutionId !== viewer.institutionId) return null
+  const parsed = parseManifest(version.manifest)
+  return parsed.ok ? { versionId: version.id, manifest: parsed.manifest } : null
 }
 
 /** The section's professor, acting in that section (rule 8.1). Null otherwise. */

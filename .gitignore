@@ -46,6 +46,11 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
+# The root .env holds real keys (service role, provider APIs). Every .env file is
+# ignored; only the checked-in *.example templates are not.
+.env
+.env.*
+!.env*.example
 .env.local
 .env.test
 .env.stress

@@ -363,6 +363,9 @@ app/
 │   │   │   │   │   ├── error.tsx
 │   │   │   │   │   ├── loading.tsx
 │   │   │   │   │   └── page.tsx
+│   │   │   │   ├── tools/
+│   │   │   │   │   └── [installationId]/
+│   │   │   │   │       └── page.tsx
 │   │   │   │   ├── layout.tsx
 │   │   │   │   ├── not-found.tsx
 │   │   │   │   └── page.tsx
@@ -2626,6 +2629,22 @@ e2e/
 ├── global-setup.ts
 ├── playwright.config.ts
 └── playwright.todos.config.ts
+```
+
+</details>
+
+### 📁 `validator-runtime/` — 3 files
+
+The Studio validator's browser stage. It runs a plugin in Playwright's Chromium, inside the same sandboxed frame students get, and reports measurements as JSON. It never runs in the app server: the app spawns `cli.mjs` as a child process with no secrets, in development only (`STUDIO_VALIDATOR_RUNNER=local`). See `docs/reference/studio-plugin-validator.md`.
+
+<details>
+<summary>📂 Expand complete tree for <code>validator-runtime/</code> (3 files)</summary>
+
+```
+validator-runtime/
+├── cli.mjs
+├── host-entry.ts
+└── runner.mjs
 ```
 
 </details>

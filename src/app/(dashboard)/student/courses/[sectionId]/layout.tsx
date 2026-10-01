@@ -18,6 +18,7 @@ import { parseInstitutionSettings } from '@/lib/validations/institution-settings
 import { withinAddDropWindow, parseAddDropPolicy } from '@/lib/validations/institution'
 import { parseInstitutionAiPolicy, parseAiPolicyLayer, evaluateAiFeature } from '@/lib/ai/ai-features'
 import { logger } from '@/lib/logger'
+import { studentToolTabs } from '@/lib/studio/navigation'
 import { StudentCourseSidebar } from '@/components/student/courses/StudentCourseSidebar'
 import { AthenaCourseBeacon } from '@/components/student/athena/AthenaCourseBeacon'
 
@@ -115,6 +116,10 @@ export default async function StudentCourseContainerLayout({
   const visibleFeatures = aiTutorKilled
     ? entitledFeatures.filter((f) => f !== 'athena')
     : entitledFeatures
+  /* Studio plugins the professor showed to students. Not part of enabledFeatures:
+     each is an installation with its own visibility, and the plugin page checks it
+     again on every request. Empty while the release gate is closed. */
+  const studioTools = await studentToolTabs(sectionId)
   /* MUST match dropSection's gate exactly (#744). If the button shows when the action
      refuses, the student gets an action guaranteed to fail — the same shape as #712 and
      #713 part 7. Both sides now read the section-start deadline rather than the student's
@@ -154,6 +159,7 @@ export default async function StudentCourseContainerLayout({
         year={section.year || 0}
         enabledFeatures={visibleFeatures}
         sidebarOrder={sidebarOrder}
+        studioTools={studioTools}
         unreadAnnouncements={unreadAnnouncements}
         canUnenroll={canUnenroll}
       />

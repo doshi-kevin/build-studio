@@ -20,7 +20,9 @@ import { validateRecordData, type CollectionDef } from './record-schema'
 
 export const RECORD_NOT_AVAILABLE = 'This isn’t available.'
 const RECORD_FAILED = 'Something went wrong saving this. Try again.'
-const RECORD_CONFLICT = 'Someone else changed this while you were editing. Reload and try again.'
+export const RECORD_CONFLICT = 'Someone else changed this while you were editing. Reload and try again.'
+export const RECORD_FULL = 'This tool has run out of storage space, so this wasn’t saved.'
+export const RECORD_FULL_STUDENT = 'You’ve used all the storage this tool gives you, so this wasn’t saved.'
 
 /** What a plugin sees of a record. No user IDs (rule 2.1): `mine` says whether the
  * viewer owns or wrote it. */
@@ -71,7 +73,7 @@ async function authorize(installationId: string, name: string, operation: Record
   if (!Object.hasOwn(viewer.manifest.collections, name)) return null
   const collection = viewer.manifest.collections[name]
 
-  const decision = decide(viewer.role, collection.access, operation, viewer.installationState)
+  const decision = decide(viewer.role, collection.access, operation, viewer.writable ? 'writable' : 'readOnly')
   if (!decision.allow) return null
 
   return {
@@ -105,6 +107,20 @@ function audit(viewer: StudioViewer, operation: 'create' | 'update' | 'delete', 
     sectionId: viewer.sectionId,
     metadata: { installationId: viewer.installationId, versionId: viewer.versionId, collection, recordId },
   })
+}
+
+/** A write the storage quota refused. Logged so a professor's "students can't save"
+ * report can be traced; identifiers only, never the record. */
+function saveFailed(viewer: StudioViewer, operation: 'create' | 'update', collection: string, error: db.DbError) {
+  if (!error.full) return { ok: false as const, error: RECORD_FAILED }
+  logEvent({
+    userId: viewer.userId,
+    eventType: 'studio.record.quota_refused',
+    eventCategory: 'studio',
+    sectionId: viewer.sectionId,
+    metadata: { installationId: viewer.installationId, versionId: viewer.versionId, collection, operation, limit: error.full },
+  })
+  return { ok: false as const, error: error.full === 'student' ? RECORD_FULL_STUDENT : RECORD_FULL }
 }
 
 export async function listRecords(input: ListRecordsInput): Promise<RecordResult<PluginRecord[]>> {
@@ -153,7 +169,7 @@ export async function createRecord(input: CreateRecordInput): Promise<RecordResu
     },
     valid.data,
   )
-  if (!saved.ok) return { ok: false, error: RECORD_FAILED }
+  if (!saved.ok) return saveFailed(viewer, 'create', parsed.data.collection, saved.error)
   audit(viewer, 'create', parsed.data.collection, saved.value.id)
   return { ok: true, value: toPlugin(saved.value, viewer) }
 }
@@ -172,7 +188,7 @@ export async function updateRecord(input: UpdateRecordInput): Promise<RecordResu
     versionId: auth.viewer.versionId,
     expectedUpdatedAt: parsed.data.expectedUpdatedAt,
   })
-  if (!saved.ok) return { ok: false, error: RECORD_FAILED }
+  if (!saved.ok) return saveFailed(auth.viewer, 'update', parsed.data.collection, saved.error)
   if (!saved.value) {
     // Zero rows: missing, outside the viewer's scope, or changed by someone else.
     // Re-read in the same scope, so a conflict is reported only on a record the

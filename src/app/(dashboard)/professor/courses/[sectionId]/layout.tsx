@@ -18,6 +18,7 @@ import { createClient } from '@/lib/supabase/server'
 import { courseQueries } from '@/lib/supabase/queries'
 import { verifySectionAccess } from '@/lib/auth/section-access'
 import { logger } from '@/lib/logger'
+import { professorToolTabs } from '@/lib/studio/navigation'
 import { CourseSidebar } from '@/components/professor/CourseSidebar'
 import { CourseBreadcrumbs } from '@/components/professor/CourseBreadcrumbs'
 import { DraftFeatureBanner } from '@/components/professor/DraftFeatureBanner'
@@ -43,9 +44,11 @@ export default async function CourseContainerLayout({
     notFound()
   }
 
-  const [section, unconfirmedTopics] = await Promise.all([
+  // Studio plugins are the professor's own tabs: TAs and graders don't run them here.
+  const [section, unconfirmedTopics, studioTools] = await Promise.all([
     courseQueries.getSectionDetail(access.adminDb, sectionId),
     getUnconfirmedSkillCount(sectionId),
+    access.role === 'professor' ? professorToolTabs(sectionId) : Promise.resolve([]),
   ])
   if (!section) {
     logger.warn('CourseContainerLayout: Section not found', { sectionId, userId: user.id })
@@ -90,6 +93,7 @@ export default async function CourseContainerLayout({
         sidebarHidden={sidebarHidden}
         unentitledFeatures={unentitledFeatures}
         sidebarOrder={sidebarOrder}
+        studioTools={studioTools}
         userRole={access.role}
       />
       {/* The breadcrumb sits OUTSIDE the scroll container so <main> holds nothing

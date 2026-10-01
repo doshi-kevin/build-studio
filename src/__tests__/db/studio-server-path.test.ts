@@ -5,8 +5,8 @@
  *
  * Mocked, and only these:
  *   - the session cookie, so each step can act as a chosen fixture user;
- *   - publication.ts, which refuses every student in v1. Students are exercised as if
- *     the installation were published, because the publication slice doesn't exist yet;
+ *   - publication.ts, so students are exercised as if the installation were shown to
+ *     them (showing and hiding are tested in studio-publication.test.ts);
  *   - logEvent, so audit calls can be inspected (it writes to `events` otherwise).
  *
  * Everything else is real: verifySectionAccess, enrollment checks, every query in
@@ -21,15 +21,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import exitTicket from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
 import { dbEnv } from './env'
 import { FIXTURE } from './fixture'
+import { grantStudio } from './studio-entitlement'
 
 const session: { userId: string | null } = { userId: null }
 
+// Publishing runs Stage 1 of the validator. No model calls from tests: the purpose
+// check sees the AI as unavailable (and sends the tool to review).
+vi.mock('@/lib/studio/validator/purpose-ai', () => ({ createPurposeClassifier: () => async () => ({ ok: false, reason: 'unavailable' }) }))
 vi.mock('@/lib/supabase/server', () => ({
   createClient: async () => ({
     auth: { getUser: async () => ({ data: { user: session.userId ? { id: session.userId } : null } }) },
   }),
 }))
-vi.mock('@/lib/studio/publication', () => ({ isPublishedToStudents: async () => true }))
+vi.mock('@/lib/studio/publication', () => ({ isPublishedToStudents: () => true }))
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 
 const { logEvent } = await import('@/lib/supabase/event-logger')
@@ -50,6 +54,7 @@ const SLUG = `sp-${run}`
 const SECRET = `private answer ${run}`
 
 let db: Client
+let restoreEntitlement: (() => Promise<void>) | undefined
 let sectionA2 = ''
 let projectId = ''
 let v1 = ''
@@ -100,6 +105,7 @@ beforeAll(async () => {
   process.env.SUPABASE_SERVICE_ROLE_KEY = env.serviceKey
   db = new Client({ connectionString: env.pgUrl })
   await db.connect()
+  restoreEntitlement = await grantStudio(db, A.institution)
 
   // A second section of the same course, with both students enrolled and the fixture TA
   // and grader as its staff. Every row here is removed in afterAll.
@@ -121,6 +127,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!db) return
+  await restoreEntitlement?.()
   if (projectId) {
     await sql('delete from public.studio_plugin_records where installation_id in (select id from public.studio_plugin_installations where project_id = $1)', [projectId])
     await sql('delete from public.studio_plugin_installations where project_id = $1', [projectId])

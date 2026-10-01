@@ -9,6 +9,9 @@
  *     master-kill/restore their PLATFORM layer. Per-feature per-institution
  *     lives on each institution's detail page.
  *
+ * Also: the global Studio kill switch (StudioKillSwitchCard), the same kind of
+ * platform-wide stop for Studio plugins.
+ *
  * Type: Server Component
  * Route: /super-admin/ai-controls
  * Tables: platform_settings, institutions
@@ -19,6 +22,8 @@ import { verifySuperAdmin } from '@/lib/auth/super-admin-context'
 import { parseAiPolicyLayer, parseInstitutionAiPolicy, type AiFeatureKey } from '@/lib/ai/ai-features'
 import { AiPolicyEditor } from '@/components/shared/AiPolicyEditor'
 import { AiBulkKillTable, type BulkInstitutionRow } from '@/components/super-admin/AiBulkKillTable'
+import { StudioKillSwitchCard } from '@/components/super-admin/StudioKillSwitchCard'
+import { readStudioKillSwitch } from '@/lib/studio/access'
 import { updateGlobalAiPolicy } from '../institutions/ai-actions'
 import { logger } from '@/lib/logger'
 
@@ -36,9 +41,10 @@ export default async function AiControlsPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const adminDb = createAdminClient() as any
-  const [platformRes, institutionsRes] = await Promise.all([
+  const [platformRes, institutionsRes, studioState] = await Promise.all([
     adminDb.from('platform_settings').select('settings').eq('id', true).maybeSingle(),
     adminDb.from('institutions').select('id, name, settings').eq('status', 'active').order('name'),
+    readStudioKillSwitch(),
   ])
   const globalLayer = parseAiPolicyLayer(
     (platformRes?.data?.settings as Record<string, unknown> | null | undefined)?.ai,
@@ -69,7 +75,7 @@ export default async function AiControlsPage() {
         </h1>
         <p className="text-[15px] text-muted-foreground mt-2">
           Scholera&apos;s kill switch. Global controls apply to every institution — current and future —
-          and cannot be overridden by anyone below.
+          and cannot be overridden by anyone below. The Studio card below stops every Studio tool.
         </p>
       </div>
 
@@ -86,6 +92,10 @@ export default async function AiControlsPage() {
         save={updateGlobalAiPolicy}
       />
 
+      {/* Studio's own switch: tools, not AI, but the same "stop it everywhere" control.
+          Above the per-institution table, which grows with every institution. */}
+      <StudioKillSwitchCard state={studioState} />
+
       <div>
         <h2 className="text-sm font-semibold text-foreground mb-1">Per-institution kill switch</h2>
         <p className="text-[13px] text-muted-foreground mb-3">
@@ -101,6 +111,7 @@ export default async function AiControlsPage() {
         </p>
         <AiBulkKillTable institutions={institutions} />
       </div>
+
     </div>
   )
 }

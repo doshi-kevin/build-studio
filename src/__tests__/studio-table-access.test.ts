@@ -31,17 +31,42 @@ describe('Studio storage tables', () => {
     expect(files.filter((f) => source(f).includes('studio_plugin_'))).toEqual(['src/lib/studio/db.ts'])
   })
 
+  // Any specifier that resolves to src/lib/studio/db: the alias, ./db from src/lib/studio,
+  // or ../db (and deeper) from its subfolders.
+  const importsDb = (f: string, s: string) => {
+    if (/from ['"]@\/lib\/studio\/db['"]/.test(s)) return true
+    if (!f.startsWith('src/lib/studio/')) return false
+    const depth = f.slice('src/lib/studio/'.length).split('/').length - 1
+    const relative = depth === 0 ? String.raw`\./db` : String.raw`(\.\./){` + depth + '}db'
+    return new RegExp(`from ['"]${relative}['"]`).test(s)
+  }
+
   it('db.ts is imported only by the trusted service modules', () => {
-    const importers = files.filter((f) => {
-      const s = source(f)
-      return /from ['"]@\/lib\/studio\/db['"]/.test(s) || (f.startsWith('src/lib/studio/') && /from ['"]\.\/db['"]/.test(s))
-    })
-    expect(importers.sort()).toEqual(['src/lib/studio/context.ts', 'src/lib/studio/lifecycle.ts', 'src/lib/studio/records.ts'])
+    const importers = files.filter((f) => importsDb(f, source(f)))
+    expect(importers.sort()).toEqual([
+      'src/lib/studio/bridge/context-get.ts',
+      'src/lib/studio/bridge/registry.ts',
+      'src/lib/studio/context.ts',
+      'src/lib/studio/lifecycle.ts',
+      'src/lib/studio/navigation.ts',
+      'src/lib/studio/records.ts',
+      'src/lib/studio/runtime/frame.ts',
+      'src/lib/studio/skill-bindings.ts',
+      'src/lib/studio/student-visibility.ts',
+      'src/lib/studio/validator/service.ts',
+    ])
   })
 })
 
 describe('Studio service modules', () => {
-  const SERVICE = ['context', 'db', 'lifecycle', 'publication', 'records'].map((m) => `src/lib/studio/${m}.ts`)
+  const SERVICE = [
+    'context', 'db', 'lifecycle', 'publication', 'records', 'runtime/frame', 'runtime/frame-ticket',
+    'bridge/registry', 'bridge/dispatch', 'bridge/context-get', 'bridge/rate-limit',
+    'access', 'navigation', 'prepublish', 'student-visibility', 'skill-bindings',
+    'validator/service', 'validator/purpose-ai', 'validator/runtime-runner',
+  ].map(
+    (m) => `src/lib/studio/${m}.ts`,
+  )
 
   it.each(SERVICE)('%s is server-only', (f) => {
     expect(source(f)).toMatch(/^import 'server-only'$/m)

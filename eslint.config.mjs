@@ -36,6 +36,7 @@ const eslintConfig = defineConfig([
       "src/lib/quiz/irt/grader.ts",
       "src/lib/pinecone/embed.ts",
       "src/lib/pinecone/decompose.ts",
+      "src/lib/studio/validator/purpose-ai.ts",
     ],
     rules: {
       "no-restricted-imports": [

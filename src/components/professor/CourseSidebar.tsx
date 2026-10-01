@@ -35,7 +35,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { ArrowLeft, X, GripVertical, Home, SlidersHorizontal, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { ArrowLeft, X, GripVertical, Home, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, EyeOff } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -44,8 +44,12 @@ import {
   courseAssistantCanSee,
   PROFESSOR_SIDEBAR_FEATURES,
   orderFeatures,
+  orderWithTools,
+  activeFeatureKey,
   classifyFeatureToggle,
+  studioToolFeature,
   type CourseFeature,
+  type StudioTool,
 } from '@/lib/course-features'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { toggleCourseFeature, reorderCourseFeatures, setCourseSidebarVisibility } from '@/app/(dashboard)/professor/courses/[sectionId]/actions'
@@ -69,6 +73,9 @@ interface CourseSidebarProps {
   unentitledFeatures?: string[]
   /** Display order; may be partial. Unlisted features append in registry order. */
   sidebarOrder?: string[]
+  /** The section's active Studio plugins, professor only. Marked when hidden from
+   * students. Display only: the plugin page checks access itself. */
+  studioTools?: StudioTool[]
   /** Caller's role for this section. Defaults to 'professor' for backwards
    * compatibility; 'ta'/'grader' hides feature-management controls. */
   userRole?: 'professor' | 'ta' | 'grader'
@@ -82,6 +89,7 @@ export function CourseSidebar({
   sidebarHidden = [],
   unentitledFeatures = [],
   sidebarOrder = [],
+  studioTools = [],
   userRole = 'professor',
 }: CourseSidebarProps) {
   const pathname = usePathname()
@@ -117,12 +125,16 @@ export function CourseSidebar({
     const visible = PROFESSOR_SIDEBAR_FEATURES.filter(
       (f) => !hidden.has(f.key) && !unentitled.has(f.key),
     )
-    const ordered = orderFeatures(visible, optimisticOrder)
     if (!isProfessor) {
-      return ordered.filter((f) => courseAssistantCanSee(f, enabledFeatures))
+      return orderFeatures(visible, optimisticOrder).filter((f) => courseAssistantCanSee(f, enabledFeatures))
     }
-    return ordered
-  }, [sidebarHidden, unentitledFeatures, optimisticOrder, isProfessor, enabledFeatures])
+    // Plugin tabs ride the same drag order. They aren't entitled features: a school
+    // that lost Studio keeps them, read-only, so its history stays reachable.
+    const tools = studioTools.map((t) => studioToolFeature(t, 'professor'))
+    return orderWithTools(visible, tools, optimisticOrder)
+  }, [sidebarHidden, unentitledFeatures, optimisticOrder, isProfessor, enabledFeatures, studioTools])
+
+  const activeKey = useMemo(() => activeFeatureKey(activeFeatures, basePath, pathname), [activeFeatures, basePath, pathname])
 
   // All toggleable features (additional + professor) for the Manage Features
   // popover, minus anything the institution has not bought.
@@ -304,7 +316,7 @@ export function CourseSidebar({
           // Collapsed: icon-only with tooltips. Staff (expanded): static links, no drag.
           activeFeatures.map((feature) => {
             const href = `${basePath}${feature.route}`
-            const isActive = pathname.startsWith(href)
+            const isActive = feature.key === activeKey
             const Icon = feature.icon
             if (collapsed) {
               return (
@@ -318,12 +330,15 @@ export function CourseSidebar({
                           ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                           : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
                       )}
-                      aria-label={feature.label}
+                      aria-label={feature.studioTool?.hiddenFromStudents ? `${feature.label}, hidden from students` : feature.label}
                     >
                       <Icon className="h-4 w-4" aria-hidden="true" />
                     </Link>
                   </TooltipTrigger>
-                  <TooltipContent side="right">{feature.label}</TooltipContent>
+                  <TooltipContent side="right">
+                    {feature.label}
+                    {feature.studioTool?.hiddenFromStudents ? ' · Hidden from students' : ''}
+                  </TooltipContent>
                 </Tooltip>
               )
             }
@@ -360,9 +375,10 @@ export function CourseSidebar({
                   key={feature.key}
                   feature={feature}
                   basePath={basePath}
-                  pathname={pathname}
+                  isActive={feature.key === activeKey}
                   sectionId={sectionId}
-                  isBasic={feature.category === 'basic'}
+                  // Plugin tabs leave the sidebar by archiving, not the X.
+                  isBasic={feature.category === 'basic' || !!feature.studioTool}
                 />
               ))}
             </SortableContext>
@@ -400,10 +416,10 @@ export function CourseSidebar({
 }
 
 /** A single sortable sidebar feature link */
-function SortableFeatureLink({ feature, basePath, pathname, sectionId, isBasic }: {
+function SortableFeatureLink({ feature, basePath, isActive, sectionId, isBasic }: {
   feature: CourseFeature
   basePath: string
-  pathname: string
+  isActive: boolean
   sectionId: string
   isBasic?: boolean
 }) {
@@ -422,7 +438,6 @@ function SortableFeatureLink({ feature, basePath, pathname, sectionId, isBasic }
   }
 
   const href = `${basePath}${feature.route}`
-  const isActive = pathname.startsWith(href)
   const Icon = feature.icon
 
   return (
@@ -453,10 +468,26 @@ function SortableFeatureLink({ feature, basePath, pathname, sectionId, isBasic }
         )}
       >
         <Icon className="h-4 w-4" aria-hidden="true" />
-        {feature.label}
+        <span className="min-w-0 flex-1 truncate" title={feature.label}>{feature.label}</span>
+        {feature.studioTool?.hiddenFromStudents && <HiddenFromStudentsMark />}
       </Link>
       {!isBasic && <RemoveFeatureButton sectionId={sectionId} featureKey={feature.key} label={feature.label} />}
     </div>
+  )
+}
+
+/** Marks a Studio plugin tab students can't see. Icon plus words, not color alone. */
+function HiddenFromStudentsMark() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex shrink-0 items-center text-muted-foreground">
+          <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="sr-only">Hidden from students</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right">Hidden from students</TooltipContent>
+    </Tooltip>
   )
 }
 

@@ -10,7 +10,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { studentSidebarFeatures } from '@/lib/course-features'
+import { studentSidebarFeatures, type StudioTool } from '@/lib/course-features'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
 import { DropDialog } from '@/components/student/courses/DropDialog'
@@ -26,6 +26,8 @@ interface StudentCourseSidebarProps {
   enabledFeatures: string[]
   /** Professor's drag order; may be partial. Unlisted features keep registry order. */
   sidebarOrder?: string[]
+  /** Studio plugins shown to students. Display only; the plugin page checks access. */
+  studioTools?: StudioTool[]
   unreadAnnouncements?: number
   /** Institution policy: self-unenroll window is open for THIS enrollment.
       Computed server-side in the course layout; the action re-checks it too. */
@@ -41,6 +43,7 @@ export function StudentCourseSidebar({
   year,
   enabledFeatures,
   sidebarOrder = [],
+  studioTools = [],
   unreadAnnouncements = 0,
   canUnenroll = false,
 }: StudentCourseSidebarProps) {
@@ -66,8 +69,8 @@ export function StudentCourseSidebar({
   // Basics, then whatever the professor published, in their display order.
   // Logic lives in course-features.ts so the backwards-compat rule is unit-tested.
   const activeFeatures = useMemo(
-    () => studentSidebarFeatures(enabledFeatures, sidebarOrder),
-    [enabledFeatures, sidebarOrder]
+    () => studentSidebarFeatures(enabledFeatures, sidebarOrder, studioTools),
+    [enabledFeatures, sidebarOrder, studioTools]
   )
 
   return (
@@ -209,7 +212,7 @@ export function StudentCourseSidebar({
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span className="flex-1">{feature.label}</span>
+                  <span className="line-clamp-2 flex-1" title={feature.label}>{feature.label}</span>
                   {badgeCount > 0 && (
                     <span
                       className={cn(

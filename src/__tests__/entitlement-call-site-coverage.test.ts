@@ -30,6 +30,9 @@ const read = (p: string) => readFileSync(join(SRC, p), 'utf8')
  * the exported function names that must carry a check.
  */
 const GATED: Record<string, string[]> = {
+  // Studio: one access function every Studio path goes through (builder, publication,
+  // plugin runtime, bridge writes). Losing the entitlement makes Studio read-only there.
+  'lib/studio/access.ts': ['studioAccess'],
   // Ring 1 — professor creates the top-level object.
   'app/(dashboard)/professor/courses/[sectionId]/quizzes/actions.ts': [
     'createQuiz',
@@ -116,6 +119,7 @@ const GUARDED_PAGES: string[] = [
   // owning the product is permanent and commercial, while the kill switch is a
   // temporary safety state that still earns the friendly disabled panel.
   'app/(dashboard)/professor/courses/[sectionId]/assistant/page.tsx',
+  'app/(dashboard)/professor/courses/[sectionId]/studio/page.tsx',
 ]
 
 /**

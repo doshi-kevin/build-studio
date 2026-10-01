@@ -5,11 +5,11 @@ What a Studio plugin is, and the file that declares it. Read [studio-plugin-rule
 | | |
 |---|---|
 | **Status** | Review |
-| **Manifest version** | 1 |
+| **Manifest version** | 1 and 2 |
 | **Owner** | Kevin Dohsi |
-| **Date** | 2026-09-30 |
-| **Code** | `src/lib/studio/manifest.ts` (schema and validator), `src/lib/studio/capabilities.ts` (capability list) |
-| **Example** | `src/lib/studio/fixtures/exit-ticket/plugin.manifest.json` |
+| **Date** | 2026-10-01 |
+| **Code** | `src/lib/studio/manifest.ts` (schema and validator), `src/lib/studio/capabilities.ts` (capability list), `src/lib/studio/edtech.ts` (signal, purpose and AI-fallback lists) |
+| **Example** | Version 1: `src/lib/studio/fixtures/exit-ticket/plugin.manifest.json`. Version 2: `GOOD_MANIFEST` in `src/lib/studio/validator/fixtures.ts` |
 
 ## Where the manifest sits
 
@@ -75,7 +75,7 @@ A plugin's manifest is the file `plugin.manifest.json` at the root of its source
 
 | Field | Rule | Why |
 |---|---|---|
-| `manifestVersion` | Must be `1`. | The version of this file format. Every field is required and unknown fields are rejected. So adding a field later means a new manifest version, and version 1 files keep parsing exactly as they do today. |
+| `manifestVersion` | `1` or `2`. | The version of this file format. Every field is required and unknown fields are rejected. So adding a field means a new manifest version, and version 1 files keep parsing exactly as they always did. Version 2 adds four fields, described in [Manifest version 2](#manifest-version-2). |
 | `id` | Lowercase words joined by hyphens, up to 40 characters. | A readable name for the project that stays the same across versions. It isn't a database key. The platform gives each project its own ID, so two professors can both have an `exit-ticket`. |
 | `name`, `description` | 1 to 80 and 1 to 300 characters. | Shown on the plugin card and the course tab. |
 | `version` | `MAJOR.MINOR.PATCH`, like `1.2.0`. No `v` prefix, no leading zeros, no `-beta`. | See [Versions](#versions). |
@@ -134,11 +134,50 @@ That last rule is what makes upgrades and rollbacks safe for stored data. Record
 - **Minor.** Adds capabilities or collections.
 - **Major. Deferred.** Changing or removing an existing field or collection is refused at publish in version 1. Supporting it needs a decision about existing records (archive them, or migrate them) and about students mid-attempt (rule 8.4). That arrives with the grading slice, which is also where attempts are built.
 
+## Manifest version 2
+
+Version 2 adds what the pre-publish validator checks for rules 3.4, 4.3, 6.2 and 9.6. Everything in version 1 is unchanged and still required.
+
+```json
+{
+  "manifestVersion": 2,
+  "...": "every version 1 field",
+  "purpose": {
+    "category": "reflection",
+    "summary": "Students write what was unclear today, and the professor reads the answers to plan the next class.",
+    "audience": "both"
+  },
+  "signals": ["submitted"],
+  "skillSlots": [{ "key": "topic", "label": "The topic this ticket is about" }],
+  "aiFallback": "not-applicable"
+}
+```
+
+| Field | Rule | Why |
+|---|---|---|
+| `purpose.category` | One of `practice`, `assessment`, `feedback`, `reflection`, `discussion`, `content-exploration`, `course-logistics`. | Rule 9.6: Studio builds only tools for teaching, learning or running the course. The validator checks the summary against this category. |
+| `purpose.summary` | 20 to 300 characters. | One plain sentence saying what students do and how it helps them learn. The validator's purpose check reads it, so it's treated as untrusted text. |
+| `purpose.audience` | `students`, `staff` or `both`. | Who the tool is for. |
+| `signals` | Names from the shared list: `completed`, `score`, `timeSpent`, `attended`, `submitted`. Each at most once. May be empty. | Rule 3.4: tracking uses the shared list, so dashboards add up across plugins. |
+| `skillSlots` | Up to 10. Each has a camelCase `key` and a `label` of 1 to 80 characters. Keys are unique. May be empty. | Rule 4.3: a slot names a concept the tool's scores count toward. It never names a section's skill, because a version belongs to no section. See [Skill slots](#skill-slots). |
+| `aiFallback` | `not-applicable`, `works-without-ai` or `explains-unavailable`. | Rule 6.2: what the tool does when the AI kill switch turns its AI off. A tool whose views ask for an AI capability can't say `not-applicable`. A tool with no AI capability must say `not-applicable`. No capability uses AI yet, so every version 2 manifest says `not-applicable` today. |
+
+**Version 1 stays version 1.** A version 1 manifest is never read as version 2, and a version 2 field in a version 1 file is rejected as unknown. Published version 1 versions keep working where they are. They can't pass the validator, because its checks for rules 3.4, 4.3, 6.2 and 9.6 need the version 2 fields. So a version 1 tool can't be shown to students. Republishing it as version 2 is the way forward.
+
+### Skill slots
+
+A slot is declared on the version and bound in each installation:
+
+1. The manifest declares `{ "key": "topic", "label": "The topic this ticket is about" }`.
+2. In each course that installs the tool, the professor picks which of the course's skills the slot means. The binding belongs to the installation, like capability approval (rule 1.5). The database refuses a skill from another section.
+3. The tool can't be shown to students until every slot is bound to a skill that still exists, isn't hidden and isn't suppressed in that section.
+4. At runtime, `context.get` returns `skills: { "topic": "Photosynthesis" }`: the bound skill's name, or `null`. The plugin never receives a skill ID.
+
 ## What the manifest deliberately leaves out
 
 - **Code, secrets, URLs.** Code is stored beside the manifest in the version, not inside it. The plugin never holds a secret (rule 1.3). The frame can't reach the network, so a URL would be useless (rule 1.2).
 - **Any course, user or institution.** Covered above.
-- **Signals, graded skills, AI fallback and purpose.** The rules doc lists these as manifest content (rules 3.4, 4.3, 6.2, 9.6). Each arrives with the slice that enforces it, as a new manifest version. Adding them now would be fields nothing reads.
+- **A section's skills.** A version names skill slots, never skill IDs. Each installation binds its own (rule 4.3).
 
 ## Validating a manifest
 

@@ -1,0 +1,112 @@
+/*
+ * Scholera Studio plugin kit, v1: theme tokens and component styles.
+ *
+ * Served from the runtime origin, the only stylesheet a plugin frame's security policy
+ * allows (style-src {runtime}/studio-runtime/v1/). The frame is a separate, sandboxed
+ * document, so it can't share the app's Tailwind build; this file mirrors the app's
+ * tokens from src/app/globals.css instead. Part of the bridge v1 contract (rule 8.7):
+ * once released it doesn't change in ways that break v1 plugins.
+ *
+ * Plugins never write CSS. Kit components take no style or className, so these tokens
+ * are the only colors a plugin can show (rule 7.1).
+ */
+:root {
+  --kit-background: oklch(0.985 0.002 247);
+  --kit-foreground: oklch(0.21 0.015 255);
+  --kit-card: oklch(1 0 0);
+  --kit-primary: oklch(0.56 0.19 260);
+  --kit-primary-foreground: oklch(0.99 0 0);
+  --kit-secondary: oklch(0.967 0.003 247);
+  --kit-secondary-foreground: oklch(0.21 0.015 255);
+  --kit-muted-foreground: oklch(0.47 0.013 257);
+  --kit-border: oklch(0.922 0.004 247);
+  --kit-input-border: oklch(0.7 0.01 255);
+  --kit-ring: oklch(0.56 0.19 260);
+  --kit-destructive: oklch(0.52 0.21 27);
+  --kit-radius: 0.75rem;
+  --kit-space-small: 0.5rem;
+  --kit-space-medium: 1rem;
+  --kit-space-large: 1.5rem;
+  --kit-target: 44px;
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--kit-background);
+  color: var(--kit-foreground);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.kit-screen { max-width: 48rem; margin: 0 auto; padding: var(--kit-space-medium); display: flex; flex-direction: column; gap: var(--kit-space-medium); }
+.kit-stack { display: flex; min-width: 0; }
+.kit-stack-column { flex-direction: column; }
+.kit-stack-row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.kit-gap-small { gap: var(--kit-space-small); }
+.kit-gap-medium { gap: var(--kit-space-medium); }
+.kit-gap-large { gap: var(--kit-space-large); }
+.kit-card { background: var(--kit-card); border: 1px solid var(--kit-border); border-radius: var(--kit-radius); padding: var(--kit-space-medium); }
+
+.kit-heading { margin: 0; font-weight: 600; line-height: 1.25; }
+.kit-heading-1 { font-size: 1.5rem; }
+.kit-heading-2 { font-size: 1.25rem; }
+.kit-heading-3 { font-size: 1rem; }
+.kit-text { margin: 0; }
+.kit-text-muted { color: var(--kit-muted-foreground); }
+
+.kit-button {
+  min-height: var(--kit-target);
+  min-width: var(--kit-target);
+  padding: 0 var(--kit-space-medium);
+  border-radius: var(--kit-radius);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.kit-button-primary { background: var(--kit-primary); color: var(--kit-primary-foreground); }
+.kit-button-secondary { background: var(--kit-secondary); color: var(--kit-secondary-foreground); border-color: var(--kit-border); }
+.kit-button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.kit-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.kit-label { font-weight: 500; }
+.kit-input {
+  min-height: var(--kit-target);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--kit-radius);
+  border: 1px solid var(--kit-input-border);
+  background: var(--kit-card);
+  color: var(--kit-foreground);
+  font: inherit;
+  width: 100%;
+}
+.kit-textarea { min-height: 6rem; resize: vertical; }
+.kit-check { display: flex; align-items: center; gap: var(--kit-space-small); min-height: var(--kit-target); }
+.kit-checkbox { width: 1.5rem; height: 1.5rem; margin: 0; accent-color: var(--kit-primary); }
+.kit-check .kit-label { flex: 1; min-height: var(--kit-target); display: flex; align-items: center; }
+
+.kit-button:focus-visible, .kit-input:focus-visible, .kit-checkbox:focus-visible {
+  outline: 2px solid var(--kit-ring);
+  outline-offset: 2px;
+}
+
+.kit-state { display: flex; flex-direction: column; gap: var(--kit-space-small); align-items: flex-start; padding: var(--kit-space-medium) 0; }
+.kit-loading { flex-direction: row; align-items: center; color: var(--kit-muted-foreground); }
+.kit-spinner {
+  width: 1rem; height: 1rem;
+  border-radius: 9999px;
+  border: 2px solid var(--kit-border);
+  border-top-color: var(--kit-primary);
+  animation: kit-spin 0.8s linear infinite;
+}
+.kit-error .kit-heading { color: var(--kit-destructive); }
+
+@keyframes kit-spin { to { transform: rotate(360deg); } }
+
+/* Rule 7.4: every animation respects "reduce motion". */
+@media (prefers-reduced-motion: reduce) {
+  .kit-spinner { animation: none; }
+}

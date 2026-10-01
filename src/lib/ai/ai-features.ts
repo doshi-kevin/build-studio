@@ -63,6 +63,12 @@ export const AI_FEATURES = [
     label: 'Project AI',
     description: 'AI-generated project phase plans for student teams',
   },
+  {
+    // Its own group (rule 6.2): switching it off sends every purpose check to a person.
+    key: 'studio-validator',
+    label: 'Studio Tool Checks',
+    description: 'AI help deciding whether a Studio tool is for teaching, before students can see it',
+  },
 ] as const
 
 export type AiFeatureKey = (typeof AI_FEATURES)[number]['key']

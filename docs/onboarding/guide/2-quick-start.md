@@ -63,6 +63,9 @@ Everything else in `.env.example` is **feature-scoped** — the app boots withou
 | `EXTRACTION_WORKER_SECRET` / `_KICK_URL`, `BACKGROUND_JOBS_SECRET` / `_KICK_URL` | Background extraction & job workers |
 | `SLACK_WEBHOOK_URL`, `SLACK_FEEDBACK_WEBHOOK_URL` | Slack notifications / feedback forwarding |
 | `TEST_*` | Playwright e2e test logins |
+| `STUDIO_RUNTIME_ORIGIN`, `STUDIO_FRAME_TICKET_SECRET` | Studio plugin frames. The runtime origin must be a different site from the app: locally `http://127.0.0.1:3000` while you browse on `localhost:3000`. Unset means plugin frames are off |
+| `STUDIO_STUDENT_ACCESS` | `on` lets students open Studio plugins their professor has shown them. Anything else keeps students out. Off in production until the release gate in `docs/reference/studio-plugin-publication.md` passes. Studio also needs the `studio` entitlement, which no institution has by default: grant it in the super-admin plan editor |
+| `STUDIO_VALIDATOR_RUNNER` | `local` runs the Studio validator's browser checks on your machine, using Playwright's Chromium (`npx playwright install chromium`). Refused in production. Unset means the browser checks can't run, so no plugin can be shown to students |
 
 ⚠️ **Never** put a real `service_role` key or any secret in a `NEXT_PUBLIC_*` variable — those are inlined into the client bundle.
 
@@ -173,7 +176,7 @@ npm run test
 
 - **Hosted staging** — `staging.scholera-inc.com`, its own isolated Supabase project (never prod). Deployed via `infra/app/deploy-to-staging.sh`.
 - **Production** — Google Cloud Run, deployed via `infra/app/deploy-to-prod.sh` (must be on `main`, clean tree, lint+typecheck pass). **You never apply migrations to prod** — you write the migration file; an admin applies it at release time.
-- **E2E** — `npm run e2e` runs Playwright against a local dev server + local Supabase (needs `.env.test`; see `e2e/playwright.config.ts`).
+- **E2E** — `npm run e2e` runs Playwright against a local dev server + local Supabase (needs `.env.test`; see `e2e/playwright.config.ts`). Two Studio suites need neither: `npm run e2e:studio-runtime` (plugin sandbox isolation in three browsers) and `npm run e2e:studio-validator` (the validator's browser checks on known-good and broken plugins).
 
 ## ❓ FAQ
 
@@ -199,6 +202,8 @@ npm run typecheck    # tsc --noEmit
 npm run test         # unit tests (Vitest)
 npm run test:watch   # tests in watch mode
 npm run e2e          # Playwright e2e (needs local Supabase + .env.test)
+npm run e2e:studio-runtime    # Studio plugin sandbox, 3 browsers, no database
+npm run e2e:studio-validator  # Studio validator browser checks, no database
 ./scripts/dev-setup/setup-local.sh   # rebuild local DB + seed
 npx supabase status  # local stack URLs + keys
 ```

@@ -57,6 +57,14 @@ export const QUIZ_ANALYSIS_MODEL = 'gemini-3-flash-preview'
  */
 export const NODE_CHECK_MODEL = 'gemini-3.1-flash-lite-preview'
 
+/**
+ * Studio's pre-publish purpose check (rule 9.6): one short classification per plugin
+ * version and ruleset, from the manifest's own words. Flash, at temperature 0, because
+ * the answer gates what reaches students; it is never the only signal
+ * (src/lib/studio/validator/purpose.ts).
+ */
+export const STUDIO_PURPOSE_MODEL = 'gemini-3-flash-preview'
+
 /** Questions generated per item, then dealt 5 at a time, fixed per student (§14.2). */
 export const NODE_CHECK_POOL_SIZE = 15
 export const NODE_CHECK_DEAL = 5

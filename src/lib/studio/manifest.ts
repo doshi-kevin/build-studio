@@ -1,11 +1,13 @@
 import { z } from 'zod'
 import { CAPABILITIES, CAPABILITY_NAMES, type PluginView } from './capabilities'
+import { AI_FALLBACK_NAMES, PURPOSE_CATEGORY_NAMES, SIGNAL_NAMES } from './edtech'
 import { STUDIO_MANIFEST_MAX_COLLECTIONS, STUDIO_MANIFEST_MAX_FIELDS } from './limits'
+import { BRIDGE_VERSIONS } from './runtime/protocol'
 
 // The contract is documented in docs/reference/studio-plugin-manifest.md.
 
-/** Bridge versions the platform serves. Older ones stay served forever (rule 8.7). */
-export const STUDIO_BRIDGE_VERSIONS = ['v1'] as const
+/** Bridge versions the platform serves; one list, shared with the runtime host. */
+export const STUDIO_BRIDGE_VERSIONS = BRIDGE_VERSIONS
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const SLUG = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
@@ -64,8 +66,7 @@ function viewSchema(view: PluginView) {
     })
 }
 
-export const manifestSchema = z.strictObject({
-  manifestVersion: z.literal(1),
+const common = {
   id: z.string().max(40).regex(SLUG, 'Must be lowercase words joined by hyphens, like exit-ticket'),
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().min(1).max(300),
@@ -73,16 +74,80 @@ export const manifestSchema = z.strictObject({
   bridgeVersion: z.enum(STUDIO_BRIDGE_VERSIONS),
   views: z.strictObject({ student: viewSchema('student'), professor: viewSchema('professor') }),
   collections: namedRecord(collectionSchema, 'collection', STUDIO_MANIFEST_MAX_COLLECTIONS),
+}
+
+/** Version 1: the original contract. Published v1 versions keep being read exactly as
+ * written; nothing here reinterprets them. They have no purpose, signals, skill slots or
+ * AI fallback, so they can't pass the pre-publish validator, which needs those. */
+export const manifestV1Schema = z.strictObject({ manifestVersion: z.literal(1), ...common })
+
+/** Rule 9.6: what the tool is for, in a structured form the validator can check. */
+const purposeSchema = z.strictObject({
+  category: z.enum(PURPOSE_CATEGORY_NAMES),
+  summary: z.string().trim().min(20, 'Say in a sentence what students do and how it helps them learn').max(300),
+  audience: z.enum(['students', 'staff', 'both']),
 })
 
-export type StudioManifest = z.infer<typeof manifestSchema>
+/** Rule 4.3: a reusable "what this counts toward", never a section's skill ID. Each
+ * installation binds its slots to its own section's skills. */
+const skillSlotSchema = z.strictObject({
+  key: z.string().regex(NAME, 'Slot keys are camelCase letters and digits, starting lowercase'),
+  label: z.string().trim().min(1).max(80),
+})
+
+export const STUDIO_MANIFEST_MAX_SKILL_SLOTS = 10
+
+/** Version 2: adds what the pre-publish validator checks. New Studio versions use it. */
+export const manifestV2Schema = z
+  .strictObject({
+    manifestVersion: z.literal(2),
+    ...common,
+    purpose: purposeSchema,
+    signals: z
+      .array(z.enum(SIGNAL_NAMES))
+      .max(SIGNAL_NAMES.length)
+      .refine((s) => new Set(s).size === s.length, 'Each signal is listed once'),
+    skillSlots: z
+      .array(skillSlotSchema)
+      .max(STUDIO_MANIFEST_MAX_SKILL_SLOTS)
+      .refine((slots) => new Set(slots.map((x) => x.key)).size === slots.length, 'Each skill slot key is used once'),
+    aiFallback: z.enum(AI_FALLBACK_NAMES),
+  })
+  .superRefine((m, ctx) => {
+    // Rule 6.2: a tool that uses AI says what happens without it; one that doesn't, says so.
+    const usesAi = (['student', 'professor'] as const).some((v) =>
+      m.views[v].capabilities.some((c) => CAPABILITIES[c].usesAi === true),
+    )
+    if (usesAi && m.aiFallback === 'not-applicable') {
+      ctx.addIssue({ code: 'custom', path: ['aiFallback'], message: 'This tool uses AI, so say what it does when AI is switched off' })
+    }
+    if (!usesAi && m.aiFallback !== 'not-applicable') {
+      ctx.addIssue({ code: 'custom', path: ['aiFallback'], message: 'This tool uses no AI, so its fallback is not-applicable' })
+    }
+  })
+
+export type StudioManifestV1 = z.infer<typeof manifestV1Schema>
+export type StudioManifestV2 = z.infer<typeof manifestV2Schema>
+export type StudioManifest = StudioManifestV1 | StudioManifestV2
+
+export const MANIFEST_VERSIONS = [1, 2] as const
+
+/** The schema for a raw manifest's declared version, or null for any other. */
+function schemaFor(raw: unknown) {
+  const declared = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).manifestVersion : undefined
+  if (declared === 1) return manifestV1Schema
+  if (declared === 2) return manifestV2Schema
+  return null
+}
 
 export type ManifestResult = { ok: true; manifest: StudioManifest } | { ok: false; issues: string[] }
 
 /** Each issue reads "path: message" so Athena can repair the manifest and a professor
  * can read why a publish was refused. */
 export function parseManifest(raw: unknown): ManifestResult {
-  const result = manifestSchema.safeParse(raw)
+  const schema = schemaFor(raw)
+  if (!schema) return { ok: false, issues: ['manifestVersion: Must be 1 or 2'] }
+  const result = schema.safeParse(raw)
   if (result.success) return { ok: true, manifest: result.data }
   return {
     ok: false,

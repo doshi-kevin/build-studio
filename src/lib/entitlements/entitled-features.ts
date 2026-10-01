@@ -64,6 +64,14 @@ export const ENTITLED_FEATURES = [
     description: 'The AI assistant for professors and students',
     defaultEntitled: true,
   },
+  {
+    // The first paid add-on: off until a super admin grants it. Losing it later
+    // makes existing plugins read-only; their data stays readable (src/lib/studio/access.ts).
+    key: 'studio',
+    label: 'Studio',
+    description: 'Course plugins professors build and show to their students',
+    defaultEntitled: false,
+  },
 ] as const
 
 export type EntitledFeatureKey = (typeof ENTITLED_FEATURES)[number]['key']

@@ -4,10 +4,10 @@ The only code allowed to read or write Studio plugin storage, and the rules it a
 
 | | |
 |---|---|
-| **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)). No callers yet: no server action exposes it |
+| **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)). Its first caller is the Scholera Bridge (`POST /api/studio/bridge`, Step 4C), through `dispatch()`; see [studio-plugin-runtime.md](./studio-plugin-runtime.md#the-bridge). Lifecycle operations still have no endpoint |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
-| **Code** | `src/lib/studio/` (`context.ts`, `policy.ts`, `record-schema.ts`, `db.ts`, `records.ts`, `lifecycle.ts`, `publication.ts`) |
+| **Code** | `src/lib/studio/` (`context.ts`, `policy.ts`, `record-schema.ts`, `db.ts`, `records.ts`, `lifecycle.ts`, `publication.ts`, `access.ts`, `student-visibility.ts`). Student visibility and access are documented in [studio-plugin-publication.md](./studio-plugin-publication.md) |
 | **Tests** | `src/__tests__/studio-{policy,record-schema,records,context,lifecycle,table-access}.test.ts`, and `src/__tests__/db/studio-server-path.test.ts` end to end |
 
 ## Why it exists
@@ -35,13 +35,15 @@ A request carries only an installation ID, a collection name, a record ID (for g
 3. Load the installation.
 4. Resolve the role:
    - **Staff:** `verifySectionAccess` on the installation's own section.
-   - **Student:** an enrollment with status `enrolled` or `completed`, and the installation is published to students.
+   - **Student:** the installation is shown to students and the release gate is open (`publication.ts`), and an enrollment with status `enrolled` or `completed`.
+   - **Anyone:** refused while the Studio kill switch is engaged (`access.ts`).
 5. Use the installation's **current** version and re-check its manifest. The request never names a version.
-6. The collection must be the manifest's own property, so a name like `constructor` can't resolve through the prototype.
-7. `decide(role, access, operation, state)`.
-8. For writes, validate the data.
-9. Query through `db.ts` with the policy's owner filter. Stamps come only from steps 2 to 7.
-10. Audit writes.
+6. Work out whether the viewer may write (`writable`, below).
+7. The collection must be the manifest's own property, so a name like `constructor` can't resolve through the prototype.
+8. `decide(role, access, operation, writable ? 'writable' : 'readOnly')`.
+9. For writes, validate the data.
+10. Query through `db.ts` with the policy's owner filter. Stamps come only from steps 2 to 8. A write the storage quota refuses returns "This tool has run out of storage space" (the Bridge's `full`).
+11. Audit writes.
 
 Every refusal before the database answers, and a record that doesn't match, returns the same message: "This isn't available." A caller can't tell a missing installation or record from one they may not see. Validation failures return field issues, but only after authorization has passed.
 
@@ -60,12 +62,12 @@ Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `m
 | `staffOnly` | list, get | **Refused** | All | All | All |
 | `staffOnly` | create, update, delete | **Refused** | All | All | Refused |
 
-- **Archived installation.** Every create, update and delete is refused for every role. Reads follow the table above.
+- **Read-only.** Every create, update and delete is refused for every role when `writable` is false. Reads follow the table above. `writable` is true only when the installation is active, the section isn't archived, Studio access is full (the school has the `studio` entitlement and the kill switch is off), and the viewer is staff or a student whose enrollment is `enrolled`. So a `completed` student keeps reading their own work.
 - **Staff writes** follow `canWriteAsStaff`. Graders are read-only until plugin grading exists.
 - **Staff don't write students' `perStudent` records** in V1. Feedback belongs to grading.
-- **Students are refused entirely for now.** `publication.ts` returns false for every installation until the publication slice designs how a plugin is published to students (rule 8.6). The table above already covers students, so nothing changes in the policy when that lands.
+- **Students** reach an installation only once its professor has shown it to them, and only while `STUDIO_STUDENT_ACCESS` is on (rule 8.6, [studio-plugin-publication.md](./studio-plugin-publication.md)). That gate is off in production.
 
-`src/__tests__/studio-policy.test.ts` holds this table cell by cell, for both installation states: 120 cases.
+`src/__tests__/studio-policy.test.ts` holds this table cell by cell, writable and read-only: 120 cases.
 
 ## Record validation
 
@@ -85,7 +87,7 @@ Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `m
 
 ## Lifecycle operations
 
-Every operation requires the signed-in user to be the professor of the section named in the request (`requireProfessor`, rule 8.1). Publishing, installing and archiving a project also require that the professor owns the project, because sharing is deferred. Installation operations require the installation to be in that section. The professor is always the actor passed to the database; a request can't name one.
+Every operation requires the signed-in user to be the professor of the section named in the request (`requireProfessor`, rule 8.1). Creating, publishing, installing, upgrading and rolling back are new work: they are refused while the kill switch is engaged or the school lacks the `studio` entitlement. Archiving is always allowed. Publishing, installing and archiving a project also require that the professor owns the project, because sharing is deferred. Installation operations require the installation to be in that section. The professor is always the actor passed to the database; a request can't name one.
 
 | Function | Database call |
 |---|---|
@@ -116,11 +118,9 @@ The admin client bypasses row-level security, so these rules are what stop new c
 | Not yet | Arrives with |
 |---|---|
 | Server actions or any endpoint | The Studio UI (lifecycle) and the Scholera Bridge (records) |
-| Students reaching an installation | The publication slice (rule 8.6) |
 | Attempt-pinned versions | Grading. In V1 every write uses, and is stamped with, the current version |
 | Per-viewer rate limits | The bridge (rule 10.1) |
 | Optional fields, other field types | A later manifest version |
-| Entitlement checks for Studio (rule 9.3) | When Studio gets an entitlement key |
 
 ## Verification
 

@@ -12,6 +12,7 @@ import {
   parseEntitlementConfig,
   evaluateEntitlement,
   ENTITLEMENT_CONFIG_DEFAULT,
+  ENTITLED_FEATURES,
   ENTITLED_FEATURE_KEYS,
   isSchedulableRevocationDate,
   type EntitlementConfig,
@@ -26,13 +27,20 @@ const config = (over: Partial<EntitlementConfig> = {}): EntitlementConfig => ({
 })
 
 describe('evaluateEntitlement', () => {
-  it('grants every product by default, which is what makes "all toggles on" need no migration', () => {
-    for (const key of ENTITLED_FEATURE_KEYS) {
-      expect(evaluateEntitlement(config(), key, NOW)).toEqual({
-        entitled: true,
-        pendingRevocationAt: null,
-      })
+  it('grants every product shipped on by default, which is what makes "all toggles on" need no migration', () => {
+    for (const { key, defaultEntitled } of ENTITLED_FEATURES) {
+      expect(evaluateEntitlement(config(), key, NOW)).toEqual(
+        defaultEntitled ? { entitled: true, pendingRevocationAt: null } : { entitled: false },
+      )
     }
+  })
+
+  it('keeps a paid add-on (Studio) off until it is explicitly granted', () => {
+    expect(evaluateEntitlement(config(), 'studio', NOW)).toEqual({ entitled: false })
+    expect(evaluateEntitlement(config({ granted: ['studio'] }), 'studio', NOW)).toEqual({
+      entitled: true,
+      pendingRevocationAt: null,
+    })
   })
 
   it('an explicit revoke beats the registry default', () => {
@@ -152,7 +160,8 @@ describe('entitlements and the AI kill switch share a column without colliding',
     const ai = parseInstitutionAiPolicy(settings)
     for (const key of ENTITLED_FEATURE_KEYS) {
       const entitled = evaluateEntitlement(parseEntitlementConfig(settings), key, NOW).entitled
-      expect(entitled).toBe(key !== 'live-classroom')
+      const shippedOn = ENTITLED_FEATURES.find((f) => f.key === key)!.defaultEntitled
+      expect(entitled).toBe(key !== 'live-classroom' && shippedOn)
     }
     expect(evaluateAiFeature(killed, ai, 'quiz-ai').allowed).toBe(false)
     expect(evaluateAiFeature(killed, ai, 'assignment-ai').allowed).toBe(false)

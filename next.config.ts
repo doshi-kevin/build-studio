@@ -51,18 +51,24 @@ const nextConfig: NextConfig = {
   // them. pdfjs-dist's internal worker resolution breaks when
   // re-bundled. sharp and @napi-rs/canvas ship native binaries that
   // Next.js must not touch. fflate works either way but is hoisted
-  // here to keep all extractor deps grouped.
+  // here to keep all extractor deps grouped. typescript is the Studio
+  // validator's parser (src/lib/studio/validator/scan.ts): several MB that
+  // gain nothing from bundling.
   serverExternalPackages: [
     'pdfjs-dist',
     'officeparser',
     'sharp',
     '@napi-rs/canvas',
     'fflate',
+    'typescript',
   ],
   async headers() {
     return [
       {
-        source: '/:path*',
+        // Every path except Studio's plugin frame documents. Those are framed by the app
+        // from another origin on purpose, and set their own frame-ancestors naming the
+        // app (src/lib/studio/runtime/frame-document.ts). These headers would block that.
+        source: '/:path((?!studio-frame/).*)',
         headers: [
           // Anti-clickjacking. Without these, evil.example can iframe a real
           // authenticated page invisibly under a lure and harvest a click onto a
