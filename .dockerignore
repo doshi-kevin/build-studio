@@ -1,0 +1,11 @@
+# Ignore files that should not be in the Docker build context
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+*.md
+.vscode
+.idea
+scripts

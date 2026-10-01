@@ -1,0 +1,154 @@
+{
+  "profile": "student-qa-v1",
+  "corpus": "CS584 Natural Language Processing — the seeded dev course (811 indexed pages across 17 materials)",
+  "recorded": "2026-08-07",
+  "boost": true,
+  "rerank": true,
+  "scoreFloor": 0.12,
+  "aggregates": {
+    "recallPool": 0.9643,
+    "recallContext": 0.8631,
+    "mrr": 0.8462,
+    "contextPrecision": 0.8031,
+    "goldFoundRate": 1,
+    "refusalAccuracy": 1
+  },
+  "cases": {
+    "attention-formula": {
+      "ok": true,
+      "firstGoldRank": 2
+    },
+    "explain-backprop-through-time": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "self-attention-qkv": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "positional-encoding": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "layer-normalization": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "kv-cache": {
+      "ok": true,
+      "firstGoldRank": 2
+    },
+    "encoder-decoder-variants": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "vanishing-gradient": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "lstm-gates": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "subword-tokenization": {
+      "ok": true,
+      "firstGoldRank": 4
+    },
+    "beam-search": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "where-was-beam-search-covered": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "seq2seq-attention-diagram": {
+      "ok": true,
+      "firstGoldRank": 9
+    },
+    "diagram-on-a-named-slide": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "word2vec-objective": {
+      "ok": true,
+      "firstGoldRank": 2
+    },
+    "ngram-sparsity": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "dependency-parsing": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "bert-pretraining": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "supervised-fine-tuning": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "rlhf": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "word2vec-to-transformer-inputs": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "late-submission-penalty": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "project-grade-split": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "locator-lecture6-slide27": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "copilot-flashcards-backprop": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "copilot-quiz-me-self-attention": {
+      "ok": true,
+      "firstGoldRank": 1
+    },
+    "copilot-study-guide-transformers": {
+      "ok": true,
+      "firstGoldRank": 3
+    },
+    "copilot-glove-vs-word2vec": {
+      "ok": true,
+      "firstGoldRank": 2
+    },
+    "ooc-alpha-beta-pruning": {
+      "ok": true,
+      "firstGoldRank": null
+    },
+    "ooc-docker-setup": {
+      "ok": true,
+      "firstGoldRank": null
+    },
+    "ooc-calvin-cycle": {
+      "ok": true,
+      "firstGoldRank": null
+    },
+    "ooc-solid-principles": {
+      "ok": true,
+      "firstGoldRank": null
+    },
+    "ooc-alpha-beta-vs-minimax": {
+      "ok": true,
+      "firstGoldRank": null
+    },
+    "ooc-tcp-vs-udp": {
+      "ok": true,
+      "firstGoldRank": null
+    }
+  }
+}

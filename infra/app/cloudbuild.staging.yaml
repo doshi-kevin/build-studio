@@ -1,0 +1,39 @@
+# Cloud Build config for the Scholera STAGING image.
+#
+# Why this file exists: `gcloud run deploy --source` (used by prod) cannot pass
+# Docker --build-arg, and Next.js inlines NEXT_PUBLIC_* into the browser bundle at
+# BUILD time. So staging needs a real `docker build` that threads the staging
+# Supabase URL/anon key in as build args, then pushes the image for
+# `gcloud run deploy --image` to pick up. See infra/deploy-to-staging.sh.
+#
+# Substitutions are supplied by infra/deploy-to-staging.sh from .env.staging:
+#   _SUPABASE_URL   -> NEXT_PUBLIC_SUPABASE_URL       (public, safe to log)
+#   _ANON_KEY       -> NEXT_PUBLIC_SUPABASE_ANON_KEY  (public, safe to log)
+#   _SITE_URL       -> NEXT_PUBLIC_SITE_URL
+#   _IMAGE          -> full Artifact Registry image ref (tagged with commit SHA)
+#
+# SECURITY: only PUBLIC values are passed here. The service_role key is NEVER a
+# build arg or substitution (substitutions are stored in plaintext in the build
+# record) — it is injected at runtime from GCP Secret Manager by the deploy step.
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args:
+      - build
+      - --build-arg=NEXT_PUBLIC_SUPABASE_URL=${_SUPABASE_URL}
+      - --build-arg=NEXT_PUBLIC_SUPABASE_ANON_KEY=${_ANON_KEY}
+      - --build-arg=NEXT_PUBLIC_SITE_URL=${_SITE_URL}
+      - -t
+      - ${_IMAGE}
+      - .
+
+images:
+  - ${_IMAGE}
+
+options:
+  # Keep build logs in Cloud Logging only (no dedicated GCS log bucket needed).
+  logging: CLOUD_LOGGING_ONLY
+
+# The Next.js build (pdfjs-dist + @napi-rs/canvas + sharp) is heavy; give it room.
+timeout: 1800s

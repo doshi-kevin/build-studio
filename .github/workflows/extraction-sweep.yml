@@ -1,0 +1,68 @@
+# Extraction queue safety net.
+#
+# POSTs to /api/extraction-worker/kick to drain the extraction queue. Normally
+# enqueueExtractionJob() kicks the worker inline, but if that fetch silently
+# drops the job just sits as `pending` — so a periodic sweep guarantees the
+# worker is poked regardless.
+#
+# THE 5-MINUTE CADENCE NOW RUNS ON GCP CLOUD SCHEDULER, not here — tying it to
+# GitHub Actions coupled a core prod invariant to GitHub billing, which lapsed
+# and silently stopped every workflow. The scheduled trigger moved to Cloud
+# Scheduler (job `extraction-worker-sweep`, us-central1), provisioned by
+# infra/app/setup-sweep-schedulers.sh. This workflow is kept as a MANUAL
+# fallback only (workflow_dispatch).
+#
+# Secrets required (the workflow FAILS LOUDLY if either is missing —
+# a misconfigured safety net must surface as a red run, not a silent
+# green one):
+#   EXTRACTION_WORKER_KICK_URL — public kick URL, e.g.
+#     https://app.scholera-inc.com/api/extraction-worker/kick
+#   EXTRACTION_WORKER_SECRET   — shared secret matching the one set
+#     on the Cloud Run service.
+
+name: extraction-sweep
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  kick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/extraction-worker/kick
+        env:
+          KICK_URL: ${{ secrets.EXTRACTION_WORKER_KICK_URL }}
+          SECRET: ${{ secrets.EXTRACTION_WORKER_SECRET }}
+        run: |
+          if [ -z "$KICK_URL" ] || [ -z "$SECRET" ]; then
+            echo "::error::EXTRACTION_WORKER_KICK_URL or EXTRACTION_WORKER_SECRET not set — the extraction-sweep cron cannot kick the worker, so stale 'running' jobs are never reclaimed. Set both repo secrets (see workflow header)."
+            exit 1
+          fi
+          set +e
+          # Long timeout: we do not expect a prompt response — the
+          # worker runs jobs inside the request. We only care that the
+          # request was accepted, so we check for HTTP 2xx.
+          CODE=$(curl -sS -o /tmp/kick-body -w '%{http_code}' \
+            -X POST "$KICK_URL" \
+            --max-time 60 \
+            -H "x-extraction-worker-secret: $SECRET" \
+            -H 'content-type: application/json' \
+            -d '{"source":"gha-sweep"}' || echo "000")
+          echo "HTTP $CODE"
+          cat /tmp/kick-body || true
+          echo
+          # Treat any 2xx as success. 401 means secret is wrong (loud
+          # failure). 5xx we swallow — next cron will retry.
+          if [[ "$CODE" =~ ^2 ]]; then
+            echo "Kick accepted."
+            exit 0
+          fi
+          if [ "$CODE" = "401" ]; then
+            echo "::error::Kick returned 401 — worker secret mismatch"
+            exit 1
+          fi
+          echo "::warning::Kick returned $CODE — will retry next tick"

@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "exit-ticket",
+  "name": "Exit ticket",
+  "description": "At the end of a lecture, students answer a few short questions tied to the course's skills and rate their confidence. The professor sees every answer and which skills the class is weakest on.",
+  "version": "1.0.0",
+  "bridgeVersion": "v1",
+  "views": {
+    "student": {
+      "entry": "views/student.tsx",
+      "capabilities": ["context.get", "ui.resize"]
+    },
+    "professor": {
+      "entry": "views/professor.tsx",
+      "capabilities": ["context.get", "course.skills", "course.weakSpots", "ui.resize", "ui.toast"]
+    }
+  },
+  "collections": {
+    "questions": {
+      "access": "shared",
+      "fields": { "prompt": "text", "skill": "text", "open": "boolean" }
+    },
+    "responses": {
+      "access": "perStudent",
+      "fields": { "questionId": "text", "answer": "text", "confidence": "number" }
+    }
+  }
+}

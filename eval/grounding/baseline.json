@@ -1,0 +1,155 @@
+{
+  "model": "gemini-3-flash-preview",
+  "corpus": "CS584 Natural Language Processing — the seeded dev course (811 indexed pages across 17 materials)",
+  "recorded": "2026-08-08",
+  "aggregates": {
+    "citationValidity": 0.9949,
+    "citationCorrectness": 0.4603,
+    "citedAnything": 1,
+    "answered": 1,
+    "refusalNoFabrication": 1
+  },
+  "cases": {
+    "attention-formula": {
+      "fabricated": 0,
+      "citations": 2
+    },
+    "explain-backprop-through-time": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "self-attention-qkv": {
+      "fabricated": 1,
+      "citations": 7
+    },
+    "positional-encoding": {
+      "fabricated": 0,
+      "citations": 6
+    },
+    "layer-normalization": {
+      "fabricated": 0,
+      "citations": 3
+    },
+    "kv-cache": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "encoder-decoder-variants": {
+      "fabricated": 0,
+      "citations": 6
+    },
+    "vanishing-gradient": {
+      "fabricated": 0,
+      "citations": 7
+    },
+    "lstm-gates": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "subword-tokenization": {
+      "fabricated": 0,
+      "citations": 8
+    },
+    "beam-search": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "where-was-beam-search-covered": {
+      "fabricated": 0,
+      "citations": 3
+    },
+    "seq2seq-attention-diagram": {
+      "fabricated": 0,
+      "citations": 7
+    },
+    "diagram-on-a-named-slide": {
+      "fabricated": 0,
+      "citations": 1
+    },
+    "word2vec-objective": {
+      "fabricated": 0,
+      "citations": 7
+    },
+    "ngram-sparsity": {
+      "fabricated": 0,
+      "citations": 6
+    },
+    "dependency-parsing": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "bert-pretraining": {
+      "fabricated": 0,
+      "citations": 7
+    },
+    "supervised-fine-tuning": {
+      "fabricated": 0,
+      "citations": 1
+    },
+    "rlhf": {
+      "fabricated": 0,
+      "citations": 3
+    },
+    "word2vec-to-transformer-inputs": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "late-submission-penalty": {
+      "fabricated": 0,
+      "citations": 1
+    },
+    "project-grade-split": {
+      "fabricated": 0,
+      "citations": 4
+    },
+    "locator-lecture6-slide27": {
+      "fabricated": 0,
+      "citations": 1
+    },
+    "copilot-flashcards-backprop": {
+      "fabricated": 0,
+      "citations": 3
+    },
+    "copilot-quiz-me-self-attention": {
+      "fabricated": 0,
+      "citations": 6
+    },
+    "copilot-study-guide-transformers": {
+      "fabricated": 0,
+      "citations": 5
+    },
+    "copilot-glove-vs-word2vec": {
+      "fabricated": 0,
+      "citations": 7
+    },
+    "ooc-alpha-beta-pruning": {
+      "fabricated": 0,
+      "citations": 0
+    },
+    "ooc-docker-setup": {
+      "fabricated": 0,
+      "citations": 0
+    },
+    "ooc-calvin-cycle": {
+      "fabricated": 0,
+      "citations": 0
+    },
+    "ooc-solid-principles": {
+      "fabricated": 0,
+      "citations": 0
+    },
+    "ooc-alpha-beta-vs-minimax": {
+      "fabricated": 0,
+      "citations": 0
+    },
+    "ooc-tcp-vs-udp": {
+      "fabricated": 0,
+      "citations": 0
+    }
+  },
+  "judged": {
+    "faithfulness": 0.761,
+    "answer_relevancy": 0.8688,
+    "refusal_compliance": 1
+  }
+}

@@ -1,0 +1,11 @@
+-- Server-only RPC hardening: upsert_ai_grade_suggestion_if_current is called exclusively by
+-- the service-role admin client, but recreating it (20260907172942) re-triggered Supabase's
+-- default privileges, which grant EXECUTE to anon and authenticated on new functions.
+-- REVOKE FROM PUBLIC does not strip those direct role grants. With them in place, any
+-- authenticated user could call the SECURITY DEFINER function via PostgREST and forge an AI
+-- grade suggestion for a submission whose id and updated_at they know (their own).
+--
+-- Caught on prod by role_routine_grants verification after apply; local development
+-- environments mask this because the anon-hardening event trigger and differing default
+-- privileges already deny the call there. Verify grants on PROD, not local.
+REVOKE EXECUTE ON FUNCTION public.upsert_ai_grade_suggestion_if_current(uuid, timestamptz, text, jsonb) FROM anon, authenticated;

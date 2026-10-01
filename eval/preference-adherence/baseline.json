@@ -1,0 +1,11 @@
+{
+  "recordedAt": "2026-09-03T19:42:56.705Z",
+  "model": "gemini-3-flash-preview",
+  "overall": 0.95,
+  "perCase": {
+    "answer_length": 0.8,
+    "no_code_blocks": 1,
+    "prose_not_bullets": 1,
+    "no_questions_back": 1
+  }
+}

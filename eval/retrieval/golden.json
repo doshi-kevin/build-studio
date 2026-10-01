@@ -1,0 +1,545 @@
+{
+  "corpus": "CS584 Natural Language Processing — the seeded dev course (811 indexed pages across 17 materials)",
+  "labelled": "2026-08-07",
+  "how_gold_was_chosen": "By reading the page text in material_vector_chunks and keeping the pages that genuinely answer the question — never by running retrieval and blessing what came back, which would make the gate circular and unable to fail.",
+  "gold_key": "material title (exact module_items.title) + page_number, resolved to module_item_id at run time so a re-seed with new UUIDs doesn't invalidate the set",
+  "use_case_ids": "Trace back to the catalogue in docs/designs/athena-students.md — §12.1 (U*), §12.3 (G*), §15.2 (copilot artifact prompts). Only retrieval-shaped cases live here; see eval/README.md for which catalogue rows layer 1 cannot measure and where they belong instead. The two relational out-of-corpus cases exist to exercise a specific branch: they TRIP the decomposition gate, so retrieval runs on narrow sub-queries whose cosines score systematically higher than a whole question's — the honest-refusal floor has to hold there too, and every other refusal case in this set fails to reach that path.",
+  "cases": [
+    {
+      "id": "attention-formula",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What is the formula for scaled dot-product attention?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 22
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 26
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 27
+        }
+      ]
+    },
+    {
+      "id": "explain-backprop-through-time",
+      "use_case": "U2",
+      "category": "re-explanation",
+      "query": "Explain backpropagation through time step by step, simply.",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 24
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 26
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 27
+        }
+      ]
+    },
+    {
+      "id": "self-attention-qkv",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "How do keys, queries and values work in self-attention?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 21
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 23
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 25
+        }
+      ]
+    },
+    {
+      "id": "positional-encoding",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "Why do transformers need positional encodings?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 28
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 29
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 30
+        }
+      ]
+    },
+    {
+      "id": "layer-normalization",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What does layer normalization do and why does it help training?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 40
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 43
+        }
+      ]
+    },
+    {
+      "id": "kv-cache",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What is the KV cache and why is it used at inference time?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 64
+        }
+      ]
+    },
+    {
+      "id": "encoder-decoder-variants",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "What is the difference between encoder-only, decoder-only and encoder-decoder transformers?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 36
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 37
+        }
+      ]
+    },
+    {
+      "id": "vanishing-gradient",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "Why is the vanishing gradient a problem in RNNs?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 52
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 53
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 54
+        }
+      ]
+    },
+    {
+      "id": "lstm-gates",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "How does an LSTM fix the vanishing gradient problem?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 61
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 62
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 65
+        }
+      ]
+    },
+    {
+      "id": "subword-tokenization",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "How does the model handle a word it has never seen during training?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 132
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 133
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 136
+        }
+      ]
+    },
+    {
+      "id": "beam-search",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "How does beam search decoding work?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 55
+        },
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 56
+        }
+      ]
+    },
+    {
+      "id": "where-was-beam-search-covered",
+      "use_case": "U5",
+      "category": "where-was-it-covered pointer",
+      "query": "Where was beam search covered?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 55
+        },
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 56
+        }
+      ]
+    },
+    {
+      "id": "seq2seq-attention-diagram",
+      "use_case": "U6",
+      "category": "sparse-text diagram page",
+      "query": "Walk me through the seq2seq with attention diagram.",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 89
+        },
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 90
+        },
+        {
+          "material": "Lecture 5: Seq2Seq and Attention",
+          "page": 91
+        }
+      ]
+    },
+    {
+      "id": "diagram-on-a-named-slide",
+      "use_case": "U6",
+      "category": "explicit locator",
+      "query": "Explain the diagram on slide 26 of the transformers lecture.",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 26
+        }
+      ]
+    },
+    {
+      "id": "word2vec-objective",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What is the training objective of word2vec?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 3: Word Vectors",
+          "page": 28
+        },
+        {
+          "material": "Lecture 3: Word Vectors",
+          "page": 33
+        }
+      ]
+    },
+    {
+      "id": "ngram-sparsity",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What are the sparsity problems with n-gram language models?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 2: Language Modeling",
+          "page": 30
+        }
+      ]
+    },
+    {
+      "id": "dependency-parsing",
+      "use_case": "U1",
+      "category": "concept clarification",
+      "query": "What is dependency parsing and what does it produce?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 10: Syntax and Discourse",
+          "page": 12
+        },
+        {
+          "material": "Lecture 10: Syntax and Discourse",
+          "page": 30
+        }
+      ]
+    },
+    {
+      "id": "bert-pretraining",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What pretraining objective does BERT use?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 7: Pretraining and Post-training",
+          "page": 21
+        }
+      ]
+    },
+    {
+      "id": "supervised-fine-tuning",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What is supervised fine-tuning and how does it relate to teacher forcing?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 7: Pretraining and Post-training",
+          "page": 49
+        }
+      ]
+    },
+    {
+      "id": "rlhf",
+      "use_case": "U1",
+      "category": "single-source factual",
+      "query": "What is RLHF?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 8: More Post-training",
+          "page": 38
+        }
+      ]
+    },
+    {
+      "id": "word2vec-to-transformer-inputs",
+      "use_case": "U4",
+      "category": "cross-lecture synthesis",
+      "query": "How do word2vec embeddings relate to the input representations a transformer sees?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 3: Word Vectors",
+          "page": 28
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 29
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 30
+        }
+      ]
+    },
+    {
+      "id": "late-submission-penalty",
+      "use_case": "U1",
+      "category": "course logistics",
+      "query": "What is the penalty for turning in an assignment one day late?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 1: Introduction to NLP",
+          "page": 13
+        }
+      ]
+    },
+    {
+      "id": "project-grade-split",
+      "use_case": "U1",
+      "category": "course logistics",
+      "query": "How is the team project graded and how much is it worth?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Course Project Guidelines",
+          "page": 15
+        }
+      ]
+    },
+    {
+      "id": "locator-lecture6-slide27",
+      "use_case": "§4 explicit locator",
+      "category": "explicit locator",
+      "query": "what is on lecture 6 slide 27?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 27
+        }
+      ]
+    },
+    {
+      "id": "copilot-flashcards-backprop",
+      "use_case": "U13 / §15.2 flashcards",
+      "category": "copilot artifact request",
+      "query": "Can you make me flashcards for backprop through time?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 24
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 26
+        },
+        {
+          "material": "Lecture 4: RNNs and Beyond",
+          "page": 27
+        }
+      ]
+    },
+    {
+      "id": "copilot-quiz-me-self-attention",
+      "use_case": "U14 / §15.2 practice",
+      "category": "copilot artifact request",
+      "query": "Quiz me on self-attention.",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 25
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 26
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 27
+        }
+      ]
+    },
+    {
+      "id": "copilot-study-guide-transformers",
+      "use_case": "§15.2 study_guide",
+      "category": "copilot artifact request",
+      "query": "Can you write me a study guide for the transformer architecture?",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 36
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 37
+        },
+        {
+          "material": "Lecture 6: Transformers",
+          "page": 52
+        }
+      ]
+    },
+    {
+      "id": "copilot-glove-vs-word2vec",
+      "use_case": "§15.2 offer-after-teaching",
+      "category": "copilot artifact request",
+      "query": "I keep mixing up GloVe and word2vec.",
+      "expected_behavior": "answer",
+      "gold_pages": [
+        {
+          "material": "Lecture 3: Word Vectors",
+          "page": 28
+        },
+        {
+          "material": "Lecture 3: Word Vectors",
+          "page": 51
+        }
+      ]
+    },
+    {
+      "id": "ooc-alpha-beta-pruning",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "Walk me through the alpha-beta pruning algorithm used in this course.",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    },
+    {
+      "id": "ooc-docker-setup",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "How do I set up a Docker container for my development environment?",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    },
+    {
+      "id": "ooc-calvin-cycle",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "Explain the Calvin cycle in photosynthesis.",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    },
+    {
+      "id": "ooc-solid-principles",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "Explain the SOLID principles of object-oriented design.",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    },
+    {
+      "id": "ooc-alpha-beta-vs-minimax",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "How does alpha-beta pruning relate to minimax search in game trees?",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    },
+    {
+      "id": "ooc-tcp-vs-udp",
+      "use_case": "G1",
+      "category": "out-of-corpus refusal",
+      "query": "What is the difference between TCP and UDP in networking?",
+      "expected_behavior": "refuse",
+      "gold_pages": []
+    }
+  ]
+}

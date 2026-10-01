@@ -1,0 +1,20 @@
+-- #675 — deleting the discussion channel you are reading left the pane showing it, with a
+-- working composer that returned "Channel not found".
+--
+-- The client already handled this: useDiscussionChannels has a DELETE branch that drops
+-- the row, and the pages reconcile the open channel against that list. Both were DEAD
+-- CODE, for a reason invisible from the app: the subscription filters on
+-- `section_id=eq.<id>`, and under the DEFAULT replica identity a DELETE payload carries
+-- only the PRIMARY KEY. `section_id` is absent, so the filter can never match and the
+-- event is never delivered. Every other event type works because INSERT/UPDATE payloads
+-- carry the full row.
+--
+-- REPLICA IDENTITY FULL makes the DELETE payload carry the whole old row, so the filter
+-- matches and the existing handler fires. Chosen over dropping the filter: an unfiltered
+-- subscription would push every section's channel churn to every client, which is a
+-- tenancy smell as well as noise.
+--
+-- Cost is negligible here — 11 columns, 10 rows in production, and channels are created or
+-- deleted a handful of times per course. The write-amplification concern with FULL applies
+-- to wide, high-churn tables.
+alter table public.discussion_channels replica identity full;

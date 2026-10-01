@@ -1,0 +1,23 @@
+# Layer 2's judge. A LOCAL tool: CI never installs it, nothing the app ships
+# depends on it, and the venv it builds is gitignored (~800MB).
+#
+# Everything is pinned, for two different reasons. ragas because an LLM-judged
+# baseline is only comparable against the same metric implementations. The
+# langchain line because ragas 0.4.3 still imports
+# `langchain_community.chat_models.vertexai`, which the langchain 1.x line
+# removed — installing "latest" gives you an ImportError at `import ragas`.
+ragas==0.4.3
+langchain-community==0.3.27
+
+# ── Judge providers ──────────────────────────────────────────────────────────
+# judge.py builds its client from EVAL_JUDGE_PROVIDER, so switching judges is a
+# key and an env var, not a code change. Google is the default: it reuses
+# GOOGLE_GENERATIVE_AI_API_KEY, so no new vendor and no new secret.
+#
+# To switch, uncomment the provider you want, re-run pip install, and set
+# EVAL_JUDGE_PROVIDER=openai|anthropic with its key. Versions below are the last
+# ones on the langchain 0.3 line — do NOT bump them past 1.0 without also moving
+# ragas, or the vertexai import above breaks again.
+langchain-google-genai==2.1.12
+# langchain-openai==0.3.35
+# langchain-anthropic==0.3.21

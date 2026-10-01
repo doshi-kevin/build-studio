@@ -1,0 +1,45 @@
+# Cached image BUILD for production (build + push only — NOT deploy).
+#
+# Uses `docker buildx` with a REGISTRY cache (mode=max). Unlike Kaniko (which
+# snapshots + re-extracts the whole filesystem and gave us zero net speedup on
+# this big node_modules), BuildKit reuses content-addressed layers in place — so
+# an unchanged-deps build skips `npm ci` cheaply. mode=max caches every
+# stage (incl. the deps stage) to the `:buildcache` tag; the next build pulls
+# only what it needs.
+#
+# Deploy is deliberately NOT here — deploy-to-prod.sh runs `gcloud run deploy
+# --image …` as the human's own gcloud account (account-based, no SA grant).
+# Invoked by deploy-to-prod.sh; not run directly.
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: scholera
+  _REPO: cloud-run-source-deploy
+  _COMMIT_SHA: latest
+
+options:
+  # Docker/BuildKit is far more memory-efficient than Kaniko (the old --source
+  # Docker build ran fine on the default 8GB), so the 8-vCPU/8GB tier is plenty
+  # and cheaper than the _32 Kaniko needed. Bump only if a build ever OOMs.
+  machineType: E2_HIGHCPU_8
+
+steps:
+  # Build with buildx + registry layer cache, push commit + latest tags.
+  # ($$IMG is a bash var — `$$` escapes Cloud Build substitution; ${_FOO}/$PROJECT_ID
+  #  are substituted by Cloud Build before bash runs.)
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMG="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"
+        docker buildx create --name cb --driver docker-container --use
+        docker buildx build \
+          --cache-from "type=registry,ref=$$IMG:buildcache" \
+          --cache-to   "type=registry,ref=$$IMG:buildcache,mode=max" \
+          --tag "$$IMG:${_COMMIT_SHA}" \
+          --tag "$$IMG:latest" \
+          --push \
+          .

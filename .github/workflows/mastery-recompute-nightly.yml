@@ -1,0 +1,57 @@
+# Topic-Mastery recompute — nightly COVERAGE backstop.
+#
+# Mastery recompute is event-triggered (graded quiz/assignment/live-quiz, or a
+# topic config/exclude/mapping change enqueues a recompute job that the worker +
+# 5-min extraction-sweep drain). This nightly run enqueues a recompute for every
+# section using Topic Mastery, so anything the event triggers miss — AI-tutor
+# engagement, or any unwired path — is reconciled at least once a day.
+#
+# Zero new paid vendor — GitHub Actions is free for our repo. (To run this on
+# GCP-native infra instead, point a Cloud Scheduler HTTP job at the same URL with
+# the same x-extraction-worker-secret header; the endpoint is caller-agnostic.)
+#
+# Secrets required (FAILS LOUDLY if missing):
+#   MASTERY_RECOMPUTE_SWEEP_URL — public URL, e.g.
+#     https://app.scholera-inc.com/api/skills/recompute-sweep
+#   EXTRACTION_WORKER_SECRET    — shared secret matching the Cloud Run service.
+
+name: mastery-recompute-nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # 02:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/skills/recompute-sweep
+        env:
+          SWEEP_URL: ${{ secrets.MASTERY_RECOMPUTE_SWEEP_URL }}
+          SECRET: ${{ secrets.EXTRACTION_WORKER_SECRET }}
+        run: |
+          if [ -z "$SWEEP_URL" ] || [ -z "$SECRET" ]; then
+            echo "::error::MASTERY_RECOMPUTE_SWEEP_URL or EXTRACTION_WORKER_SECRET not set — the nightly mastery recompute cannot run. Set both repo secrets (see workflow header)."
+            exit 1
+          fi
+          set +e
+          CODE=$(curl -sS -o /tmp/sweep-body -w '%{http_code}' \
+            -X POST "$SWEEP_URL" \
+            --max-time 120 \
+            -H "x-extraction-worker-secret: $SECRET" \
+            -H 'content-type: application/json' \
+            -d '{"source":"gha-nightly"}' || echo "000")
+          echo "HTTP $CODE"
+          cat /tmp/sweep-body || true
+          echo
+          if [[ "$CODE" =~ ^2 ]]; then
+            echo "Recompute sweep accepted."
+            exit 0
+          fi
+          if [ "$CODE" = "401" ]; then
+            echo "::error::Sweep returned 401 — worker secret mismatch"
+            exit 1
+          fi
+          echo "::warning::Sweep returned $CODE — will retry next night"

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Public Supabase keys needed at build time for Next.js client bundle.
+  # These are NEXT_PUBLIC_ vars (designed to be browser-visible), so using
+  # placeholder values for CI build validation is safe and correct.
+  # Real values are injected at deploy time by the hosting platform.
+  NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder
+
+jobs:
+  ci:
+    name: Lint, Type-check & Build
+    runs-on: ubuntu-latest
+    # npm ci + lint + typecheck + build + ~3.6k tests already runs 7-8 min on
+    # main (npm caching is on), so a 10-minute cap left barely two minutes of
+    # headroom and started cancelling runs mid-test-suite as the suite grew —
+    # a timeout kill reports as a red "fail", indistinguishable at a glance from
+    # a real assertion failure. 20 still catches a genuine hang.
+    # Raised 20 -> 30 on 2026-09-15. The previous cap left ~70s of headroom: the test step alone
+    # took 11m45s of an 18m50s run. Since then the suite grew 6,802 -> 7,000 tests AND the step
+    # switched to `test:coverage` so the thresholds actually gate, which pushed the run to the
+    # edge of the cap. A timeout kill reports as a red run and is indistinguishable at a glance
+    # from a real assertion failure, which is exactly the confusion the previous bump was fixing.
+    # 30 still catches a genuine hang.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # Coverage, not a bare test run, so the thresholds in vitest.config.ts actually gate the
+      # merge. Stating a target without running the check is how `attendance.ts` sat at 89% for
+      # months against a documented 100% goal — CLAUDE.md named it, nothing enforced it. Adds
+      # roughly 30s to a run that already takes ~7 minutes.
+      - name: Run tests (with coverage thresholds)
+        run: npm run test:coverage -- --reporter=github-actions

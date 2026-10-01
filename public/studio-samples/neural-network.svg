@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="Neural network diagram">
+  <rect width="320" height="200" fill="#f8fafc"/>
+  <g stroke="#cbd5e1" stroke-width="1">
+    <line x1="70" y1="60" x2="160" y2="50"/><line x1="70" y1="60" x2="160" y2="100"/><line x1="70" y1="60" x2="160" y2="150"/>
+    <line x1="70" y1="140" x2="160" y2="50"/><line x1="70" y1="140" x2="160" y2="100"/><line x1="70" y1="140" x2="160" y2="150"/>
+    <line x1="160" y1="50" x2="250" y2="80"/><line x1="160" y1="50" x2="250" y2="120"/>
+    <line x1="160" y1="100" x2="250" y2="80"/><line x1="160" y1="100" x2="250" y2="120"/>
+    <line x1="160" y1="150" x2="250" y2="80"/><line x1="160" y1="150" x2="250" y2="120"/>
+  </g>
+  <g fill="#2563eb"><circle cx="70" cy="60" r="12"/><circle cx="70" cy="140" r="12"/></g>
+  <g fill="#0ea5e9"><circle cx="160" cy="50" r="12"/><circle cx="160" cy="100" r="12"/><circle cx="160" cy="150" r="12"/></g>
+  <g fill="#16a34a"><circle cx="250" cy="80" r="12"/><circle cx="250" cy="120" r="12"/></g>
+</svg>

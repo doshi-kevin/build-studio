@@ -1,0 +1,135 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+.claude/*
+!.claude/rules/
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/mermaid/
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/ux-reviewer.md
+!.claude/agents/test-reviewer.md
+!.claude/agents/security-reviewer.md
+.mcp.json
+
+CLAUDE.*.md
+AGENTS.*.md
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env.local
+.env.test
+.env.stress
+
+# The memory stress harness. Kept out of the repo on purpose: it needs a local
+# Postgres, it writes and deletes hundreds of rows per run, and it is a local
+# investigation tool rather than something CI or a teammate runs. The other
+# eval/ harnesses stay tracked, because their recorded baselines are the thing
+# the team compares against.
+eval/memory-stress/
+.env*.local
+# Staging deploy credentials (Supabase URL/anon/service_role for scholera-staging).
+# Never commit — read only by infra/app/deploy-to-staging.sh.
+.env.staging*
+
+# Demo-seed production credentials (scripts/demo/seed-demo.sh --prod). Never
+# commit — .env.demo.local already matches .env*.local above, but the prod
+# variant needs its own line since it doesn't end in "local".
+scripts/demo/.env.demo.prod
+
+# E2E / Playwright
+e2e/.auth/
+e2e/fixtures/seed-ids.json
+test-results/
+playwright-report/
+.playwright-mcp/
+supabase/_snapshots/
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+harshil/
+tasks/
+goals/
+SkillSignal-AI-/
+ideas.md
+
+# Migration data (sensitive)
+scripts/ss-dump/
+scripts/ss-id-map.json
+scripts/prod-backup-*/
+
+# Document-extraction lab (local-only experiments + fixtures)
+tmp/
+test-pdf/
+live-classroom-test/
+*.traineddata
+
+# Local research notes (not shared)
+docs/research/
+
+# Enhanced goal drafts (personal working files, not shared)
+goals/
+
+# Local wire-out archive (export + restore notes, not committed)
+/archive/
+
+# Demo/test-run videos — shared on Slack or attached to the PR description, never committed
+*.webm
+
+# Landing films live in Supabase Storage (landing-assets bucket), never in git
+public/landing/*.mp4
+public/landing/*.mov
+
+# Built candidate assignment packets (regenerate with docs/jobs/assignments/build-packets.sh)
+docs/jobs/assignments/dist/
+docs/jobs/assignments/internal/review/
+
+# Job descriptions + take-home assignment packets (local working tree)
+docs/jobs/
+
+# Layer-2 eval (eval/grounding/) — a local Python tool, never CI, never shipped.
+# The venv is ~800MB of ragas + langchain; requirements.txt is what's committed.
+eval/grounding/.venv/
+# Per-run answers (regenerated every run, ~1MB of model output). The committed
+# artifact is baseline.json — the numbers, not the transcript.
+eval/grounding/records.jsonl
+eval/grounding/records.case.jsonl
+# Docs folders kept local only (backup zip on Harshil's Desktop, 2026-08-24)
+docs/archive/
+docs/designs/
+docs/handoffs/
+docs/product/

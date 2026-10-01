@@ -1,0 +1,1834 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-instrument-serif);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  /* Semantic status scale — values defined in :root below */
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-muted: var(--destructive-muted);
+  --color-destructive-muted-foreground: var(--destructive-muted-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-muted: var(--success-muted);
+  --color-success-muted-foreground: var(--success-muted-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-muted: var(--warning-muted);
+  --color-warning-muted-foreground: var(--warning-muted-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-muted: var(--info-muted);
+  --color-info-muted-foreground: var(--info-muted-foreground);
+  --color-ai-muted: var(--ai-muted);
+  --color-ai-muted-foreground: var(--ai-muted-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* ── Motion: easing ──────────────────────────────────────────────────────
+     These live in @theme inline because `--ease-*` is a Tailwind v4 theme
+     namespace: each one below emits an `ease-<name>` utility. Durations do
+     NOT belong here — there is no `--duration-*` namespace, and @theme inline
+     substitutes values instead of emitting variables, so a duration declared
+     here would vanish from the output entirely. They sit on :root instead,
+     next to --radius. Verified against tailwindcss 4.3.3.
+
+     Both curves already existed in this codebase and are promoted here rather
+     than replaced, so nothing that uses them today shifts:
+       out-quint  is animated-list.tsx's entrance curve. It is also, to within
+                  a rounding error, Emil Kowalski's published strong ease-out.
+       drawer     is the Athena dock/pill curve, which is the iOS drawer curve
+                  from Ionic. Use it for anything that slides in from an edge.
+     `standard` is Material 3's emphasized curve, for full-surface transitions. */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* A harder decelerate than out-quint. Already used by hand in three Live
+     Classroom layout transitions, named here so those stop being one-off
+     arbitrary values. Reach for it when a panel resizes and you want the motion
+     to be over almost before it registers. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Single-purpose: the route progress bar's crawl. It is NOT a UI transition
+     curve — it describes a six-second asymptotic creep that never arrives, and
+     nothing else in the app should use it. Named rather than inlined only so
+     that no raw cubic-bezier survives outside this block. */
+  --ease-progress-creep: cubic-bezier(0, 0.6, 0.25, 1);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   "Modern Clean" theme — the application's signature look, app-wide.
+   ----------------------------------------------------------------------------
+   Defined directly on :root so every surface — SSR first paint, auth, admin,
+   error pages, portals — renders the same theme with no client-side class
+   toggling (the old `.app-theme` body-class + Warm Ink fallback caused a black
+   first-paint flash and permanently-black un-themed surfaces).
+
+   Palette: cool neutral greys + a single confident blue.
+   OKLCH throughout, per .claude/rules/ui-design.md.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  --radius: 0.5rem;
+
+  /* ── Motion: duration ────────────────────────────────────────────────────
+     Plain custom properties, for the longhand `transition:` declarations in
+     this file. Tailwind classes keep using their numeric form (duration-200
+     is already the de-facto default at 130 call sites and agrees with these).
+
+     Values triangulated across Material 3, IBM Carbon, Apple, and Emil
+     Kowalski, which agree closely once you line them up:
+       press   100-160ms  instant acknowledgement of a click
+       hover   100-150ms  colour and background only
+       enter   200-225ms  something arriving on screen
+       exit    150-195ms  ALWAYS faster than enter; an exit should get out of
+                          the way, and matching enter/exit reads as sluggish
+       overlay 200-400ms  modals, drawers, sheets
+       page    300-400ms  ceiling, not a target. Material: beyond 400ms
+                          "may feel too slow"
+
+     --duration-reveal-delay is the one that is not a duration but a wait: hold
+     a loading indicator back this long so a fast navigation never flashes it.
+     100ms is the value Next.js uses in its own useLinkStatus reference CSS,
+     and it is roughly the threshold below which a response reads as instant. */
+  --duration-press: 120ms;
+  --duration-hover: 140ms;
+  --duration-enter: 200ms;
+  --duration-exit: 160ms;
+  --duration-overlay: 240ms;
+  --duration-page: 320ms;
+  --duration-reveal-delay: 100ms;
+
+  /* Surfaces — faint cool-grey page, pure-white cards lift via fill not shadow */
+  --background: oklch(0.985 0.002 247);
+  --foreground: oklch(0.21 0.015 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.015 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.015 255);
+
+  /* Primary — modern blue, dark enough for white text at ≥4.5:1 */
+  --primary: oklch(0.56 0.19 260);
+  --primary-foreground: oklch(0.99 0 0);
+
+  /* Neutral fills (zinc-100) + readable secondary ink (≥4.5:1 on white) */
+  --secondary: oklch(0.967 0.003 247);
+  --secondary-foreground: oklch(0.21 0.015 255);
+  --muted: oklch(0.967 0.003 247);
+  --muted-foreground: oklch(0.52 0.013 257);
+
+  /* Accent — faint blue tint for hover/selected backgrounds */
+  --accent: oklch(0.96 0.015 255);
+  --accent-foreground: oklch(0.45 0.16 262);
+
+  /* ── Semantic status scale (scoped). Each: solid / on-solid text /
+     subtle tint bg / readable text. The `-muted-foreground` ink is contrast-
+     MEASURED (WCAG AA, OKLCH→sRGB) on its `-muted` tint: warning 5.76:1,
+     success 6.17:1, info 6.62:1, destructive 5.50:1 — all ≥4.5. ── */
+  --destructive: oklch(0.58 0.21 27); /* red — error / score <60% */
+  --destructive-foreground: oklch(0.99 0 0);
+  --destructive-muted: oklch(0.95 0.04 25);
+  --destructive-muted-foreground: oklch(0.5 0.18 27);
+
+  --success: oklch(0.58 0.13 152); /* green — ok / score ≥80% */
+  --success-foreground: oklch(0.99 0 0);
+  --success-muted: oklch(0.95 0.035 152);
+  --success-muted-foreground: oklch(0.45 0.11 152);
+
+  /* Athena dock width — the SINGLE source of truth, and FLUID.
+     The dock is position:fixed at the right edge and every host reserves matching
+     padding-right, so the canvas is PUSHED rather than covered. Dock width and host
+     reservation must therefore always agree: if they drift, the difference is canvas sitting
+     underneath the panel — invisible and unclickable. Six call sites read this token (the
+     dock, the provider's children wrapper, three studios, and the quiz settings drawer that
+     offsets itself), so this is the only line to change.
+
+     Why clamp() and not a fixed width: a flat 30rem is ~33% of a 1440 laptop but 62% of a
+     768 tablet, which leaves a notebook editor 288px to live in. Scaling with the viewport
+     keeps the dock at roughly a third of the screen on every device, with two hard stops —
+     a 20rem floor so the transcript never drops below a readable line length, and a 30rem
+     ceiling so on a wide monitor it stays a panel rather than becoming a second document.
+
+     Below `md` none of this applies: the dock is a full-screen sheet (w-full), which is the
+     right shape for a phone. */
+  --athena-dock-w: clamp(20rem, 32vw, 30rem);
+
+  /* Frontier wash — a narrow analogous range around --primary (see .frontier-wash).
+     Deliberately NOT a full spectrum: three neighbouring hues read as considered,
+     four distant ones read as a novelty gradient. */
+  --frontier-wash-1: oklch(0.62 0.16 264);
+  --frontier-wash-2: oklch(0.64 0.15 292);
+  --frontier-wash-3: oklch(0.68 0.12 246);
+
+  --warning: oklch(0.72 0.15 70); /* amber — caution / ≥60% */
+  --warning-foreground: oklch(
+    0.27 0.05 70
+  ); /* amber needs dark on-solid text */
+  --warning-muted: oklch(0.95 0.05 78);
+  --warning-muted-foreground: oklch(0.48 0.1 65);
+
+  --info: oklch(0.6 0.18 255); /* blue — informational */
+  --info-foreground: oklch(0.99 0 0);
+  --info-muted: oklch(0.95 0.03 255);
+  --info-muted-foreground: oklch(0.45 0.16 262);
+
+  /* violet — AI-provenance accents (badges marking AI-generated content).
+     Same tint/foreground profile as the info pair so text-on-tint clears
+     WCAG AA (chart-3 on its own /10 tint measured only 4.07:1). */
+  --ai-muted: oklch(0.95 0.03 295);
+  --ai-muted-foreground: oklch(61.662% 0.1468 244.037);
+
+  /* Crisp hairline borders (zinc-200) + blue focus ring */
+  --border: oklch(0.922 0.004 247);
+  --input: oklch(0.922 0.004 247);
+  --ring: oklch(0.56 0.19 260);
+
+  /* Cohesive cool-leaning data viz set: blue / teal / violet / amber / rose */
+  --chart-1: oklch(0.56 0.19 260);
+  --chart-2: oklch(0.7 0.12 195);
+  --chart-3: oklch(0.58 0.18 295);
+  --chart-4: oklch(0.76 0.14 80);
+  --chart-5: oklch(0.63 0.2 18);
+
+  /* Student calendar category colors — overridable per-student via localStorage
+     (see lib/calendar/category-colors). Defaults reference the tokens above so
+     they adapt to light/dark; a student's explicit pick is a fixed color. */
+  --cal-class: var(--chart-2);
+  --cal-assignment: var(--chart-1);
+  --cal-quiz: var(--chart-3);
+  --cal-project: var(--chart-5);
+  --cal-office-hours: var(--success);
+  --cal-personal: var(--chart-4);
+
+  /* Sidebar — white panel, faint-blue active row, blue active label */
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.21 0.015 255);
+  --sidebar-primary: oklch(0.56 0.19 260);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.96 0.015 255);
+  --sidebar-accent-foreground: oklch(0.45 0.16 262);
+  --sidebar-border: oklch(0.922 0.004 247);
+  --sidebar-ring: oklch(0.56 0.19 260);
+
+  /* Modern Clean is sans-only — neutralize the global serif display face so any
+     stray `font-serif` heading renders as Geist Sans. */
+  --font-instrument-serif: var(--font-geist-sans);
+}
+
+/* Emil Kowalski — pressables get subtle press feedback so the UI feels like it
+   heard the click: a 1px press *into* the page. Uses the `translate` property
+   (Tailwind v4 native, composes with transforms) instead of a center-origin
+   `scale`, which on a wide element (a card) pulls both edges inward and reads
+   as a weird left-right squeeze. Translate presses down at any width.
+   The element's own `transition` eases it; motion only when the user allows it. */
+@media (prefers-reduced-motion: no-preference) {
+  /* `:not([aria-roledescription="sortable"])` excludes dnd-kit sortable items —
+     their drag transform must not be nudged by the press offset. */
+  :is(button, [role="button"]):not(:disabled):not([aria-disabled="true"]):not(
+      [aria-roledescription="sortable"]
+    ):active {
+    translate: 0 1px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    /* Geist lives in @theme inline, so --font-sans is never emitted as a
+       custom property and preflight's html font-family falls back to the OS
+       system stack. Apply font-sans here so all app text uses Geist (the
+       next/font variables are set on <body>, so this resolves; children —
+       incl. Radix portals under <body> — inherit it). */
+    @apply bg-background text-foreground font-sans;
+  }
+  button,
+  [role="button"],
+  a,
+  select,
+  [type="button"],
+  [type="submit"],
+  [type="reset"],
+  [type="checkbox"],
+  [type="radio"],
+  [type="range"],
+  label[for],
+  summary,
+  [tabindex]:not([tabindex="-1"]) {
+    cursor: pointer;
+  }
+  [disabled],
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+}
+
+/* Typography plugin writes to @layer components; overrides need @layer utilities to win. */
+@layer utilities {
+  .prose {
+    --tw-prose-body: var(--color-foreground);
+    --tw-prose-headings: var(--color-foreground);
+    --tw-prose-bold: var(--color-foreground);
+    --tw-prose-quotes: var(--color-foreground);
+    --tw-prose-code: var(--color-foreground);
+    /* Default pre/code uses neutral-200 text on neutral-800 bg — illegible on our white cards.
+       Switch to dark text on a faint muted background so code blocks look intentional but readable. */
+    --tw-prose-pre-code: var(--color-foreground);
+    --tw-prose-pre-bg: var(--color-muted);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+.status-dot-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   LIVE CLASSROOM — the stage
+   ----------------------------------------------------------------------------
+   Fullscreen presenting (professor and student) and the wall projector put the
+   UI over the letterbox margin around the slide. That skin used to be
+   hand-written at ~40 call sites as
+   `isFullscreen ? 'bg-white/8 border-white/15 text-white' : 'bg-background …'`,
+   plus a `theme: 'light' | 'dark'` prop on five child components doing the same
+   branch internally. Two problems: it violates the tokens-only rule outright,
+   and because every site was typed by hand the two roles drifted (the student's
+   progress track was white/15, the professor's white/10).
+
+   So the stage skin is a TOKEN SCOPE, exactly the mechanism shadcn's `.dark`
+   uses: redefine the existing semantic variables on a wrapper, and every
+   descendant's ordinary `bg-card` / `border-border` / `text-muted-foreground`
+   resolves to the stage skin with no branch. Professor, student and projector
+   are then identical by construction rather than by three people remembering
+   the same opacity values.
+
+   The stage was pure black until this pass. Black maximised slide contrast, but
+   the controls went down with it: a chip painted `--card` sat 1.66:1 off the
+   letterbox, and the eye is adapted to the slide, not to the margin — so "End
+   class", the one control a professor needs to find in a hurry, was a dark-grey
+   pill on black. The stage is now light. The slide still sits proud of it
+   because the letterbox is grey and a slide is white, and the floating controls
+   are white cards that stand off the grey instead of sinking into it.
+
+   Only the five tokens below move. Everything else — ink, primary, status
+   tints, popovers — inherits `:root` unchanged, which is the point of putting
+   the stage on the app's own light palette: one measured scale, not two.
+
+   Contrast is MEASURED (WCAG AA, OKLCH→sRGB→relative luminance), matching how
+   the `:root` status scale above documents itself — ratios on each line below.
+
+   NOTE: Radix/Sonner portals mount on `document.body`, outside this scope AND
+   outside `document.fullscreenElement` — so tooltips, dropdowns and toasts are
+   invisible while presenting fullscreen. That is a pre-existing bug tracked in
+   issue #653, not something this scope introduces or can fix.
+   ════════════════════════════════════════════════════════════════════════════ */
+.lc-stage {
+  /* Letterbox grey — deliberately NOT the app's near-white `--background`. The
+     slide is usually white, so the margin has to stay the darker surface or the
+     slide loses its edge and every floating chip loses its ground: white card
+     on stage 1.35:1, ink on stage 13.14:1. */
+  --background: oklch(0.90 0.004 255);
+
+  /* Secondary ink, deepened from :root's 0.52. Half the stage's secondary text
+     (the slide counter's "/ 52", the connection chip) sits on the grey margin
+     rather than on a card, where :root's value measured 4.08:1 — under AA.
+     4.85:1 on stage · 6.53:1 on card. */
+  --muted-foreground: oklch(0.48 0.013 257);
+
+  /* Hairlines, deepened from :root's 0.922. The chips float over the slide as
+     often as over the margin, and a white chip on a white slide is delineated
+     by its border alone: 1.75:1 on card, 1.30:1 on the stage. */
+  --border: oklch(0.82 0.005 255);
+  --input: oklch(0.82 0.005 255);
+
+  /* Hover / pressed fill for stage controls. :root's near-white tint (0.96)
+     leaves a 1.06:1 step off a white chip, and hover is the only confirmation
+     these icon-only buttons offer before a professor commits in front of a
+     lecture hall. 1.43:1 off the card, ink on it 12.36:1. */
+  --accent: oklch(0.88 0.03 255);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   THE WALL PROJECTOR — deliberately NOT the light stage, and its own scope
+   ----------------------------------------------------------------------------
+   Why it stays dark: a projector is emissive. The light stage's `--background`
+   has a relative luminance of 0.729, so a wall display would throw roughly 73%
+   of the bulb's full white output across the entire field — a flood in the
+   states that carry no slide at all (waiting for slides, class ended, couldn't
+   load, the spinner), and bright pillars either side of a 4:3 deck. Black is
+   0.0. The light stage exists to rescue the CONTROLS floating over it; the
+   projector has none, its zero-controls spec being deliberate, so it would pay
+   the whole cost of a light field for none of the benefit. Every tool a
+   professor already knows — PowerPoint, Keynote, Slides, Zoom — letterboxes
+   projected output in black.
+
+   Why it is NOT `lc-stage lc-projector` composed: that would make the wall
+   "the light palette minus these five tokens", so any token later added to
+   `.lc-stage` would silently reach the wall carrying a light value. The
+   blackout cover is the sharp edge of that — it paints `--background`, and a
+   single inherited token is the difference between a dark wall and a white one
+   in front of a full lecture hall. Self-contained means the whole wall palette
+   is readable in one block.
+
+   Only the tokens this surface actually paints are defined. Ratios measured the
+   same way as everything above (OKLCH → sRGB → WCAG relative luminance).
+   ════════════════════════════════════════════════════════════════════════════ */
+.lc-projector {
+  color-scheme: dark;
+
+  /* Pure black field. The usual "true black looks unnatural" rule is about page
+     backgrounds; a projected letterbox is the standard exception, and on an
+     emissive device it is the only value that emits nothing at all. */
+  --background: oklch(0 0 0);
+  --foreground: oklch(0.98 0 0); /* 19.82:1 on the wall; a white slide sits 21:1 */
+
+  /* The one raised surface out here: the icon well on the passive message
+     screens (waiting, ended, couldn't load, not found). */
+  --card: oklch(0.32 0.008 255); /* 1.66:1 off the wall · ink on it 11.97:1 */
+
+  /* Secondary ink is LIFTED, not deepened like the desk-distance stage — this
+     is read from ~20m under classroom lighting, where a projector bulb washes
+     out a ramp tuned for 40cm. 13.73:1 on the wall · 8.29:1 on the card. */
+  --muted-foreground: oklch(0.86 0.01 255);
+
+  /* Hairline around the message-screen icon well. 2.95:1 — delineation, not a
+     state signal. */
+  --border: oklch(0.46 0.01 255);
+
+  /* --primary and --success carry through from :root, re-measured for the wall:
+     the "answer on your device" pill is 4.39:1 with its on-solid ink at 4.65:1,
+     and the live dot is 5.20:1. Both clear their bars, so neither needs a
+     wall-specific value. */
+}
+
+/* One live dot, replacing three. The feature had `status-dot-pulse`, a
+   two-span `animate-ping` stack, and a bare `animate-pulse` all meaning "live"
+   — and 11 of the 14 sites had no reduced-motion guard. Size stays on the
+   caller (`h-2 w-2`) so it never fights a Tailwind utility for specificity, and
+   the colour comes from `currentColor` so the on-solid variants are just
+   `text-success-foreground` / `text-destructive-foreground`.
+
+   `status-dot-pulse` above is untouched — it belongs to the shared
+   `ui/status-indicator.tsx` and means something else. */
+.lc-live-dot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.lc-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.75;
+  animation: lc-live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes lc-live-ping {
+  75%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+/* Motion is the enhancement, never the signal — the solid core still reads as
+   "live" with the halo suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .lc-live-dot::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* Waving hand for the "Say hi to Athena" first-visit intro. */
+@keyframes athena-wave {
+  0%,
+  60%,
+  100% {
+    transform: rotate(0deg);
+  }
+  10%,
+  30% {
+    transform: rotate(16deg);
+  }
+  20%,
+  40% {
+    transform: rotate(-9deg);
+  }
+}
+.animate-athena-wave {
+  animation: athena-wave 1.8s ease-in-out infinite;
+  transform-origin: 70% 80%;
+}
+
+/* Athena "thinking" state — a skeleton-style light sweep across the brand mark
+   (the "shimmer sweep" concept). Masked to the logo silhouette: an opaque light-
+   grey base with a near-white streak passing through, exactly like the demo.
+   Tokens (muted-foreground lightened toward card, peak = card) keep it correct
+   on any theme. */
+/* ── Frontier mode: the armed control's ambient wash ──────────────────────────
+   The compass button beside the composer's attach button gets a slow chromatic drift
+   BEHIND the glyph while Frontier is on. The motion is deliberately on the surface, not
+   on the icon: a rotating or pulsing glyph reads as a spinner or an unread badge, both of
+   which are the wrong promise for a mode switch.
+
+   Restraint is the whole design. The spectrum stays in a NARROW ANALOGOUS RANGE around
+   --primary (indigo → violet → periwinkle) rather than a full rainbow — a four-hue
+   blue/violet/pink/teal sweep is the thing that reads as a novelty gradient. Kept to ~30%
+   opacity behind a 10px blur and an 18s rotation, so at 16px it registers as a surface
+   that's faintly alive rather than as decoration.
+
+   Three LITERAL oklch tokens, deliberately not color-mix'd off --primary. A mix would
+   track a palette change automatically, but it also can't hold a hue SPREAD: mixing
+   --primary with anything moves all three stops together, and the drift only reads as
+   light if the stops sit ~25° apart in hue. So these are hand-picked around the current
+   --primary and must be re-picked by hand if the brand hue moves. */
+@keyframes frontier-wash-drift {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.frontier-wash {
+  position: absolute;
+  /* Oversized so the blurred edge never shows a seam inside the button's radius. */
+  inset: -70%;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: 0.3;
+  filter: blur(10px);
+  background: conic-gradient(
+    from 0deg,
+    var(--frontier-wash-1),
+    var(--frontier-wash-2),
+    var(--frontier-wash-3),
+    var(--frontier-wash-2),
+    var(--frontier-wash-1)
+  );
+  animation: frontier-wash-drift 18s linear infinite;
+}
+/* Motion is the enhancement, never the signal: with it off the armed state still reads
+   from the primary border, the primary glyph, and the ring on the input. */
+@media (prefers-reduced-motion: reduce) {
+  .frontier-wash {
+    animation: none;
+  }
+}
+
+@keyframes athena-logo-shimmer {
+  0% {
+    background-position:
+      135% 135%,
+      0 0;
+  }
+  100% {
+    background-position:
+      -35% -35%,
+      0 0;
+  }
+}
+.athena-logo-shimmer {
+  -webkit-mask: url(/logo-mark.png) center / contain no-repeat;
+  mask: url(/logo-mark.png) center / contain no-repeat;
+  /* Two layers: a narrow diagonal glint that sweeps over a solid light-grey base.
+     The base stays visible the whole cycle; only the ~16% glint band moves. */
+  background:
+    linear-gradient(
+        115deg,
+        transparent 42%,
+        color-mix(in oklab, var(--card), var(--muted-foreground) 4%) 50%,
+        transparent 58%
+      )
+      0 0 / 250% 250%,
+    color-mix(in oklab, var(--muted-foreground), var(--card) 78%);
+  animation: athena-logo-shimmer 1.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .athena-logo-shimmer {
+    animation: none;
+    background-position:
+      50% 50%,
+      0 0;
+  }
+}
+
+/* AI-generation skeleton chips — quiz studio rail placeholders while questions
+   stream in. Same technique as .athena-logo-shimmer (a soft light band sweeping
+   over a solid token base), unmasked and tinted with the AI-provenance violet
+   pair so "violet = AI-made" stays consistent app-wide. Tokens only, so it
+   tracks any future theme automatically. */
+.ai-shimmer {
+  position: relative;
+  overflow: hidden; /* clips both layers to the rounded chip */
+  background: var(--muted);
+}
+/* A faint light band crosses the chip, then rests — the production sweep at a
+   fraction of the intensity, so it never feels busy. */
+.ai-shimmer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    100deg,
+    transparent 1%,
+    color-mix(in oklch, var(--ai-muted-foreground) 9%, transparent) 50%,
+    transparent 98%
+  );
+  animation: ai-shimmer-sheen 3.6s ease-in-out infinite;
+}
+/* A thin violet progress hairline slides along the bottom edge — the "AI is
+   working" cue, kept off the chip surface. */
+.ai-shimmer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 40%;
+  border-radius: 9999px; /* rounded-full — on the approved radius scale */
+  opacity: 0.55;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--ai-muted-foreground),
+    transparent
+  );
+  animation: ai-shimmer-line 2.8s ease-in-out infinite;
+}
+@keyframes ai-shimmer-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+  55%,
+  100% {
+    transform: translateX(100%);
+  } /* rest between passes */
+}
+@keyframes ai-shimmer-line {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-shimmer::before {
+    display: none;
+  }
+  .ai-shimmer::after {
+    animation: none;
+  }
+}
+
+/* Tiptap editor styles */
+.tiptap p.is-editor-empty:first-child::before {
+  color: var(--muted-foreground);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.tiptap table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.tiptap th,
+.tiptap td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  min-width: 100px;
+}
+
+.tiptap th {
+  background-color: var(--muted);
+  font-weight: 600;
+}
+
+.tiptap td,
+.tiptap th {
+  position: relative;
+}
+
+.tiptap .selectedCell::after {
+  background: oklch(0.12 0 0 / 8%);
+  content: "";
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.tiptap:focus {
+  outline: none;
+}
+
+.tiptap img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
+.tiptap hr {
+  border-color: var(--border);
+  margin: 1.5rem 0;
+}
+
+/* ── Hide number input spinners (all browsers) ── */
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ── Custom scrollbar ── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(0.7 0 0 / 35%);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0 0 / 50%);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.7 0 0 / 35%) transparent;
+}
+
+/* Inline fill-in-the-blank authoring editor (InlineBlankEditor.tsx). These
+   target contenteditable-created widgets that Tailwind classes can't reach. */
+.fib-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+.fib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 3px;
+  padding: 2px 14px 2px 7px;
+  border: 1.5px solid var(--primary);
+  /* Kill the browser's default dotted outline on the contenteditable=false chip
+     — that's what reads as a "dashed" border. */
+  outline: none;
+  border-radius: 9999px;
+  background: color-mix(in oklch, var(--primary) 8%, transparent);
+  vertical-align: baseline;
+  transition:
+    box-shadow 0.15s,
+    background 0.15s;
+}
+/* Feels like an editable answer field while its input is focused. */
+.fib-chip:focus-within {
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 20%, transparent);
+}
+.fib-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 9999px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.fib-x:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.fib-ans {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  /* Italicize the typed answer so it reads as THE answer, distinct from the
+     surrounding sentence (normal colour + weight). font-synthesis ensures a
+     slant even if the UI font ships without a true italic face. */
+  color: var(--foreground);
+  font-style: italic;
+  font-synthesis: style;
+  /* Grow with the typed answer so it's never clipped (falls back to a usable
+     fixed width on browsers without field-sizing). */
+  field-sizing: content;
+  width: auto;
+  min-width: 6ch;
+  max-width: 32ch;
+}
+.fib-ans::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Notion-style block drag handle in the document studio (GlobalDragHandle from novel).
+   The extension positions the element and toggles `.hide`; we own its look. The grip is a
+   masked SVG so its colour comes from the theme token, not a baked-in hex. */
+.drag-handle {
+  opacity: 1;
+  transition: opacity 0.15s ease-in;
+  border-radius: var(--radius-sm);
+  width: 1.1rem;
+  height: 1.4rem;
+  z-index: 50;
+  cursor: grab;
+  background-color: var(--muted-foreground);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2010%2016'%20fill='black'%3E%3Ccircle%20cx='3'%20cy='3'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='3'%20r='1.3'/%3E%3Ccircle%20cx='3'%20cy='8'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='8'%20r='1.3'/%3E%3Ccircle%20cx='3'%20cy='13'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='13'%20r='1.3'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2010%2016'%20fill='black'%3E%3Ccircle%20cx='3'%20cy='3'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='3'%20r='1.3'/%3E%3Ccircle%20cx='3'%20cy='8'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='8'%20r='1.3'/%3E%3Ccircle%20cx='3'%20cy='13'%20r='1.3'/%3E%3Ccircle%20cx='7'%20cy='13'%20r='1.3'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+.drag-handle:hover {
+  background-color: var(--foreground);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+.drag-handle.hide {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drag-handle {
+    transition: none;
+  }
+}
+
+/* Document studio typography — tighter, calmer spacing than the prose defaults so the page reads
+   like Google Docs / Notion, not a loosely-spaced article. Unlayered, so it wins over the layered
+   Tailwind typography + the StarterKit list utilities (-mt-2/-mb-2) without !important. */
+.studio-doc {
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+.studio-doc :where(p) {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.studio-doc :where(h1) {
+  font-size: 1.7rem;
+  margin-top: 1em;
+  margin-bottom: 0.3em;
+}
+.studio-doc :where(h2) {
+  font-size: 1.35rem;
+  margin-top: 0.9em;
+  margin-bottom: 0.25em;
+}
+.studio-doc :where(h3) {
+  font-size: 1.12rem;
+  margin-top: 0.75em;
+  margin-bottom: 0.2em;
+}
+.studio-doc :where(ul, ol) {
+  margin-top: 0.55em;
+  margin-bottom: 0.55em;
+}
+.studio-doc :where(li) {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+  line-height: 1.6;
+}
+.studio-doc :where(li > p) {
+  margin: 0;
+}
+.studio-doc :where(blockquote) {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.studio-doc :where(pre) {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.studio-doc :where(hr) {
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+/* Nested lists / to-dos get a clear, natural indent step. */
+.studio-doc :where(ul, ol) :where(ul, ol) {
+  margin-top: 0.1em;
+  margin-bottom: 0.1em;
+}
+.studio-doc :where(ul[data-type='taskList']) {
+  padding-left: 0;
+}
+.studio-doc :where(ul[data-type='taskList'] ul[data-type='taskList']) {
+  padding-left: 1.5rem;
+}
+/* Space between a to-do's checkbox and its text. The <li> carries only a `flex` class (no data-type),
+   so target it via the taskList <ul>; align-items keeps the box level with the first line of text. */
+.studio-doc ul[data-type='taskList'] > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+.studio-doc ul[data-type='taskList'] > li > label {
+  margin-top: 0.35em;
+  margin-right: 0;
+  flex-shrink: 0;
+}
+/* Center embedded media blocks (charts / graphs / equations / wolfram) on the page. */
+.studio-doc :where([data-chart], [data-graph], [data-map], [data-wolfram], [data-equation]) {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Code-block syntax highlighting (lowlight / highlight.js) mapped to Scholera tokens — matches the
+   CodeBlock.tsx palette so code reads the same everywhere. */
+.studio-doc :where(pre code) {
+  color: var(--foreground);
+}
+.studio-doc :where(.hljs-comment, .hljs-quote) {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.studio-doc :where(.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag, .hljs-meta-keyword) {
+  color: var(--primary);
+  font-weight: 500;
+}
+.studio-doc :where(.hljs-string, .hljs-title, .hljs-section, .hljs-attribute, .hljs-literal, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-addition, .hljs-attr) {
+  color: var(--success-muted-foreground);
+}
+.studio-doc :where(.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-link, .hljs-meta, .hljs-selector-id, .hljs-selector-class, .hljs-variable) {
+  color: var(--info-muted-foreground);
+}
+.studio-doc :where(.hljs-emphasis) {
+  font-style: italic;
+}
+.studio-doc :where(.hljs-strong) {
+  font-weight: 600;
+}
+
+/* Notion-style toggle block (Details): a clickable summary row with a rotating chevron and indented
+   content. Two DOM shapes must be styled:
+   - Live editor NodeView: <div class="studio-details" data-type="details"> > <button> (chevron) +
+     <div> wrapper holding <summary> and <div data-type="detailsContent" hidden>. `.is-open` marks
+     the open state; content hides via the native `hidden` attribute (handled by the extension).
+   - Export/print HTML (from renderHTML): native <details class="studio-details"><summary>…. */
+.studio-details {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  border-left: 2px solid var(--border);
+  padding-left: 0.5rem;
+  margin: 0.5em 0;
+  border-radius: var(--radius);
+}
+/* Shared chevron used by both the editor <button> and the export <summary>::before. */
+.studio-details > button,
+.studio-details > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 0.85rem;
+  height: 0.85rem;
+  padding: 0;
+  border: 0;
+  background-color: currentColor;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 18l6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 18l6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  transform: rotate(0deg);
+  transition: transform 160ms ease;
+}
+.studio-details.is-open > button,
+.studio-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+/* Editor NodeView: float the button chevron beside the content wrapper. */
+.studio-details > button {
+  margin-top: 0.35rem;
+}
+.studio-details > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.studio-details :where(summary) {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+  padding: 0.15rem 0.25rem;
+  border-radius: var(--radius);
+  transition: background-color 160ms ease;
+}
+.studio-details :where(summary)::-webkit-details-marker {
+  display: none;
+}
+.studio-details :where(summary):hover {
+  background-color: var(--accent);
+}
+.studio-details :where([data-type='detailsContent']) {
+  padding-left: 0.25rem;
+}
+/* Export/print native <details>: the chevron lives on summary::before, so lay summary out as a row. */
+.studio-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-details :where(summary),
+  .studio-details > button,
+  .studio-details > summary::before {
+    transition: none;
+  }
+}
+/* Print: collapsed toggles must still show their content in the PDF export. */
+@media print {
+  .studio-details :where([data-type='detailsContent'])[hidden],
+  .studio-details > :not(summary) {
+    display: block !important;
+  }
+  .studio-details > button,
+  .studio-details > summary::before {
+    transform: rotate(90deg);
+  }
+}
+
+/* Embedded YouTube: a responsive 16:9 frame with a soft border. Iframes don't print (like maps). */
+.studio-youtube {
+  margin: 0.75em auto;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.studio-youtube iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  border: 0;
+}
+@media print {
+  .studio-youtube {
+    display: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Athena Shell (student) — ported from tmp/athena-ui-variants.html
+   (design doc: docs/designs/athena/athena-students.md §2.1). Everything Tailwind
+   can't express lives here: the Cool Dawn tokens, the layered
+   gradient ring (Apple-Intelligence technique: fixed palette, stop
+   POSITIONS re-randomized by JS and eased via registered custom
+   properties), the app-swallow pose, and the shell canvas blooms.
+   ════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Cool Dawn — the ring's 7 gradient stops. Re-hued off the prototype's
+     purple→pink sweep onto the app's own blue: the ring sweeps 266° (indigo
+     shoulder) → 220° (sky apex) so it varies without ever leaving blue.
+     Lightnesses are the prototype's tuned values; chroma is nudged ~+0.015
+     because blue at these lightnesses reads duller than the pink it replaced. */
+  --athena-g1: oklch(0.677 0.095 258);
+  --athena-g2: oklch(0.684 0.105 246);
+  --athena-g3: oklch(0.724 0.1 233);
+  --athena-g4: oklch(0.75 0.095 220);
+  --athena-g5: oklch(0.729 0.09 238);
+  --athena-g6: oklch(0.683 0.1 252);
+  --athena-g7: oklch(0.696 0.095 266);
+
+  /* Canvas-bloom strengths. Boosted from the first port's flat 13/12/9% because
+     the blooms now DRIFT (see athena-bloom-drift) and a bloom you can't see
+     doesn't read as movement. */
+  --athena-bl1: 24%;
+  --athena-bl2: 21%;
+  --athena-bl3: 16%;
+
+  /* The tide ramp — the entry pill's disc. Cool Dawn hues at six lightnesses,
+     the whole ramp deliberately in the light half so the glass reads calm. */
+  --athena-d-hi: oklch(0.885 0.07 220);
+  --athena-d-up: oklch(0.845 0.082 226);
+  --athena-d-mid: oklch(0.8 0.09 232);
+  --athena-d-dn: oklch(0.775 0.095 246);
+  --athena-d-lo: oklch(0.72 0.1 258);
+  --athena-d-deep: oklch(0.665 0.105 268);
+}
+
+/* The ring's animated stop positions — registered so transitions ease them. */
+@property --athena-p1 { syntax: "<percentage>"; initial-value: 6%; inherits: true; }
+@property --athena-p2 { syntax: "<percentage>"; initial-value: 20%; inherits: true; }
+@property --athena-p3 { syntax: "<percentage>"; initial-value: 36%; inherits: true; }
+@property --athena-p4 { syntax: "<percentage>"; initial-value: 50%; inherits: true; }
+@property --athena-p5 { syntax: "<percentage>"; initial-value: 65%; inherits: true; }
+@property --athena-p6 { syntax: "<percentage>"; initial-value: 80%; inherits: true; }
+@property --athena-p7 { syntax: "<percentage>"; initial-value: 94%; inherits: true; }
+/* The ring's own rotation (--athena-a) and the comet arc's orbit (--athena-ca):
+   the stop SHUFFLE changes which colours sit where, the rotation carries the
+   whole sweep around the frame, and the comet is a bright arc that only exists
+   while she's driving. */
+@property --athena-a { syntax: "<angle>"; initial-value: 0deg; inherits: true; }
+@property --athena-ca { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+/* Drifting bloom centres — shared by the host canvas, the fullscreen frame and
+   the composer/pill glass, so every surface's light moves together. */
+@property --athena-bx1 { syntax: "<percentage>"; initial-value: 8%; inherits: true; }
+@property --athena-by1 { syntax: "<percentage>"; initial-value: 92%; inherits: true; }
+@property --athena-bx2 { syntax: "<percentage>"; initial-value: 94%; inherits: true; }
+@property --athena-by2 { syntax: "<percentage>"; initial-value: 10%; inherits: true; }
+@property --athena-bx3 { syntax: "<percentage>"; initial-value: 88%; inherits: true; }
+@property --athena-by3 { syntax: "<percentage>"; initial-value: 88%; inherits: true; }
+/* The tide's two: the waterline's height and the heel of the plane. */
+@property --athena-lvl { syntax: "<percentage>"; initial-value: 50%; inherits: true; }
+@property --athena-tilt { syntax: "<angle>"; initial-value: 178deg; inherits: true; }
+
+/* Athena's display face — the one deliberate exception to the sans-only theme
+   (design doc §3). The font var is referenced HERE rather than composed into an
+   `--athena-display-font` on :root, which is what silently broke it: a custom
+   property resolves its own var() references on the element that DECLARES it, so
+   an :root-level `var(--font-instrument-serif), Georgia, serif` baked in html's
+   value — where the theme's sans-only neutralization (see --font-instrument-serif
+   above) applies — and every descendant inherited the already-resolved sans.
+   Read on the element instead, it inherits the real face from <body>, which is
+   how every other serif heading in the app does it. */
+.athena-serif {
+  font-family: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+  font-weight: 400;
+}
+
+/* ── host + swallowable core ── */
+.athena-host {
+  position: relative;
+  overflow: hidden;
+  transition: background 0.7s;
+  /* Query container for the citation-preview geometry below. Safe: the host is
+     already position: relative, so it was the containing block for its
+     absolutely-positioned children before containment. */
+  container: athena / inline-size;
+}
+/* Athena's canvas — Cool Dawn base with aura blooms of the ring's own stops,
+   so background and ring animation read as one thing. The bloom CENTRES drift
+   (20s, quicker while she works) so the light is alive without any element on
+   screen moving; the composer glass and the entry pill run the same keyframes,
+   which is what makes the box you type in and the box you land in feel like one
+   surface. */
+.athena-host[data-pose="docked"] {
+  background: var(--athena-bloom);
+  animation: athena-bloom-drift 20s ease-in-out infinite alternate;
+}
+.athena-host[data-pose="docked"][data-working="true"] {
+  animation: athena-bloom-drift-work 5.5s ease-in-out infinite alternate;
+}
+/* The bloom stack itself, so the host, the fullscreen frame and the glass
+   surfaces declare it once. */
+.athena-host,
+.athena-fs-frame {
+  --athena-bloom:
+    radial-gradient(
+      58% 46% at var(--athena-bx1) var(--athena-by1),
+      color-mix(in oklab, var(--athena-g3) var(--athena-bl1), transparent) 0%,
+      transparent 68%
+    ),
+    radial-gradient(
+      50% 42% at var(--athena-bx2) var(--athena-by2),
+      color-mix(in oklab, var(--athena-g1) var(--athena-bl2), transparent) 0%,
+      transparent 68%
+    ),
+    radial-gradient(
+      44% 40% at var(--athena-bx3) var(--athena-by3),
+      color-mix(in oklab, var(--athena-g5) var(--athena-bl3), transparent) 0%,
+      transparent 70%
+    ),
+    linear-gradient(oklch(0.96 0.008 255), oklch(0.96 0.008 255));
+}
+@keyframes athena-bloom-drift {
+  0% { --athena-bx1: 8%; --athena-by1: 92%; --athena-bx2: 94%; --athena-by2: 10%; --athena-bx3: 88%; --athena-by3: 88%; }
+  33% { --athena-bx1: 14%; --athena-by1: 82%; --athena-bx2: 86%; --athena-by2: 20%; --athena-bx3: 93%; --athena-by3: 76%; }
+  66% { --athena-bx1: 4%; --athena-by1: 88%; --athena-bx2: 98%; --athena-by2: 4%; --athena-bx3: 80%; --athena-by3: 94%; }
+  100% { --athena-bx1: 11%; --athena-by1: 97%; --athena-bx2: 90%; --athena-by2: 16%; --athena-bx3: 91%; --athena-by3: 82%; }
+}
+@keyframes athena-bloom-drift-work {
+  0% { --athena-bx1: 8%; --athena-by1: 92%; --athena-bx2: 94%; --athena-by2: 10%; --athena-bx3: 88%; --athena-by3: 88%; }
+  50% { --athena-bx1: 20%; --athena-by1: 74%; --athena-bx2: 80%; --athena-by2: 26%; --athena-bx3: 96%; --athena-by3: 68%; }
+  100% { --athena-bx1: 2%; --athena-by1: 98%; --athena-bx2: 99%; --athena-by2: 2%; --athena-bx3: 76%; --athena-by3: 96%; }
+}
+/* Deliberately un-animated: the chat panel and ring appear at once, so tweening
+   the app's inset/radius made docking read as lag rather than polish. The pose
+   snaps. (Bonus: no large-surface motion left for WCAG 2.3.3 to worry about.) */
+.athena-core {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: var(--background);
+  z-index: 10;
+}
+.athena-host[data-pose="docked"] .athena-core {
+  inset: 16px calc(var(--athena-dock-w) + 16px) 16px 16px;
+  border-radius: calc(var(--radius) + 8px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+/* Fullscreen keeps the course rail — Athena taking the whole frame should not
+   cost the student their navigation (the prototype's `.fsrail`, except ours is
+   the real one). So the core stays mounted at full size but goes invisible and
+   inert, hides its page (`> main` is the course layout's page slot), and paints
+   ABOVE the fullscreen canvas so the rail's hover-expansion isn't buried under
+   it. Only the rail is left visible and clickable. */
+.athena-host[data-pose="fullscreen"] .athena-core {
+  background: transparent;
+  pointer-events: none;
+  z-index: 40;
+}
+.athena-host[data-pose="fullscreen"] .athena-core > * {
+  pointer-events: auto;
+}
+.athena-host[data-pose="fullscreen"] .athena-core > main {
+  display: none;
+}
+/* Citation preview open: the core and the ring give up their width instead of
+   being covered — the retired AI-tutor pane pushed content aside, and an
+   overlay over the app you're studying defeats the point. 27rem panel + the
+   --athena-dock-w chat + the 16px/11px frame inset.
+   Gated on the HOST's own width (container query), NOT the viewport: the host
+   is the content column, so the global nav puts the two 240px apart above lg —
+   a 768px media query pushed the core to 0px wide on a 1024px screen. Push only
+   when there's still a usable core beside the panel + dock; below that the panel
+   just covers the chat, and on a phone-width host it goes full-bleed. */
+.athena-preview {
+  width: 100%;
+}
+@container athena (min-width: 40rem) {
+  .athena-preview {
+    width: 27rem;
+  }
+}
+@container athena (min-width: 77rem) {
+  .athena-host[data-preview="true"] .athena-core {
+    right: calc(27rem + var(--athena-dock-w) + 16px);
+  }
+  .athena-host[data-preview="true"] .athena-ring {
+    right: calc(27rem + var(--athena-dock-w) + 11px);
+  }
+  .athena-host[data-preview="true"] .athena-dock {
+    right: 27rem;
+  }
+}
+/* ── the gradient ring ── */
+.athena-ring {
+  --athena-grad: conic-gradient(
+    from calc(-90deg + var(--athena-a)),
+    var(--athena-g1) var(--athena-p1),
+    var(--athena-g2) var(--athena-p2),
+    var(--athena-g3) var(--athena-p3),
+    var(--athena-g4) var(--athena-p4),
+    var(--athena-g5) var(--athena-p5),
+    var(--athena-g6) var(--athena-p6),
+    var(--athena-g7) var(--athena-p7),
+    var(--athena-g1) 100%
+  );
+  position: absolute;
+  inset: 11px calc(var(--athena-dock-w) + 11px) 11px 11px;
+  border-radius: calc(var(--radius) + 13px);
+  pointer-events: none;
+  /* Above the core (z 10) so the bloom lands *inside* the frame, over the app's
+     edges, and clipped to the ring box so nothing bleeds out onto the canvas —
+     the gradient flows inward, not outward. Still pointer-events: none. */
+  z-index: 11;
+  overflow: hidden;
+  display: none;
+  box-shadow: inset 0 0 0 1px oklch(0.2 0.03 255 / 0.1);
+  transition:
+    --athena-p1 1.6s ease-in-out,
+    --athena-p2 1.6s ease-in-out,
+    --athena-p3 1.6s ease-in-out,
+    --athena-p4 1.6s ease-in-out,
+    --athena-p5 1.6s ease-in-out,
+    --athena-p6 1.6s ease-in-out,
+    --athena-p7 1.6s ease-in-out;
+  /* FLOW: the sweep travels around the frame. Distinct from the stop shuffle —
+     the shuffle changes which colour sits where, this carries the whole gradient
+     round. Driving compounds a second, faster spin on top (composition: add). */
+  animation: athena-ring-rot 16s linear infinite;
+}
+.athena-host[data-working="true"] .athena-ring {
+  transition:
+    --athena-p1 0.7s ease-in-out,
+    --athena-p2 0.7s ease-in-out,
+    --athena-p3 0.7s ease-in-out,
+    --athena-p4 0.7s ease-in-out,
+    --athena-p5 0.7s ease-in-out,
+    --athena-p6 0.7s ease-in-out,
+    --athena-p7 0.7s ease-in-out;
+  animation:
+    athena-ring-rot 16s linear infinite,
+    athena-ring-boost 4.5s linear infinite;
+  animation-composition: replace, add;
+}
+@keyframes athena-ring-rot {
+  to { --athena-a: 360deg; }
+}
+@keyframes athena-ring-boost {
+  from { --athena-a: 0deg; }
+  to { --athena-a: 360deg; }
+}
+.athena-host[data-pose="docked"] .athena-ring {
+  display: block;
+}
+/* Layers: sharp line → blurred mid stroke → wide halo → inward edge-bleed →
+   ambient cast. The blurred layers spread both ways but the ring's overflow
+   clip discards the outward half, so all bloom falls inside the frame. */
+.athena-ring::before,
+.athena-ring::after,
+.athena-ring > .athena-ring-halo {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--athena-grad);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  will-change: opacity;
+}
+.athena-ring::before { padding: 2px; }
+.athena-ring::after { padding: 4px; filter: blur(6px); }
+.athena-ring > .athena-ring-halo { padding: 7px; filter: blur(26px); }
+.athena-ring > .athena-ring-inner {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--athena-grad);
+  -webkit-mask: radial-gradient(115% 115% at 50% 50%, transparent 60%, #000 95%);
+  mask: radial-gradient(115% 115% at 50% 50%, transparent 60%, #000 95%);
+  filter: blur(14px);
+  will-change: opacity;
+}
+.athena-ring > .athena-ring-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  will-change: opacity;
+  box-shadow:
+    inset 0 0 24px -4px var(--athena-g4),
+    inset 0 0 40px -6px var(--athena-g5),
+    inset 0 0 60px -10px var(--athena-g3);
+}
+/* idle: quiet presence · working: radiant — opacities only, no spin/pulse */
+.athena-host[data-pose="docked"] .athena-ring::before { opacity: 0.6; }
+.athena-host[data-pose="docked"] .athena-ring::after { opacity: 0.45; }
+.athena-host[data-pose="docked"] .athena-ring > .athena-ring-halo { opacity: 0.32; }
+.athena-host[data-pose="docked"] .athena-ring > .athena-ring-inner { opacity: 0.14; }
+.athena-host[data-pose="docked"] .athena-ring > .athena-ring-glow { opacity: 0.3; }
+.athena-host[data-working="true"] .athena-ring::before { opacity: 1; }
+.athena-host[data-working="true"] .athena-ring::after { opacity: 0.85; }
+.athena-host[data-working="true"] .athena-ring > .athena-ring-halo { opacity: 0.6; }
+.athena-host[data-working="true"] .athena-ring > .athena-ring-inner { opacity: 0.32; }
+.athena-host[data-working="true"] .athena-ring > .athena-ring-glow { opacity: 0.55; }
+
+/* COMET: a bright arc orbiting the frame, and ONLY while she's driving. The ring
+   going radiant says "something is moving"; the comet says "still moving, watch
+   it" — the one legibility cue a 13-second drive had none of. */
+.athena-ring > .athena-ring-comet {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  will-change: opacity;
+  background: conic-gradient(
+    from var(--athena-ca),
+    transparent 0turn,
+    transparent 0.62turn,
+    color-mix(in oklab, var(--athena-g4) 85%, white) 0.8turn,
+    white 0.84turn,
+    color-mix(in oklab, var(--athena-g2) 85%, white) 0.88turn,
+    transparent 0.98turn
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 3px;
+  filter: blur(1.5px);
+  transition: opacity 0.4s;
+}
+.athena-host[data-working="true"] .athena-ring > .athena-ring-comet {
+  opacity: 0.9;
+  animation: athena-comet-rot 2.6s linear infinite;
+}
+@keyframes athena-comet-rot {
+  to { --athena-ca: 360deg; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   The entry pill — Athena while she's closed. Parked exactly where the
+   docked composer will land (right 16px / bottom 16px / radius 16px), so
+   opening her never moves the box you were typing in: it only WIDENS on
+   hover into a mini composer, and the dock unfurls out of that footprint.
+   ════════════════════════════════════════════════════════════════ */
+.athena-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 10rem;
+  padding: 11px 16px;
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  cursor: text;
+  background: oklch(1 0 0 / 0.62);
+  border: 1px solid oklch(1 0 0 / 0.75);
+  backdrop-filter: blur(30px) saturate(1.9);
+  -webkit-backdrop-filter: blur(30px) saturate(1.9);
+  box-shadow:
+    0 18px 50px -12px oklch(0.3 0.06 265 / 0.3),
+    0 4px 14px -4px oklch(0.3 0.06 265 / 0.18),
+    inset 0 1px 0 oklch(1 0 0 / 0.85),
+    inset 0 -1px 0 oklch(1 0 0 / 0.25);
+  transition:
+    width 0.55s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.4s;
+  /* At rest she sits dim — present, not asking for attention. */
+  opacity: 0.55;
+}
+/* Brightens when the pointer comes NEAR (JS sets data-near from pointer
+   distance — a padded hover halo would swallow clicks meant for the app
+   underneath), and of course while you're in it. */
+.athena-pill[data-near="true"],
+.athena-pill:focus-within {
+  opacity: 1;
+}
+/* The drifting bloom, under the content — same keyframes as the host canvas. */
+.athena-pill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 46% at var(--athena-bx1) var(--athena-by1), color-mix(in oklab, var(--athena-g3) 30%, transparent) 0%, transparent 68%),
+    radial-gradient(50% 42% at var(--athena-bx2) var(--athena-by2), color-mix(in oklab, var(--athena-g1) 26%, transparent) 0%, transparent 68%),
+    radial-gradient(44% 40% at var(--athena-bx3) var(--athena-by3), color-mix(in oklab, var(--athena-g7) 20%, transparent) 0%, transparent 70%);
+  animation: athena-bloom-drift 20s ease-in-out infinite alternate;
+}
+/* Hover or focus: the box only WIDENS. No move, no radius change — one property,
+   one curve. The label melts into the input. There is no shortcut chip in here:
+   Enter sends and the tide disc is its own button, so the widened box holds
+   nothing but the tide disc and the line being typed. */
+.athena-pill:hover,
+.athena-pill:focus-within {
+  width: 22rem;
+}
+.athena-pill-label {
+  flex: 1;
+  min-width: 0;
+  max-width: 10rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  transition:
+    max-width 0.55s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.2s,
+    margin-left 0.55s cubic-bezier(0.32, 0.72, 0, 1),
+    color 0.3s;
+}
+.athena-pill[data-near="true"] .athena-pill-label,
+.athena-pill:focus-within .athena-pill-label {
+  color: var(--foreground);
+}
+.athena-pill:hover .athena-pill-label,
+.athena-pill:focus-within .athena-pill-label {
+  max-width: 0;
+  opacity: 0;
+  margin-left: -9px;
+  flex-grow: 0;
+}
+/* The input grows out of the middle of the box. */
+.athena-pill-input {
+  flex: 0 1 0px;
+  min-width: 0;
+  margin-left: -9px;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--foreground);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    flex-grow 0.55s cubic-bezier(0.32, 0.72, 0, 1),
+    margin-left 0.55s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.25s;
+}
+.athena-pill-input::placeholder {
+  color: var(--muted-foreground);
+}
+.athena-pill:hover .athena-pill-input,
+.athena-pill:focus-within .athena-pill-input {
+  flex-grow: 1;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s, 0s, 0.1s;
+}
+
+/* The tide disc — a waterline swells and falls inside the circle and the plane
+   heels a few degrees with it. No rotation, nothing clock-like: she's breathing,
+   not loading. It's also the pill's one explicit button: click it to open
+   Athena with whatever's typed, or with nothing, no Enter required. */
+.athena-tide {
+  --athena-sky: linear-gradient(
+    var(--athena-tilt),
+    var(--athena-d-hi) 0%,
+    var(--athena-d-up) calc(var(--athena-lvl) - 16%),
+    var(--athena-d-mid) calc(var(--athena-lvl) - 2%),
+    var(--athena-d-dn) calc(var(--athena-lvl) + 10%),
+    var(--athena-d-lo) calc(var(--athena-lvl) + 28%),
+    var(--athena-d-deep) 100%
+  );
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  animation:
+    athena-tide 6.4s ease-in-out infinite alternate,
+    athena-heel 10.3s ease-in-out infinite alternate;
+  transition: transform 0.2s ease;
+}
+.athena-tide:hover {
+  transform: scale(1.12);
+}
+.athena-tide:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ring);
+}
+@keyframes athena-tide {
+  from { --athena-lvl: 24%; }
+  to { --athena-lvl: 76%; }
+}
+@keyframes athena-heel {
+  from { --athena-tilt: 162deg; }
+  to { --athena-tilt: 202deg; }
+}
+.athena-tide::before {
+  content: "";
+  position: absolute;
+  inset: -11%;
+  border-radius: 999px;
+  background: var(--athena-sky);
+  animation: athena-tide-glow 3.3s ease-in-out infinite alternate;
+}
+.athena-tide::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--athena-sky);
+  box-shadow: inset 0 -2px 5px -2px oklch(0.6 0.09 268 / 0.14);
+  -webkit-mask: radial-gradient(closest-side, #000 80%, oklch(0 0 0 / 0.6) 92%, transparent 100%);
+  mask: radial-gradient(closest-side, #000 80%, oklch(0 0 0 / 0.6) 92%, transparent 100%);
+}
+@keyframes athena-tide-glow {
+  from { opacity: 0.2; transform: scale(0.97); filter: blur(2.5px); }
+  to { opacity: 0.34; transform: scale(1.04); filter: blur(3.5px); }
+}
+
+/* The dock unfurls out of the pill's footprint: the scaled-down start
+   (0.94 × 0.075 of the dock, pinned to the bottom) is the exact box the
+   student just typed in. */
+.athena-dock-grow {
+  animation: athena-dock-grow 0.55s cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: 50% 100%;
+}
+@keyframes athena-dock-grow {
+  from { opacity: 0.35; transform: scale(0.94, 0.075); }
+  45% { opacity: 1; }
+  to { opacity: 1; transform: scale(1, 1); }
+}
+
+/* Bloom continuity: the pill's drifting bloom lives inside the composer too,
+   dimmed to a third — the box you typed in and the box you land in share the
+   same light. */
+.athena-composer {
+  position: relative;
+  isolation: isolate;
+}
+.athena-composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.35;
+  background:
+    radial-gradient(58% 46% at var(--athena-bx1) var(--athena-by1), color-mix(in oklab, var(--athena-g3) 30%, transparent) 0%, transparent 68%),
+    radial-gradient(50% 42% at var(--athena-bx2) var(--athena-by2), color-mix(in oklab, var(--athena-g1) 26%, transparent) 0%, transparent 68%),
+    radial-gradient(44% 40% at var(--athena-bx3) var(--athena-by3), color-mix(in oklab, var(--athena-g7) 20%, transparent) 0%, transparent 70%);
+  animation: athena-bloom-drift 20s ease-in-out infinite alternate;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Athena mulling — a quiet ring of her own light. When she has something to
+   suggest, the chat box's border comes alive with the Cool Dawn gradient (the
+   same light as her ring): "I'm thinking about something; come closer and
+   you'll see." The composer itself stays clear and clickable. Hovering the box
+   condenses the vapour into the exact prompt a click would send.
+   ════════════════════════════════════════════════════════════════ */
+.athena-vapor {
+  position: absolute;
+  inset: -2px;
+  z-index: 5;
+  border-radius: calc(var(--radius-2xl) + 2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.7s ease;
+}
+.athena-vapor[data-on="true"] {
+  opacity: 1;
+}
+/* Completely still: a static gradient line, no rotation, no pulse. A pulsing
+   border on a text input reads as an error state. */
+.athena-vapor::before,
+.athena-vapor > i {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(
+    from -90deg,
+    var(--athena-g1),
+    var(--athena-g3),
+    var(--athena-g5),
+    var(--athena-g7),
+    var(--athena-g4),
+    var(--athena-g1)
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.athena-vapor > i {
+  padding: 1.5px;
+  opacity: 0.55;
+}
+.athena-vapor::before {
+  padding: 4px;
+  filter: blur(6px);
+  opacity: 0.3;
+}
+/* The ghost prompt — on hover it appears ABOVE the box, shaped like a user
+   message that hasn't been sent. Only a click sends it. */
+.athena-ghost {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 4px;
+  z-index: 6;
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  /* Leaving: bubble, words and hint row fade as ONE unit, fast. */
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+.athena-composer-wrap:hover .athena-vapor[data-on="true"] + .athena-ghost {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+/* Invisible bridge across the gap below the bubble, so the pointer can travel
+   from the box up to the message without losing the hover. */
+.athena-ghost::after {
+  content: "";
+  position: absolute;
+  left: -12px;
+  right: -12px;
+  bottom: -16px;
+  height: 16px;
+}
+/* Words rest at full opacity so they don't vanish ahead of the fading bubble on
+   mouse-out; `both` keeps them hidden through each word's condense delay in. */
+.athena-ghost [data-athena-word] {
+  display: inline-block;
+}
+.athena-composer-wrap:hover .athena-vapor[data-on="true"] + .athena-ghost [data-athena-word] {
+  animation: athena-condense 0.6s ease-out both;
+}
+@keyframes athena-condense {
+  from { opacity: 0; filter: blur(5px); transform: translateY(4px); }
+  to { opacity: 1; filter: blur(0); transform: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Fullscreen — Athena takes the frame; the course rail stays (see the
+   data-pose="fullscreen" core rules above).
+   ════════════════════════════════════════════════════════════════ */
+.athena-fs-frame {
+  background: var(--athena-bloom);
+  animation: athena-bloom-drift 20s ease-in-out infinite alternate;
+}
+
+/* Run cards collapse their body with the 1fr→0fr grid trick so the height
+   animates without a measured pixel value. */
+.athena-run-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.3s ease;
+}
+.athena-run-body[data-closed="true"] {
+  grid-template-rows: 0fr;
+}
+
+/* Motion is the enhancement, never the signal: every state above also reads
+   from colour, opacity or layout. */
+@media (prefers-reduced-motion: reduce) {
+  .athena-host,
+  .athena-host[data-pose="docked"],
+  .athena-ring,
+  .athena-host[data-working="true"] .athena-ring,
+  .athena-host[data-working="true"] .athena-ring > .athena-ring-comet,
+  .athena-pill,
+  .athena-pill::before,
+  .athena-tide,
+  .athena-tide::before,
+  .athena-composer::before,
+  .athena-fs-frame,
+  .athena-dock-grow,
+  .athena-run-body,
+  .athena-ghost [data-athena-word] {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ── chat tints — citation chips ── */
+/* Citation-number ink — shared by the inline chip and the Sources list, so a
+   number is the same object wherever it appears. Colour only; the box itself is
+   CITE_BOX in ChatMessage.tsx. This is the app's default blue (--primary): the
+   old rule mixed the Athena accent with --foreground, collapsing chroma to ~0.06,
+   which read as muddy slate. The 96% is not a hue choice — raw --primary over
+   its own tint measures 4.3:1, under AA for a 12px glyph; a 4% nudge toward
+   --foreground reaches 4.6:1 while staying visually identical to --primary
+   (rgb 37,106,217 vs 39,110,225) at full chroma 0.18. */
+.athena-cite {
+  color: color-mix(in oklab, var(--primary) 96%, var(--foreground));
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Athena's streaming caret.
+
+   Drawn as a ::after on the LAST block of the answer rather than as a sibling
+   element, for two reasons that both showed up as bugs. An inline-block span
+   following a block-level <p> starts on its own line, so the caret sat under
+   the paragraph instead of at the end of the sentence it was supposed to be
+   marking. And as the prose container's :last-child it captured the
+   `[&>*:last-child]:mb-0` rule, so the closing paragraph kept its bottom
+   margin while streaming and dropped it the instant the caret went away —
+   every answer shifted vertically at the exact moment it finished.
+
+   The blink is the one thing that says "still writing" while tokens pause, so
+   under reduced motion it holds solid rather than disappearing: the caret is
+   the signal, the blinking is only the decoration on it.
+   ────────────────────────────────────────────────────────────────────────── */
+@keyframes athena-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+.athena-streaming > *:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background-color: var(--foreground);
+  opacity: 0.7;
+  animation: athena-caret-blink 1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .athena-streaming > *:last-child::after { animation: none; }
+}

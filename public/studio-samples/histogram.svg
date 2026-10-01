@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="Histogram">
+  <rect width="320" height="200" fill="#f8fafc"/>
+  <line x1="40" y1="165" x2="295" y2="165" stroke="#e2e8f0" stroke-width="1"/>
+  <g fill="#7c3aed">
+    <rect x="45" y="135" width="28" height="30"/>
+    <rect x="75" y="105" width="28" height="60"/>
+    <rect x="105" y="70" width="28" height="95"/>
+    <rect x="135" y="50" width="28" height="115"/>
+    <rect x="165" y="65" width="28" height="100"/>
+    <rect x="195" y="95" width="28" height="70"/>
+    <rect x="225" y="120" width="28" height="45"/>
+    <rect x="255" y="145" width="28" height="20"/>
+  </g>
+</svg>

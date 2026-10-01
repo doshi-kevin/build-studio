@@ -1,0 +1,62 @@
+# Background-jobs queue safety net (Athenamite foundation).
+#
+# POSTs to /api/jobs-worker/kick to drain the background_jobs queue. Normally
+# enqueueJob() kicks the worker inline, but if that fetch silently drops the
+# job just sits as `pending` — so a periodic sweep guarantees the worker is
+# poked.
+#
+# THE 5-MINUTE CADENCE NOW RUNS ON GCP CLOUD SCHEDULER, not here. Tying a core
+# prod invariant ("the queue always drains") to GitHub Actions coupled it to
+# GitHub billing — when org Actions billing lapsed, every workflow silently
+# stopped and jobs never drained. The scheduled trigger was moved to Cloud
+# Scheduler (job `jobs-worker-sweep`, us-central1), provisioned by
+# infra/app/setup-sweep-schedulers.sh, which runs next to Cloud Run and does
+# not depend on GitHub. This workflow is kept as a MANUAL fallback only
+# (workflow_dispatch) — e.g. to force a drain from the GitHub UI.
+#
+# Secrets required (the workflow FAILS LOUDLY if either is missing):
+#   BACKGROUND_JOBS_KICK_URL — public kick URL, e.g.
+#     https://app.scholera-inc.com/api/jobs-worker/kick
+#   BACKGROUND_JOBS_SECRET   — shared secret matching the Cloud Run service.
+
+name: jobs-sweep
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  kick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/jobs-worker/kick
+        env:
+          KICK_URL: ${{ secrets.BACKGROUND_JOBS_KICK_URL }}
+          SECRET: ${{ secrets.BACKGROUND_JOBS_SECRET }}
+        run: |
+          if [ -z "$KICK_URL" ] || [ -z "$SECRET" ]; then
+            echo "::error::BACKGROUND_JOBS_KICK_URL or BACKGROUND_JOBS_SECRET not set — the jobs-sweep cron cannot kick the worker, so stale 'running' jobs are never reclaimed. Set both repo secrets (see workflow header)."
+            exit 1
+          fi
+          set +e
+          CODE=$(curl -sS -o /tmp/kick-body -w '%{http_code}' \
+            -X POST "$KICK_URL" \
+            --max-time 60 \
+            -H "x-background-jobs-secret: $SECRET" \
+            -H 'content-type: application/json' \
+            -d '{"source":"gha-sweep"}' || echo "000")
+          echo "HTTP $CODE"
+          cat /tmp/kick-body || true
+          echo
+          if [[ "$CODE" =~ ^2 ]]; then
+            echo "Kick accepted."
+            exit 0
+          fi
+          if [ "$CODE" = "401" ]; then
+            echo "::error::Kick returned 401 — worker secret mismatch"
+            exit 1
+          fi
+          echo "::warning::Kick returned $CODE — will retry next tick"

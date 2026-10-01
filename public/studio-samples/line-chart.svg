@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="Line chart">
+  <rect width="320" height="200" fill="#f8fafc"/>
+  <g stroke="#e2e8f0" stroke-width="1">
+    <line x1="40" y1="30" x2="40" y2="165"/>
+    <line x1="40" y1="165" x2="295" y2="165"/>
+    <line x1="40" y1="125" x2="295" y2="125"/>
+    <line x1="40" y1="85" x2="295" y2="85"/>
+    <line x1="40" y1="45" x2="295" y2="45"/>
+  </g>
+  <polyline points="40,150 90,120 140,135 190,80 240,60 290,40" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#2563eb">
+    <circle cx="40" cy="150" r="3.5"/><circle cx="90" cy="120" r="3.5"/><circle cx="140" cy="135" r="3.5"/>
+    <circle cx="190" cy="80" r="3.5"/><circle cx="240" cy="60" r="3.5"/><circle cx="290" cy="40" r="3.5"/>
+  </g>
+</svg>

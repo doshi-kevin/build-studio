@@ -1,0 +1,16 @@
+-- Harden athena_increment_rate_limit grants (follow-up to 20260624130647_athena_rate_limits).
+--
+-- The original migration did `revoke all on function … from public` intending the
+-- RPC to be callable ONLY by the service-role admin client (the route calls it
+-- after verifying the user + institution). But Supabase ships ALTER DEFAULT
+-- PRIVILEGES that auto-grant EXECUTE on every new public function to `anon` and
+-- `authenticated` — explicit role grants that `revoke … from public` does NOT
+-- remove. Net effect: the RPC stayed directly callable over PostgREST by any
+-- logged-in user, who could pass an arbitrary p_user_id/p_institution_id and
+-- inflate (DoS) another user's rate-limit counter, or pass an inflated p_cap.
+--
+-- Revoke those explicit grants so only service_role (and the table/function
+-- owner) can execute it. Caught by verifying role_routine_grants in prod right
+-- after applying the table migration; this keeps local + future environments in
+-- sync with the prod fix.
+revoke execute on function public.athena_increment_rate_limit(uuid, uuid, text, integer, integer) from anon, authenticated;
