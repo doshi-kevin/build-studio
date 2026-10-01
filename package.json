@@ -60,7 +60,7 @@
     "@tiptap/pm": "2.27.2",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
-    "@tiptap/suggestion": "^2.27.2",
+    "@tiptap/suggestion": "^3.31.3",
     "@types/pg": "^8.20.0",
     "@types/uuid": "^10.0.0",
     "@vladmandic/face-api": "^1.7.15",
