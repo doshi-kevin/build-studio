@@ -23,6 +23,8 @@ interface StudioChatProps {
   onAnswer: (answer: string) => Promise<string | null>
   onPreview: () => void
   onSave: () => Promise<{ ok: boolean; message: string }>
+  /** Approve or skip a decision Athena suggests remembering. Resolves to a message when it failed. */
+  onDecideMemory: (memoryId: string, approve: boolean) => Promise<string | null>
   canSave: boolean
   /** Save would keep the current draft, not the one this build made (it was undone). */
   savesOtherDraft?: boolean
@@ -42,7 +44,7 @@ function Athena({ children }: { children: React.ReactNode }) {
 /** Within this many pixels of the bottom, new messages keep the log scrolled down. */
 const PINNED_PX = 96
 
-export function StudioChat({ turns, conversation, onReloadConversation, current, onSend, onStop, onDecide, onAnswer, onPreview, onSave, canSave, savesOtherDraft = false }: StudioChatProps) {
+export function StudioChat({ turns, conversation, onReloadConversation, current, onSend, onStop, onDecide, onAnswer, onPreview, onSave, onDecideMemory, canSave, savesOtherDraft = false }: StudioChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -160,6 +162,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
                 savesOtherDraft={savesOtherDraft}
                 onPreview={onPreview}
                 onSave={onSave}
+                onDecideMemory={onDecideMemory}
                 onRetry={currentRequest ? () => void send(currentRequest, undefined, false) : undefined}
                 retrying={sending}
               />

@@ -20,6 +20,10 @@ vi.mock('@/app/(dashboard)/professor/courses/[sectionId]/studio/actions', () => 
   loadDraftHistoryAction: vi.fn(),
   saveDraftAsVersionAction: vi.fn(),
   undoDraftAction: vi.fn(),
+  loadMemoriesAction: vi.fn(),
+  saveMemoryAction: vi.fn(),
+  removeMemoryAction: vi.fn(),
+  decideMemoryAction: vi.fn(),
   // The preview frame never loads here: these tests are about the builder around it.
   draftPreviewAction: vi.fn(() => new Promise(() => {})),
 }))
@@ -35,7 +39,7 @@ const { statusAnnouncement } = await import('@/components/studio/builder/types')
 
 const progress = (over: Partial<ProgressRead> = {}): ProgressRead => ({
   runId: 'r1', pluginProjectId: 'p1', status: 'running', phase: 'editing', turns: { used: 1, max: 24 }, checks: 0, repairRounds: 0,
-  approval: null, question: null, ending: null, endingReason: null, result: null, events: [], lastSeq: 0, ...over,
+  approval: null, question: null, ending: null, endingReason: null, result: null, memory: { applied: 0, proposals: [] }, events: [], lastSeq: 0, ...over,
 })
 const result = (over: Partial<NonNullable<ProgressRead['result']>> = {}): NonNullable<ProgressRead['result']> => ({
   summary: null, openQuestions: [], previewHash: null, passed: false, unresolved: [], filesChanged: [], ...over,
@@ -55,6 +59,7 @@ function chat(over: Partial<ChatProps> = {}) {
     onStop: vi.fn(async () => {}),
     onDecide: vi.fn(async () => null),
     onAnswer: vi.fn(async () => null),
+    onDecideMemory: vi.fn(async () => null),
     onPreview: vi.fn(),
     onSave: vi.fn(async () => ({ ok: true, message: '' })),
     canSave: false,
@@ -84,6 +89,7 @@ beforeEach(() => {
   // jsdom has no layout, so no scrollIntoView.
   Element.prototype.scrollIntoView = vi.fn()
   vi.mocked(actions.loadConversationAction).mockResolvedValue({ success: true, turns: [] })
+  vi.mocked(actions.loadMemoriesAction).mockResolvedValue({ success: true, memories: [] })
   serveHistory(false, null)
 })
 

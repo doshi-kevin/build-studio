@@ -187,6 +187,27 @@ export const STUDIO_BUILDER_MAX_RESUMES = 2
 export const STUDIO_BUILDER_SWEEP_LIMIT = 50
 /** How long an approval card or a question waits for the professor. */
 export const STUDIO_BUILDER_WAITING_TTL_MS = 72 * 3600_000
+
+// ── Project memory (docs/reference/studio-agent-harness.md, "Project memory") ──
+// The database enforces the active cap and the field lengths as backstops.
+
+/** Active decisions one project keeps. */
+export const STUDIO_MEMORY_MAX_ACTIVE = 20
+/** Proposals one run may raise. */
+export const STUDIO_MEMORY_PROPOSALS_PER_RUN = 2
+export const STUDIO_MEMORY_STATEMENT_MAX_CHARS = 200
+/** The professor's quoted words that support a proposal. */
+export const STUDIO_MEMORY_EVIDENCE_MIN_CHARS = 4
+export const STUDIO_MEMORY_EVIDENCE_MAX_CHARS = 200
+/** What one turn's prompt carries: up to 6 constraints and 4 preferences, 8 in all and 2 KiB. */
+export const STUDIO_MEMORY_CONSTRAINTS_MAX = 6
+export const STUDIO_MEMORY_PREFERENCES_MAX = 4
+export const STUDIO_MEMORY_CONTEXT_MAX_ITEMS = 8
+export const STUDIO_MEMORY_CONTEXT_MAX_BYTES = 2048
+/** An unanswered proposal is rejected after this long, by the builder's upkeep. */
+export const STUDIO_MEMORY_PROPOSAL_TTL_MS = STUDIO_BUILDER_WAITING_TTL_MS
+export const STUDIO_MEMORY_EXPIRE_LIMIT = 100
+
 /** Progress polling, and the most trajectory rows one poll returns. */
 export const STUDIO_BUILDER_PROGRESS_POLL_MS = 1_500
 export const STUDIO_BUILDER_PROGRESS_EVENTS_MAX = 50

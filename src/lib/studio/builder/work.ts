@@ -96,4 +96,6 @@ export interface BuildResult {
   goal: string | null
   summary: string | null
   open_questions: string[]
+  /** How many saved decisions the last prompt carried. Not a claim that they changed the output. */
+  memory_applied: number
 }

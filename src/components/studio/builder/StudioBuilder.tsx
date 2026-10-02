@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils'
 import {
   answerQuestionAction,
   decideApprovalAction,
+  decideMemoryAction,
   loadConversationAction,
   loadDraftHistoryAction,
   saveDraftAsVersionAction,
@@ -32,6 +33,7 @@ import {
 } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
 import type { DraftHistory as DraftHistoryData } from '@/lib/studio/builder/service'
 import { DraftHistory } from './DraftHistory'
+import { MemoryPanel } from './MemoryPanel'
 import { StudioChat } from './StudioChat'
 import { StudioPreview } from './StudioPreview'
 import { useBuildRun } from './use-build-run'
@@ -85,6 +87,8 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
   const [history, setHistory] = useState<(DraftHistoryData & { key: string }) | null>(null)
   const [historyFailed, setHistoryFailed] = useState(false)
   const [historyReads, setHistoryReads] = useState(0)
+  // Bumped when a suggested decision is answered, so "Studio remembers (N)" re-reads.
+  const [memoryReads, setMemoryReads] = useState(0)
   useEffect(() => {
     if (!pluginProjectId) return
     let live = true
@@ -161,7 +165,7 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
           </Button>
           <DialogTitle className="min-w-0 truncate text-base font-medium">{project.name}</DialogTitle>
           <Badge variant="secondary">{runBadge ?? (headHash ? 'Draft' : 'New')}</Badge>
-          <div className="flex items-center gap-2 lg:ml-auto">
+          <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
             {undoWaits && !undoing && (
               <>
                 <Button
@@ -204,6 +208,7 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
                 </AlertDialogContent>
               </AlertDialog>
             )}
+            <MemoryPanel sectionId={sectionId} pluginProjectId={project.pluginProjectId} reloadKey={memoryReads} />
             <DraftHistory entries={history?.entries ?? []} failed={historyFailed} onRetry={() => setHistoryReads((n) => n + 1)} />
           </div>
           <ToggleGroup
@@ -272,6 +277,15 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
                 const r = await answerQuestionAction({ sectionId, runId, questionId: progress.question.id, answer })
                 refresh()
                 return 'error' in r ? r.error : null
+              }}
+              onDecideMemory={async (memoryId, approve) => {
+                if (!runId) return null
+                const r = await decideMemoryAction({ sectionId, runId, memoryId, approve })
+                refresh()
+                setMemoryReads((n) => n + 1)
+                if ('error' in r) return r.error
+                if (approve) toast.success('Saved for this tool.')
+                return null
               }}
               onPreview={showPreview}
               onSave={async () => {

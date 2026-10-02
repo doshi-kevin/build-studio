@@ -8,14 +8,37 @@ deploy.
 Most of these scripts load `.env.local` and use the Supabase **`service_role`** key. Two
 consequences:
 
-1. **`.env.local` points at the production database.** The local Supabase URL is commented out in
-   it. So the default for a script here is production, not localhost.
+1. **Which database a script touches depends on your own env files, so check before you run it.**
+   The files differ by machine. On one machine `.env.local` holds the production URL; on another
+   `.env` holds production and `.env.local` overrides it with a local URL. A tool that loads only
+   `.env`, or falls back to it, reaches production.
 2. **`service_role` bypasses row-level security completely.** None of the tenant isolation that
    protects the app applies. A missing `where` clause reaches every institution's data.
 
 So: read the script's header comment before running it, check which environment you are actually
 pointed at, and prefer the read-only script over the write one when you are still working out what
 to do. `list-live-rooms.ts` exists so you do not have to guess before running `end-live-rooms.ts`.
+
+### Which database am I about to touch?
+
+Print the host only, never the key:
+
+```bash
+npx dotenv -e .env.local -- node -e "console.log(new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host)"
+```
+
+| Host printed | What it is | Safe for tests and mutating scripts? |
+|---|---|---|
+| `127.0.0.1` or `localhost` | A local stack: the Supabase CLI's (needs Docker), or the native stand-in below | Yes |
+| `<ref>.supabase.co` where `<ref>` is the production ref (`PROD_REF` in `infra/app/deploy-to-staging.sh`) | Production | No. Never |
+| `<ref>.supabase.co`, any other ref | A hosted project, shared | Only with the owner's say-so |
+
+Real Supabase (the CLI's Docker stack) can't run on every machine. Where Docker or WSL is
+unavailable, the Studio database tests run against a native PostgreSQL 17 with real PostgREST 16
+and a small stand-in for sign-in and the Supabase-owned schemas, all on loopback (see
+`docs/reference/studio-supabase-acceptance.md`). Pass its URL and keys to the test process
+explicitly, as `src/__tests__/db/env.ts` does, rather than letting a tool pick up a `.env` file.
+That helper refuses any URL that isn't `127.0.0.1` or `localhost`.
 
 For test data, the `Scholera Dev` institution is the sandbox. Fake data there is expected. Never
 write test data into a real institution.

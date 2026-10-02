@@ -19,6 +19,10 @@ const actions = vi.hoisted(() => ({
   stopBuildAction: vi.fn(),
   decideApprovalAction: vi.fn(),
   answerQuestionAction: vi.fn(),
+  loadMemoriesAction: vi.fn(async () => ({ success: true, memories: [] })),
+  saveMemoryAction: vi.fn(),
+  removeMemoryAction: vi.fn(),
+  decideMemoryAction: vi.fn(),
 }))
 const preview = vi.hoisted(() => ({ props: { snapshotHash: null } as { snapshotHash: string | null; note?: string } }))
 
@@ -33,7 +37,7 @@ vi.mock('@/components/studio/builder/StudioPreview', () => ({
 const built: ProgressRead = {
   runId: 'r2', pluginProjectId: 'p1', status: 'preview_ready', phase: 'finishing', turns: { used: 3, max: 24 }, checks: 1, repairRounds: 0,
   approval: null, question: null, endingReason: null, ending: 'Preview ready. Your saved tool hasn’t changed until you save this draft as a version.',
-  result: { summary: null, openQuestions: [], previewHash: B, passed: true, unresolved: [], filesChanged: [] }, events: [], lastSeq: 0,
+  result: { summary: null, openQuestions: [], previewHash: B, passed: true, unresolved: [], filesChanged: [] }, memory: { applied: 0, proposals: [] }, events: [], lastSeq: 0,
 }
 vi.mock('@/components/studio/builder/use-build-run', () => ({
   useBuildRun: () => ({ progress: built, events: [], unreachable: false, refresh: vi.fn() }),

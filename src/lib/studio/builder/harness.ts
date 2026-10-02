@@ -58,17 +58,23 @@ import {
   STUDIO_BUILDER_SLICE_MIN_BUDGET_MS,
   STUDIO_BUILDER_SWEEP_LIMIT,
   STUDIO_BUILDER_WAITING_TTL_MS,
+  STUDIO_MEMORY_EXPIRE_LIMIT,
+  STUDIO_MEMORY_MAX_ACTIVE,
+  STUDIO_MEMORY_PROPOSAL_TTL_MS,
+  STUDIO_MEMORY_PROPOSALS_PER_RUN,
 } from '../limits'
 import { parseManifest, type StudioManifest, type StudioManifestV2 } from '../manifest'
 import { runDraftChecks, type DraftCheckResult } from './checks'
 import { runWorkerCheck } from './check-worker'
 import { buildTurnContext, skillsWanted, type HistoryEntry, type StepView } from './context-builder'
+import { professorTextsOf, type ProjectMemory } from './memory'
 import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelUsage } from './model'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
 import { snapshotHash, workHash } from './snapshot'
 import {
   checkStep,
   isToolName,
+  MEMORY_REFUSALS,
   orderCalls,
   planGate,
   REFUSAL_HINTS,
@@ -126,12 +132,16 @@ export interface RunStore {
   pause(args: db.PauseArgs): Promise<Outcome>
   handoff(runId: string, token: string, activeMs: number): Promise<Outcome>
   end(args: db.EndArgs): Promise<Outcome>
+  /** Records one memory proposal and its step, inert, behind the claim fence. */
+  proposeMemory(args: db.ProposeMemoryArgs): Promise<Outcome>
 }
 
 export interface HarnessDeps {
   store: RunStore
   model: AgentModel
   loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null>
+  /** The project's active saved decisions. A failure (a throw or null) means none: a build never depends on memory. */
+  loadMemories(run: db.BuilderRunRow): Promise<ProjectMemory[] | null>
   /** Everything outside the run that can stop it before a model call. */
   gate(run: db.BuilderRunRow): Promise<GateRefusal | null>
   runChecks(run: db.BuilderRunRow, data: SliceData, work: Work): Promise<DraftCheckResult>
@@ -183,7 +193,7 @@ function buildResult(
   plan: Plan | null,
   status: TerminalStatus,
   reason: RunErrorCode | null,
-  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean },
+  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number },
 ): BuildResult {
   const files = PLUGIN_PATHS.map((path) => {
     const before = data?.base?.files[path]
@@ -216,6 +226,7 @@ function buildResult(
     goal: plan?.goal ?? null,
     summary: extra.summary ?? null,
     open_questions: extra.openQuestions ?? [],
+    memory_applied: extra.memoryApplied ?? 0,
   }
   // The database refuses a result over 8 KiB; trim the listed items, never the system fields.
   while (utf8Bytes(JSON.stringify(result)) > 7800) {
@@ -274,6 +285,12 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
 
   let data: SliceData | null = null
   let tokenRatio = 1
+  // Saved decisions: read once per slice, never fatal. `memoryAliases` holds only the labels the
+  // latest prompt showed; `memoryApplied` is how many that was; `memoryProposals` counts this run's.
+  let memories: ProjectMemory[] = []
+  let memoryAliases: Record<string, string> = {}
+  let memoryApplied = 0
+  let memoryProposals = 0
   let activeSince = deps.now()
   // Time spent since the last write that carried it, for active-time accounting.
   const takeActive = () => {
@@ -293,7 +310,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   ): Promise<'stop'> => {
     // Fresh counters for the result: this turn's calls have moved them.
     const latest = (await deps.store.loadRun(runId)) ?? run
-    const result = buildResult(latest, data, work, plan, status, code, extra)
+    const result = buildResult(latest, data, work, plan, status, code, { ...extra, memoryApplied })
     const outcome = await deps.store.end({
       runId, token, status, errorCode: code, result: result as unknown as Record<string, unknown>,
       snapshot: extra.snapshot ?? null, activeMs: takeActive(),
@@ -314,6 +331,12 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     if (!run || run.status !== 'running') return 'not running'
     data = await deps.loadSliceData(run)
     if (!data) return await end(run, null, null, 'failed', 'internal')
+    try {
+      memories = (await deps.loadMemories(run)) ?? []
+    } catch (error) {
+      memories = []
+      logger.warn('studio.builder.memory: unreadable, building without saved decisions', { runId, name: error instanceof Error ? error.name : 'unknown' })
+    }
 
     // The first slice persists the working copy, seeded from the draft it started on.
     if (!run.work) {
@@ -384,12 +407,16 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         course: data.course,
         skills: skillsWanted(run.request ?? '', plan, work) ? data.skills : null,
         history: data.history,
+        memories,
         steps,
         resumed,
         counters: { ...run.counters },
         tokenRatio,
       })
       if (ctx.estimatedTokens > STUDIO_BUILDER_CONTEXT_MAX_TOKENS) return await end(run, work, plan, 'failed', 'internal')
+      memoryAliases = Object.fromEntries(ctx.memory.map((m) => [m.alias, m.id]))
+      memoryApplied = ctx.memory.length
+      memoryProposals = steps.filter((s) => s.tool === 'propose_memory' && s.status === 'done').length
 
       // ── One model call ──
       const callStart = deps.now()
@@ -434,7 +461,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         runId,
         token,
         step('model_turn', `turn:${turnNo}:${run.counters.toolCalls}`, turnRefusal ? 'refused' : 'done', turnNo === 1 ? 'turn.understanding' : run.phase === 'repairing' ? 'repair.round' : 'turn.next', {
-          args: { proposed: proposed.map((c) => (isToolName(c.name) ? c.name : 'unknown')), count: proposed.length, instructions: ctx.instructionsVersion, trims: ctx.trims },
+          args: { proposed: proposed.map((c) => (isToolName(c.name) ? c.name : 'unknown')), count: proposed.length, instructions: ctx.instructionsVersion, trims: ctx.trims, memories: ctx.memory.length },
           result: { model: reply.modelId, finish: reply.finishReason.slice(0, 20), timed_out: reply.timedOut, reasoning_tokens: reply.usage.reasoning, cached_tokens: reply.usage.cachedInput, ...(turnRefusal ? { reason: turnRefusal, hint: REFUSAL_HINTS[turnRefusal] } : {}) },
           ms: deps.now() - callStart,
           input_tokens: reply.usage.input,
@@ -517,9 +544,39 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       if (flags.fenceLost) return 'stop'
 
       const started = deps.now()
-      const outcome = await validateAndExecute(call, work, plan, counters, run)
+      let outcome = await validateAndExecute(call, work, plan, counters, run)
       const ms = deps.now() - started
       const tool = isToolName(call.name) ? call.name : null
+
+      // A memory proposal is recorded inert by one fenced database call. The database checks the
+      // professor's words again; a refusal from it goes back to the model like any other.
+      if (outcome.kind === 'memory') {
+        const recorded = await deps.store.proposeMemory({
+          runId, token, step: toolStep(id, tool, 'done', 'memory.proposed', outcome.args, { proposed: true }, ms),
+          topic: outcome.proposal.topic, kind: outcome.proposal.kind, statement: outcome.proposal.statement,
+          evidence: outcome.proposal.evidence, replacesId: outcome.proposal.replacesId,
+          caps: { tool_calls: CAPS.tool_calls, memory_proposals: STUDIO_MEMORY_PROPOSALS_PER_RUN, memory_active: STUDIO_MEMORY_MAX_ACTIVE },
+          activeMs: takeActive(),
+        })
+        if (recorded?.ok) {
+          if (recorded.duplicate !== true) {
+            memoryProposals += 1
+            counters.toolCalls += 1
+            // Ids and the topic only, never the words.
+            deps.audit(run, 'studio.memory.proposed', { runId, topic: outcome.proposal.topic })
+          }
+          counters.consecutiveErrors = 0
+          continue
+        }
+        const reason = recorded === null ? 'memory_unavailable' : String(recorded.reason ?? 'fence')
+        if ((MEMORY_REFUSALS as readonly string[]).includes(reason)) {
+          outcome = { kind: 'refused', code: reason as (typeof MEMORY_REFUSALS)[number], args: outcome.args }
+        } else {
+          if (reason === 'cancelled') await end(run, work, plan, 'cancelled', null)
+          else if (reason.startsWith('limit_')) await end(run, work, plan, 'budget_exhausted', reason as RunErrorCode)
+          return 'stop'
+        }
+      }
 
       if (outcome.kind === 'refused') {
         const r = await persist({
@@ -608,6 +665,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       slug: data!.slug,
       published: data!.published,
       counters: { writes: counters.writes, bytesWritten: counters.bytesWritten, checkRuns: counters.checkRuns, repairRounds: counters.repairRounds, questions: run.questions.length },
+      memory: { aliases: memoryAliases, professorTexts: professorTextsOf(run), proposals: memoryProposals },
       runChecks: (w) => deps.runChecks(run, data!, w),
     }
   }
@@ -747,6 +805,7 @@ export const builderRunStore: RunStore = {
   pause: db.builderRpcs.pause,
   handoff: (runId, token, activeMs) => db.builderRpcs.handoff(runId, token, STUDIO_BUILDER_MAX_SLICES, activeMs),
   end: db.builderRpcs.end,
+  proposeMemory: db.memoryRpcs.propose,
 }
 
 async function loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null> {
@@ -786,6 +845,12 @@ async function loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null> {
   }
 }
 
+/** The project's active decisions, pinned to the run's project and institution. Null when unreadable. */
+async function loadMemories(run: db.BuilderRunRow): Promise<ProjectMemory[] | null> {
+  const rows = await db.listActiveMemories(run.projectId, run.institutionId)
+  return rows ? rows.map((r) => ({ id: r.id, topic: r.topic, kind: r.kind, statement: r.statement, createdAt: r.createdAt, updatedAt: r.updatedAt })) : null
+}
+
 async function gate(run: db.BuilderRunRow): Promise<GateRefusal | null> {
   const [actor, access, ai, spend] = await Promise.all([
     builderActor(run),
@@ -807,6 +872,7 @@ export function realHarnessDeps(model: AgentModel = createGeminiModel()): Harnes
     store: builderRunStore,
     model,
     loadSliceData,
+    loadMemories,
     gate,
     runChecks: async (run, data, work) =>
       runDraftChecks(work, { workerCheck: runWorkerCheck, rosterFullNames: await db.loadOwnerRosterFullNames(run.ownerId), published: data.published }),
@@ -839,6 +905,9 @@ export const builderSlicePipeline: BackgroundPipeline = {
   // Recovers or releases stalled runs whether or not anyone has the page open, so a dead
   // slice can't hold a live slot and an unanswered card expires on time. Counts only.
   upkeep: async () => {
+    // Memory proposals nobody answered are rejected, whether or not the run sweep found anything.
+    const lapsed = await db.memoryRpcs.expire(STUDIO_MEMORY_PROPOSAL_TTL_MS, STUDIO_MEMORY_EXPIRE_LIMIT)
+    if (lapsed) logger.info('studio/builder.upkeep', { memoryProposalsExpired: lapsed })
     const swept = await db.builderRpcs.sweep(STUDIO_BUILDER_HEARTBEAT_STALE_MS, STUDIO_BUILDER_MAX_RESUMES, STUDIO_BUILDER_SWEEP_LIMIT)
     if (!swept) return
     const counts = Object.fromEntries(['requeued', 'failed', 'cancelled', 'expired', 'error'].map((k) => [k, Number(swept[k] ?? 0)]))

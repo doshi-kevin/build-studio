@@ -7,7 +7,8 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
-import { STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
+import type { MemoryKind, MemoryTopic } from './builder/memory'
+import { STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
 
 const PROJECTS = 'studio_plugin_projects'
 const VERSIONS = 'studio_plugin_versions'
@@ -23,6 +24,7 @@ const SKILL_BINDINGS = 'studio_plugin_skill_bindings'
 const SNAPSHOTS = 'studio_plugin_snapshots'
 const RUNS = 'studio_plugin_builder_runs'
 const STEPS = 'studio_plugin_builder_steps'
+const MEMORIES = 'studio_plugin_memories'
 
 /** `duplicate` names which uniqueness rule refused a write, so callers can explain it
  * without knowing constraint names. `full` says which storage allowance refused it: the
@@ -1465,4 +1467,145 @@ export const builderRpcs = {
     builderRpc('studio_builder_sweep', { p_stale_ms: staleMs, p_max_resumes: maxResumes, p_limit: limit }),
   undo: (projectId: string, actorId: string, expectedHead: string, expectedRev: number) =>
     builderRpc('studio_builder_undo', { p_project: projectId, p_actor: actorId, p_expected_head: expectedHead, p_expected_rev: expectedRev }),
+}
+
+// ── Project memory ───────────────────────────────────────────────────
+// The professor's lasting decisions about one tool (supabase/migrations/
+// 20261002210000_studio_project_memory.sql). Server-only like the rest. Reads pin the
+// project and its institution; every write is a security definer function that re-checks
+// the owner, the project and the state under a lock.
+
+export interface MemoryRow {
+  id: string
+  projectId: string
+  institutionId: string
+  ownerId: string
+  topic: MemoryTopic
+  kind: MemoryKind
+  statement: string
+  origin: 'professor_edit' | 'approved_proposal'
+  evidence: string | null
+  sourceRunId: string | null
+  status: 'proposed' | 'active' | 'superseded' | 'removed' | 'rejected'
+  createdAt: string
+  updatedAt: string
+  /** For a proposal: the statement of the active decision it would replace. */
+  replacesStatement: string | null
+}
+
+const MEMORY_FIELDS = 'id, project_id, institution_id, owner_id, topic, kind, statement, origin, evidence, source_run_id, status, created_at, updated_at'
+
+function toMemoryRow(r: Record<string, unknown>): MemoryRow {
+  const replaces = r.replaces as { statement?: string } | { statement?: string }[] | null | undefined
+  const replaced = Array.isArray(replaces) ? replaces[0] : replaces
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    institutionId: r.institution_id as string,
+    ownerId: r.owner_id as string,
+    topic: r.topic as MemoryTopic,
+    kind: r.kind as MemoryKind,
+    statement: r.statement as string,
+    origin: r.origin as MemoryRow['origin'],
+    evidence: (r.evidence as string | null) ?? null,
+    sourceRunId: (r.source_run_id as string | null) ?? null,
+    status: r.status as MemoryRow['status'],
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    replacesStatement: replaced?.statement ?? null,
+  }
+}
+
+/**
+ * A project's active decisions, oldest first, or null when they can't be read. Pinned to the
+ * project and its institution, and joined to an active project: an archived tool loads none.
+ */
+export async function listActiveMemories(projectId: string, institutionId: string): Promise<MemoryRow[] | null> {
+  const { data, error } = await createAdminClient()
+    .from(MEMORIES)
+    .select(`${MEMORY_FIELDS}, project:${PROJECTS}!inner(status)`)
+    .eq('project_id', projectId)
+    .eq('institution_id', institutionId)
+    .eq('status', 'active')
+    .eq('project.status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(STUDIO_MEMORY_MAX_ACTIVE + 5)
+  if (error) {
+    logger.error('studio/db.listActiveMemories', safeError(error), { projectId })
+    return null
+  }
+  return (data ?? []).map((r) => toMemoryRow(r as Record<string, unknown>))
+}
+
+/**
+ * The proposals one run raised that still wait for the professor, owner-pinned. Each carries
+ * the statement it would replace on approval: the decision it named, else the active one on
+ * its topic, since approving supersedes both. The card shows that, so nothing is lost silently.
+ */
+export async function listRunMemoryProposals(runId: string, ownerId: string): Promise<MemoryRow[] | null> {
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from(MEMORIES)
+    .select(`${MEMORY_FIELDS}, replaces_id`)
+    .eq('source_run_id', runId)
+    .eq('owner_id', ownerId)
+    .eq('origin', 'approved_proposal')
+    .eq('status', 'proposed')
+    .order('created_at', { ascending: true })
+    .limit(10)
+  if (error) {
+    logger.error('studio/db.listRunMemoryProposals', safeError(error), { runId })
+    return null
+  }
+  const proposals = (data ?? []) as Record<string, unknown>[]
+  if (proposals.length === 0) return []
+  const { data: active, error: activeError } = await admin
+    .from(MEMORIES)
+    .select('id, topic, statement')
+    .eq('project_id', proposals[0].project_id as string)
+    .eq('status', 'active')
+    .limit(STUDIO_MEMORY_MAX_ACTIVE + 5)
+  if (activeError) {
+    logger.error('studio/db.listRunMemoryProposals.active', safeError(activeError), { runId })
+    return null
+  }
+  return proposals.map((p) => {
+    const target = (active ?? []).find((a) => a.id === p.replaces_id) ?? (active ?? []).find((a) => a.topic === p.topic)
+    return toMemoryRow({ ...p, replaces: target ? { statement: target.statement } : null })
+  })
+}
+
+export interface ProposeMemoryArgs {
+  runId: string
+  token: string
+  step: Record<string, unknown>
+  topic: MemoryTopic
+  kind: MemoryKind
+  statement: string
+  evidence: string
+  replacesId: string | null
+  caps: { tool_calls: number; memory_proposals: number; memory_active: number }
+  activeMs: number
+}
+
+export const memoryRpcs = {
+  propose: (a: ProposeMemoryArgs) =>
+    builderRpc('studio_memory_propose', {
+      p_run: a.runId, p_token: a.token, p_step: a.step, p_topic: a.topic, p_kind: a.kind, p_statement: a.statement,
+      p_evidence: a.evidence, p_replaces: a.replacesId, p_caps: a.caps, p_active_ms: a.activeMs,
+    }),
+  decide: (memoryId: string, runId: string, ownerId: string, approve: boolean, maxActive: number, ttlMs: number) =>
+    builderRpc('studio_memory_decide', { p_memory: memoryId, p_run: runId, p_owner: ownerId, p_approve: approve, p_max_active: maxActive, p_ttl_ms: ttlMs }),
+  save: (projectId: string, ownerId: string, topic: MemoryTopic, kind: MemoryKind, statement: string, replaceId: string | null, maxActive: number) =>
+    builderRpc('studio_memory_save', { p_project: projectId, p_owner: ownerId, p_topic: topic, p_kind: kind, p_statement: statement, p_replace: replaceId, p_max_active: maxActive }),
+  remove: (memoryId: string, ownerId: string, projectId: string) => builderRpc('studio_memory_remove', { p_memory: memoryId, p_owner: ownerId, p_project: projectId }),
+  /** The builder's upkeep: rejects proposals nobody answered. Returns how many. */
+  expire: async (ttlMs: number, limit: number): Promise<number | null> => {
+    const { data, error } = await createAdminClient().rpc('studio_memory_expire', { p_ttl_ms: ttlMs, p_limit: limit })
+    if (error) {
+      logger.error('studio/db.studio_memory_expire', safeError(error))
+      return null
+    }
+    return Number(data ?? 0)
+  },
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
+import { Bookmark, CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import type { ProgressRead } from './types'
@@ -118,6 +118,68 @@ export function ApprovalCard({ approval, onDecide }: {
   )
 }
 
+/** One suggestion to remember. The words are Athena's; the quote under them is the professor's own. */
+function MemoryProposalItem({ proposal, onDecide }: {
+  proposal: ProgressRead['memory']['proposals'][number]
+  onDecide: (memoryId: string, approve: boolean) => Promise<string | null>
+}) {
+  const [pending, start] = useTransition()
+  const [clicked, setClicked] = useState<boolean | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // Once answered, the buttons stay gone until the card refreshes, so a second click can't hit a closed suggestion.
+  const [answered, setAnswered] = useState<'saved' | 'skipped' | null>(null)
+  const decide = (approve: boolean) => {
+    setClicked(approve)
+    start(async () => {
+      const failure = await onDecide(proposal.id, approve)
+      setError(failure)
+      if (!failure) setAnswered(approve ? 'saved' : 'skipped')
+    })
+  }
+  return (
+    <li className="space-y-2">
+      <p className="text-sm font-medium">{proposal.statement}</p>
+      {proposal.evidence && <p className="text-xs text-muted-foreground">You said: “{proposal.evidence}”</p>}
+      {proposal.replaces && <p className="text-xs text-muted-foreground">This replaces: “{proposal.replaces}”</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {answered ? (
+        <p className="text-sm text-muted-foreground">{answered === 'saved' ? 'Saved.' : 'Skipped.'}</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" className="min-h-11" onClick={() => decide(true)} disabled={pending}>
+            {pending && clicked === true ? 'Saving…' : 'Remember'}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" className="min-h-11" onClick={() => decide(false)} disabled={pending}>
+            {pending && clicked === false ? 'Skipping…' : 'Not now'}
+          </Button>
+        </div>
+      )}
+    </li>
+  )
+}
+
+/** Decisions Athena heard in this build and suggests keeping for the tool. Nothing is saved until the professor says yes. */
+export function MemoryProposals({ proposals, onDecide }: {
+  proposals: ProgressRead['memory']['proposals']
+  onDecide: (memoryId: string, approve: boolean) => Promise<string | null>
+}) {
+  if (proposals.length === 0) return null
+  return (
+    <section aria-labelledby="memory-heading" className="space-y-3 rounded-xl bg-muted p-3">
+      <div className="flex items-center gap-2">
+        <Bookmark className="h-4 w-4 text-primary" aria-hidden="true" />
+        <h3 id="memory-heading" className="text-sm font-semibold">Remember for this tool?</h3>
+      </div>
+      <ul className="space-y-4">
+        {proposals.map((p) => (
+          <MemoryProposalItem key={p.id} proposal={p} onDecide={onDecide} />
+        ))}
+      </ul>
+      <p className="text-xs text-muted-foreground">Studio will remember it the next time you build this tool. Anything you ask for later still comes first.</p>
+    </section>
+  )
+}
+
 /** Athena's question. The professor answers in the chat box below, which sends to this question. */
 export function QuestionCard({ question }: { question: NonNullable<ProgressRead['question']> }) {
   return (
@@ -144,7 +206,7 @@ const NEXT_STEP: Partial<Record<ProgressRead['status'], string>> = {
 // progress read has no reason code, so they are matched by their copy.
 
 /** How the build ended: fixed copy first, then Athena's note, then what to do next. */
-export function EndingCard({ progress, canSave, savesOtherDraft = false, onPreview, onSave, onRetry, retrying = false }: {
+export function EndingCard({ progress, canSave, savesOtherDraft = false, onPreview, onSave, onRetry, retrying = false, onDecideMemory }: {
   progress: ProgressRead
   canSave: boolean
   /** This build's draft was undone, so Save keeps the current draft instead. */
@@ -154,6 +216,8 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
   /** Send the same request again. Offered after a stop or a failure. */
   onRetry?: () => void
   retrying?: boolean
+  /** Approve or skip one suggested decision. Resolves to a message when it failed. */
+  onDecideMemory?: (memoryId: string, approve: boolean) => Promise<string | null>
 }) {
   const [saving, start] = useTransition()
   const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null)
@@ -223,6 +287,11 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
       {result?.previewHash && savesOtherDraft && <p className="text-sm text-muted-foreground">Your current draft isn’t the one this build made. Saving keeps your current draft.</p>}
       {/* No live role: the conversation log around this card announces it. */}
       {saved && <p className={saved.ok ? 'text-sm text-muted-foreground' : 'text-sm text-destructive'}>{saved.message}</p>}
+      {/* Below the main next step: Save stays the one filled button. */}
+      {onDecideMemory && <MemoryProposals proposals={progress.memory.proposals} onDecide={onDecideMemory} />}
+      {progress.memory.applied > 0 && (
+        <p className="text-xs text-muted-foreground">Applied {progress.memory.applied} saved decision{progress.memory.applied === 1 ? '' : 's'}.</p>
+      )}
     </section>
   )
 }

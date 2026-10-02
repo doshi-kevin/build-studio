@@ -38,10 +38,14 @@ import {
   STUDIO_BUILDER_MAX_RESUMES,
   STUDIO_BUILDER_PROGRESS_EVENTS_MAX,
   STUDIO_BUILDER_REQUEST_MAX_CHARS,
+  STUDIO_MEMORY_MAX_ACTIVE,
+  STUDIO_MEMORY_PROPOSAL_TTL_MS,
+  STUDIO_MEMORY_STATEMENT_MAX_CHARS,
 } from '../limits'
 import { parseManifest, type StudioManifest } from '../manifest'
 import { draftFrameUrl } from '../runtime/frame-ticket'
 import type { PluginView } from '../runtime/protocol'
+import { KIND_LABEL, MEMORY_KINDS, MEMORY_TOPICS, statementProblem, TOPIC_LABEL, type MemoryKind, type MemoryTopic, type StatementProblem } from './memory'
 import { characterProblem } from './paths'
 
 export const BUILDER_NOT_AVAILABLE = 'This isn’t available.'
@@ -73,6 +77,7 @@ const LABELS: Record<string, string | null> = {
   'check.failed': 'Found issues to fix',
   'check.cached': null,
   'run.finishing': 'Wrapping up',
+  'memory.proposed': null,
   'step.refused': 'That step didn’t work, so I’m trying another way',
   'step.interrupted': null,
   'run.preview_ready': 'Preview ready',
@@ -293,9 +298,25 @@ export interface ProgressRead {
     unresolved: { check: string; file: string | null; count: number }[]
     filesChanged: string[]
   }
+  /** Saved decisions: how many the last prompt carried, and the proposals waiting for a yes or no. */
+  memory: { applied: number; proposals: MemoryProposalView[] }
   events: ProgressEvent[]
   lastSeq: number
 }
+
+export interface MemoryProposalView {
+  id: string
+  topicLabel: string
+  kindLabel: string
+  statement: string
+  /** The professor's own words that the proposal rests on. */
+  evidence: string
+  /** The saved decision this one would replace, if any. */
+  replaces: string | null
+}
+
+/** A run that ended in a way the professor may want to keep a decision from. */
+const MEMORY_CARD_STATUSES: db.BuilderRunStatus[] = ['preview_ready', 'completed', 'blocked']
 
 const ACTIVE: db.BuilderRunStatus[] = ['queued', 'running', 'waiting_for_approval', 'waiting_for_professor']
 
@@ -340,6 +361,8 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
     events.push({ seq: s.seq, label: template.replace('{view}', view), outcome: s.status })
   }
 
+  const proposals = MEMORY_CARD_STATUSES.includes(run.status) ? ((await db.listRunMemoryProposals(run.id, userId)) ?? []) : []
+
   const pending = run.status === 'waiting_for_approval' ? run.pendingApproval : null
   const openQuestion = run.status === 'waiting_for_professor' ? run.questions.at(-1) : undefined
   const result = run.result
@@ -375,6 +398,17 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
           filesChanged: files.filter((f) => f.changed).map((f) => f.path),
         }
       : null,
+    memory: {
+      applied: typeof result?.memory_applied === 'number' ? result.memory_applied : 0,
+      proposals: proposals.map((m) => ({
+        id: m.id,
+        topicLabel: TOPIC_LABEL[m.topic],
+        kindLabel: KIND_LABEL[m.kind],
+        statement: m.statement,
+        evidence: m.evidence ?? '',
+        replaces: m.replacesStatement,
+      })),
+    },
     events,
     lastSeq: steps.at(-1)?.seq ?? afterSeq,
   }
@@ -557,5 +591,132 @@ export async function undoDraft(input: z.input<typeof undoInput>): Promise<Servi
       return { ok: false, error: 'This tool was archived, so its draft can’t change.' }
     default:
       return denied()
+  }
+}
+
+// ── Project memory ───────────────────────────────────────────────────
+// The professor's lasting decisions about one tool. Owner only, like every builder read.
+// The model reaches memory through propose_memory alone; a proposal is inert until the
+// professor approves that exact row here.
+
+export interface MemoryItem {
+  id: string
+  topic: MemoryTopic
+  topicLabel: string
+  kind: MemoryKind
+  kindLabel: string
+  statement: string
+  updatedAt: string
+}
+
+const STATEMENT_COPY: Record<StatementProblem, string> = {
+  length: `Write one sentence of up to ${STUDIO_MEMORY_STATEMENT_MAX_CHARS} characters.`,
+  characters: 'Use plain text only.',
+  format: 'Use plain text on one line, without angle brackets.',
+  meta: 'Describe how the tool should look or behave, not how Athena builds it.',
+}
+
+/** Whether the professor may change memory now: Studio is on and the school is entitled. */
+async function memoryRefused(professor: StudioProfessor): Promise<{ ok: false; error: string } | null> {
+  const access = await studioAccess(professor.institutionId)
+  if (access === 'off') return { ok: false, error: STUDIO_PAUSED }
+  if (access === 'read_only') return { ok: false, error: entitlementRefusalMessage('studio') }
+  return null
+}
+
+const memoryProjectInput = z.strictObject({ sectionId: id, pluginProjectId: id })
+
+/** A tool's active saved decisions, oldest first. Null when the tool isn't the professor's or can't be read. */
+export async function listProjectMemories(input: z.input<typeof memoryProjectInput>): Promise<MemoryItem[] | null> {
+  const parsed = memoryProjectInput.safeParse(input)
+  if (!parsed.success) return null
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return null
+  const project = await ownProject(professor, parsed.data.pluginProjectId)
+  if (!project) return null
+  if ((await studioAccess(professor.institutionId)) === 'off') return null
+  const rows = await db.listActiveMemories(project.id, project.institutionId)
+  if (!rows) return null
+  return rows.map((m) => ({ id: m.id, topic: m.topic, topicLabel: TOPIC_LABEL[m.topic], kind: m.kind, kindLabel: KIND_LABEL[m.kind], statement: m.statement, updatedAt: m.updatedAt }))
+}
+
+const saveMemoryInput = z.strictObject({
+  sectionId: id,
+  pluginProjectId: id,
+  topic: z.enum(MEMORY_TOPICS),
+  kind: z.enum(MEMORY_KINDS),
+  statement: z.string().trim(),
+  /** The decision being edited. The edit is a new row that supersedes it. */
+  replaceId: id.nullable(),
+})
+
+/** Add a decision, or edit one. The professor is the author, so there is no confirmation step. */
+export async function saveProjectMemory(input: z.input<typeof saveMemoryInput>): Promise<ServiceResult<{ id: string }>> {
+  const parsed = saveMemoryInput.safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const project = await ownProject(professor, parsed.data.pluginProjectId)
+  if (!project) return denied()
+  const problem = statementProblem(parsed.data.statement)
+  if (problem) return { ok: false, error: STATEMENT_COPY[problem] }
+  const refused = await memoryRefused(professor)
+  if (refused) return refused
+  const r = await db.memoryRpcs.save(project.id, professor.userId, parsed.data.topic, parsed.data.kind, parsed.data.statement, parsed.data.replaceId, STUDIO_MEMORY_MAX_ACTIVE)
+  switch (r?.outcome) {
+    case 'saved':
+      audit(professor, 'studio.memory.saved', { pluginProjectId: project.id, memoryId: String(r.id), topic: parsed.data.topic })
+      return { ok: true, value: { id: String(r.id) } }
+    case 'unchanged':
+      return { ok: true, value: { id: String(r.id) } }
+    case 'full':
+      return { ok: false, error: `This tool already keeps ${STUDIO_MEMORY_MAX_ACTIVE} decisions. Remove one first.` }
+    case 'archived':
+      return { ok: false, error: 'This tool was archived, so it can’t keep new decisions.' }
+    default:
+      return denied()
+  }
+}
+
+const removeMemoryInput = z.strictObject({ sectionId: id, pluginProjectId: id, memoryId: id })
+
+export async function removeProjectMemory(input: z.input<typeof removeMemoryInput>): Promise<ServiceResult<null>> {
+  const parsed = removeMemoryInput.safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const project = await ownProject(professor, parsed.data.pluginProjectId)
+  if (!project) return denied()
+  const refused = await memoryRefused(professor)
+  if (refused) return refused
+  const r = await db.memoryRpcs.remove(parsed.data.memoryId, professor.userId, project.id)
+  if (r?.outcome !== 'removed') return { ok: false, error: 'That decision is already gone.' }
+  audit(professor, 'studio.memory.removed', { pluginProjectId: project.id, memoryId: parsed.data.memoryId })
+  return { ok: true, value: null }
+}
+
+const decideMemoryInput = z.strictObject({ sectionId: id, runId: id, memoryId: id, approve: z.boolean() })
+
+/** Approve or decline one proposal Athena raised in one of the professor's own builds. */
+export async function decideMemoryProposal(input: z.input<typeof decideMemoryInput>): Promise<ServiceResult<null>> {
+  const parsed = decideMemoryInput.safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const run = await ownRun(professor, parsed.data.runId)
+  if (!run) return denied()
+  const refused = await memoryRefused(professor)
+  if (refused) return refused
+  const r = await db.memoryRpcs.decide(parsed.data.memoryId, run.id, professor.userId, parsed.data.approve, STUDIO_MEMORY_MAX_ACTIVE, STUDIO_MEMORY_PROPOSAL_TTL_MS)
+  switch (r?.outcome) {
+    case 'decided':
+      audit(professor, parsed.data.approve ? 'studio.memory.approved' : 'studio.memory.declined', { runId: run.id, memoryId: parsed.data.memoryId })
+      return { ok: true, value: null }
+    case 'full':
+      return { ok: false, error: `This tool already keeps ${STUDIO_MEMORY_MAX_ACTIVE} decisions. Remove one first.` }
+    case 'archived':
+      return { ok: false, error: 'This tool was archived, so it can’t keep new decisions.' }
+    default:
+      return { ok: false, error: 'This suggestion is no longer waiting for you.' }
   }
 }

@@ -79,6 +79,7 @@ function slice(model: Parameters<typeof runBuilderSlice>[2]['model'], gate: Para
       store: mem.store,
       model,
       loadSliceData: async () => ({ slug: 'tool-abc12345', published: null, publishedVersions: [], base: null, course: null, skills: null, history: [] }),
+      loadMemories: async () => [],
       gate,
       runChecks: async () => {
         throw new Error('no checks in these cases')

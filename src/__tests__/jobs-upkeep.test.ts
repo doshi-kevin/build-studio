@@ -13,9 +13,14 @@ const sweep = vi.fn<(staleMs: number, maxResumes: number, limit: number) => Prom
   events.push('sweep')
   return { none: 0, expired: 1, requeued: 2, failed: 0, cancelled: 0, job_ids: ['job-1', 'job-2'] }
 })
+const expire = vi.fn<(ttlMs: number, limit: number) => Promise<number | null>>(async () => 0)
 vi.mock('@/lib/studio/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/studio/db')>()
-  return { ...actual, builderRpcs: { ...actual.builderRpcs, sweep: (s: number, r: number, l: number) => sweep(s, r, l) } }
+  return {
+    ...actual,
+    builderRpcs: { ...actual.builderRpcs, sweep: (s: number, r: number, l: number) => sweep(s, r, l) },
+    memoryRpcs: { ...actual.memoryRpcs, expire: (t: number, l: number) => expire(t, l) },
+  }
 })
 
 const info = vi.fn()
@@ -43,7 +48,7 @@ const { registerPipeline } = await import('@/lib/jobs/registry')
 const { runPipelineUpkeep } = await import('@/lib/jobs/worker')
 const { POST } = await import('@/app/api/jobs-worker/kick/route')
 const { builderSlicePipeline } = await import('@/lib/studio/builder/harness')
-const { STUDIO_BUILDER_HEARTBEAT_STALE_MS, STUDIO_BUILDER_MAX_RESUMES, STUDIO_BUILDER_SWEEP_LIMIT } = await import('@/lib/studio/limits')
+const { STUDIO_BUILDER_HEARTBEAT_STALE_MS, STUDIO_BUILDER_MAX_RESUMES, STUDIO_BUILDER_SWEEP_LIMIT, STUDIO_MEMORY_EXPIRE_LIMIT, STUDIO_MEMORY_PROPOSAL_TTL_MS } = await import('@/lib/studio/limits')
 
 const noRun = async () => ({ result: null, summary: '' })
 registerPipeline({
@@ -92,5 +97,18 @@ describe('the builder pipeline’s upkeep', () => {
     sweep.mockResolvedValueOnce(null)
     await builderSlicePipeline.upkeep!({ adminDb: {} as never })
     expect(info).not.toHaveBeenCalled()
+  })
+
+  it('rejects unanswered memory proposals with the waiting window, logs only the count, and a failed expiry does not stop the sweep', async () => {
+    expire.mockClear()
+    sweep.mockClear()
+    info.mockClear()
+    expire.mockResolvedValueOnce(3)
+    await builderSlicePipeline.upkeep!({ adminDb: {} as never })
+    expect(expire).toHaveBeenCalledWith(STUDIO_MEMORY_PROPOSAL_TTL_MS, STUDIO_MEMORY_EXPIRE_LIMIT)
+    expect(info).toHaveBeenCalledWith('studio/builder.upkeep', { memoryProposalsExpired: 3 })
+    expire.mockResolvedValueOnce(null)
+    await builderSlicePipeline.upkeep!({ adminDb: {} as never })
+    expect(sweep).toHaveBeenCalledTimes(2)
   })
 })

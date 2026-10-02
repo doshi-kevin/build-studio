@@ -76,6 +76,7 @@ function harness(script: ScriptedTurn[], setup: Setup = {}) {
       skills: setup.skills ?? ['Cell structure'],
       history: [],
     }),
+    loadMemories: async () => [],
     gate: async () => setup.gate?.() ?? null,
     runChecks: async (_run, data, work) =>
       runDraftChecks(work, { workerCheck: inProcessWorkerCheck, rosterFullNames: setup.roster === undefined ? ['Maria Lopez'] : setup.roster, published: data.published }),

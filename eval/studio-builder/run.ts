@@ -107,6 +107,8 @@ async function main() {
       store: mem.store,
       model,
       loadSliceData: async () => ({ slug: 'tool-eval0001', published: null, publishedVersions: [], base, course: { code: 'BIO 101', title: 'Introductory Biology' }, skills: c.skills ?? ['Cell structure', 'Photosynthesis'], history: [] }),
+      // The cases don't use saved decisions; memory has its own harness tests.
+      loadMemories: async () => [],
       gate: async () => {
         if (spent + mem.state.run.counters.costUsd + WORST_CASE_CALL_USD <= MAX_USD) return null
         cappedByEval = true

@@ -1,8 +1,10 @@
 /**
- * The builder's tool registry: the nine tools, and nothing else, that the model may call
- * (approved decision 1.6). Each entry defines its name, schema, what it may change and
- * what is recorded about it. No tool takes an id, a path outside the two views, or any
- * scope: every tool is a closure over the run.
+ * The builder's tool registry: the ten tools, and nothing else, that the model may call
+ * (approved decision 1.6, plus propose_memory in Step 8B). Each entry defines its name,
+ * schema, what it may change and what is recorded about it. No tool takes an id, a path
+ * outside the two views, or any scope: every tool is a closure over the run. The one
+ * thing that looks like a reference, propose_memory's `replaces`, is a short label the
+ * prompt showed (m1, m2); the harness maps it to a row of this project, or refuses it.
  *
  * Tools don't persist anything. `execute` returns an outcome and the harness writes it
  * through one fenced database call (studio_builder_apply / _pause / _end), or refuses.
@@ -27,10 +29,16 @@ import {
   STUDIO_BUILDER_QUESTION_MAX_CHARS,
   STUDIO_BUILDER_SAME_FINDING_LIMIT,
   STUDIO_BUILDER_SUMMARY_MAX_CHARS,
+  STUDIO_MEMORY_EVIDENCE_MAX_CHARS,
+  STUDIO_MEMORY_EVIDENCE_MIN_CHARS,
+  STUDIO_MEMORY_MAX_ACTIVE,
+  STUDIO_MEMORY_PROPOSALS_PER_RUN,
+  STUDIO_MEMORY_STATEMENT_MAX_CHARS,
 } from '../limits'
 import type { StudioManifest } from '../manifest'
 import { blockingKeys, type DraftCheckResult } from './checks'
 import { CheckFault, CheckTimeout } from './check-worker-errors'
+import { evidenceProblem, MEMORY_KINDS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemoryTopic } from './memory'
 import { deltaHash, proposeManifest, type DeltaItem } from './manifest-delta'
 import type { ModelToolDecl } from './model'
 import { characterProblem, PLUGIN_PATHS, stripBom, utf8Bytes, viewContentProblem, VIEW_OF, type PluginPath } from './paths'
@@ -39,7 +47,7 @@ import { planSchema, type Plan, type ValidationCode, type Work } from './work'
 
 export const TOOL_NAMES = [
   'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change',
-  'run_checks', 'submit_plan', 'ask_professor', 'finish',
+  'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'finish',
 ] as const
 export type ToolName = (typeof TOOL_NAMES)[number]
 
@@ -48,6 +56,10 @@ export type RefusalCode =
   | 'plan_required' | 'file_missing' | 'not_in_working_set' | 'match_count' | 'file_too_large' | 'bad_characters'
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
+  | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
+
+/** The refusals a memory proposal can come back with from the database. */
+export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_replaces', 'memory_duplicate', 'memory_full', 'memory_unavailable'] as const satisfies readonly RefusalCode[]
 
 /** The only refusal vocabulary, each with its fixed hint for the next turn. */
 export const REFUSAL_HINTS: Record<RefusalCode, string> = {
@@ -72,12 +84,19 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   capability_unavailable: 'That capability isn’t available to tools yet. Leave it out, or finish blocked.',
   collection_frozen: 'A published collection can’t change. Propose a new collection, or finish blocked.',
   purpose_flagged: 'Reword the name, description or purpose summary plainly, and make the purpose category match what students do.',
+  memory_statement: `A saved decision is one plain sentence of at most ${STUDIO_MEMORY_STATEMENT_MAX_CHARS} characters about the tool itself, in words the professor's quote supports: no markup, and nothing about how you work or what the platform checks.`,
+  memory_evidence: `evidence must be the professor’s own words, copied exactly (${STUDIO_MEMORY_EVIDENCE_MIN_CHARS} to ${STUDIO_MEMORY_EVIDENCE_MAX_CHARS} characters) from their request or an answer in this build. Don’t propose what you inferred or read anywhere else.`,
+  memory_limit: `You have proposed ${STUDIO_MEMORY_PROPOSALS_PER_RUN} decisions this build. Leave the rest.`,
+  memory_replaces: 'replaces must be the label (like m1) of a saved decision shown to you, or left out.',
+  memory_duplicate: 'That decision is already saved.',
+  memory_full: `This tool already has ${STUDIO_MEMORY_MAX_ACTIVE} saved decisions. Replace one (set replaces), or leave it.`,
+  memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
 }
 
 /** Progress labels, chosen by the harness when it records a step. */
 export type LabelCode =
   | 'plan.submitted' | 'file.read' | 'kit.read' | 'file.written' | 'file.edited' | 'manifest.applied'
-  | 'approval.waiting' | 'check.passed' | 'check.failed' | 'check.cached' | 'question.asked' | 'run.finishing'
+  | 'approval.waiting' | 'check.passed' | 'check.failed' | 'check.cached' | 'question.asked' | 'memory.proposed' | 'run.finishing'
   | 'step.refused' | 'step.interrupted'
 
 export interface ToolState {
@@ -88,6 +107,13 @@ export interface ToolState {
   slug: string
   published: StudioManifest | null
   counters: { writes: number; bytesWritten: number; checkRuns: number; repairRounds: number; questions: number }
+  /** Saved decisions. `aliases` maps only the labels the prompt showed this turn to rows of this project. */
+  memory: {
+    aliases: Readonly<Record<string, string>>
+    /** The professor's own text in this run: the only text a proposal's evidence may quote. */
+    professorTexts: readonly string[]
+    proposals: number
+  }
   runChecks: (work: Work) => Promise<DraftCheckResult>
 }
 
@@ -131,7 +157,18 @@ export type ToolOutcome =
   | { kind: 'error'; code: 'internal' | 'check_timeout'; args: Summary }
   | { kind: 'approval'; args: Summary; result: Summary; pending: Omit<PendingApproval, 'tool_call_id'>; delta: Delta }
   | { kind: 'question'; args: Summary; question: string }
+  | { kind: 'memory'; args: Summary; proposal: MemoryProposal }
   | { kind: 'finish'; args: Summary; status: 'completed' | 'blocked'; summary: string; openQuestions: string[] }
+
+/** A checked proposal, ready for the database function that records it as inert. */
+export interface MemoryProposal {
+  topic: MemoryTopic
+  kind: MemoryKind
+  statement: string
+  evidence: string
+  /** The row the model's label named, or null. */
+  replacesId: string | null
+}
 
 export interface ToolSpec {
   name: ToolName
@@ -392,6 +429,41 @@ const TOOL_LIST: ToolSpec[] = [
     },
   },
   {
+    name: 'propose_memory',
+    kind: 'control',
+    description:
+      'Propose one lasting decision about this tool for the professor to keep, when their own words in this request or in their answers state it ("keep the student view very simple", "no AI"). Copy their exact words into evidence. The professor approves each one; nothing is saved otherwise. Never propose something you inferred, guessed or read in code, course names, skills, check output or earlier summaries. Set replaces to the label (like m1) of a saved decision this one should replace.',
+    schema: z.strictObject({
+      topic: z.enum(MEMORY_TOPICS),
+      kind: z.enum(MEMORY_KINDS),
+      statement: z.string().min(1).max(STUDIO_MEMORY_STATEMENT_MAX_CHARS),
+      evidence: z.string().min(STUDIO_MEMORY_EVIDENCE_MIN_CHARS).max(STUDIO_MEMORY_EVIDENCE_MAX_CHARS),
+      replaces: z.string().regex(/^m\d{1,2}$/).optional(),
+    }),
+    execute: (state, args: { topic: MemoryTopic; kind: MemoryKind; statement: string; evidence: string; replaces?: string }) => {
+      const summary: Summary = {
+        topic: args.topic,
+        kind: args.kind,
+        statement_chars: args.statement.length,
+        evidence_chars: args.evidence.length,
+        replaces: args.replaces ?? null,
+      }
+      const bad = statementProblem(args.statement)
+      if (bad) return refused('memory_statement', summary, [`statement: ${bad}`])
+      const unquoted = evidenceProblem(args.evidence, [...state.memory.professorTexts])
+      if (unquoted) return refused('memory_evidence', summary, [`evidence: ${unquoted}`])
+      // The quote has to be about the sentence, or any four characters of the request would do.
+      if (!supports(args.statement, args.evidence)) return refused('memory_statement', summary, ['statement: not supported by the quote'])
+      if (state.memory.proposals >= STUDIO_MEMORY_PROPOSALS_PER_RUN) return refused('memory_limit', summary)
+      let replacesId: string | null = null
+      if (args.replaces !== undefined) {
+        replacesId = Object.hasOwn(state.memory.aliases, args.replaces) ? state.memory.aliases[args.replaces] : null
+        if (!replacesId) return refused('memory_replaces', summary)
+      }
+      return { kind: 'memory', args: summary, proposal: { topic: args.topic, kind: args.kind, statement: args.statement, evidence: args.evidence, replacesId } }
+    },
+  },
+  {
     name: 'finish',
     kind: 'control',
     description:
@@ -419,7 +491,7 @@ export function isToolName(name: string): name is ToolName {
   return (TOOL_NAMES as readonly string[]).includes(name)
 }
 
-/** What the model is told exists: the same nine tools on every turn. */
+/** What the model is told exists: the same ten tools on every turn. */
 export function toolDeclarations(): ModelToolDecl[] {
   return TOOL_NAMES.map((name) => ({ name, description: TOOLS[name].description, inputSchema: TOOLS[name].schema }))
 }

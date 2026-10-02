@@ -17,7 +17,7 @@ export function fence(value: string, max: number): string {
 }
 
 /** Where a fenced block's text came from. Every one of them is data, never instruction. */
-export type FenceProvenance = 'model-authored' | 'plugin-code' | 'check-output' | 'course-data' | 'earlier-request' | 'professor-answer'
+export type FenceProvenance = 'model-authored' | 'plugin-code' | 'check-output' | 'course-data' | 'earlier-request' | 'professor-answer' | 'project-memory'
 
 /**
  * Fence a multi-line untrusted block, such as plugin source or check output, before it

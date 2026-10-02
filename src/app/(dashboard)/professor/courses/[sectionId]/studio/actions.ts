@@ -19,16 +19,22 @@ import { requireProfessor } from '@/lib/studio/context'
 import {
   answerQuestion,
   decideApproval,
+  decideMemoryProposal,
   issueDraftPreview,
   listDraftHistory,
+  listProjectMemories,
   loadConversation,
+  removeProjectMemory,
   saveDraftAsVersion,
+  saveProjectMemory,
   startBuild,
   stopBuild,
   undoDraft,
   type ConversationTurn,
   type DraftHistory,
+  type MemoryItem,
 } from '@/lib/studio/builder/service'
+import type { MemoryKind, MemoryTopic } from '@/lib/studio/builder/memory'
 import type { StudioManifest } from '@/lib/studio/manifest'
 
 const NOT_AVAILABLE = 'This isn’t available.'
@@ -129,6 +135,44 @@ export async function loadDraftHistoryAction(input: { sectionId: string; pluginP
   if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
   const history = await listDraftHistory(input)
   return history ? { success: true, ...history } : { error: NOT_AVAILABLE }
+}
+
+export async function loadMemoriesAction(input: { sectionId: string; pluginProjectId: string }): Promise<{ success: true; memories: MemoryItem[] } | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const memories = await listProjectMemories(input)
+  return memories ? { success: true, memories } : { error: NOT_AVAILABLE }
+}
+
+/** The service audits the save (ids and topic, never the words). */
+export async function saveMemoryAction(input: {
+  sectionId: string
+  pluginProjectId: string
+  topic: MemoryTopic
+  kind: MemoryKind
+  statement: string
+  replaceId: string | null
+}): Promise<{ success: true } | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await saveProjectMemory(input)
+  if (!r.ok) return { error: r.error }
+  refresh(input.sectionId)
+  return { success: true }
+}
+
+export async function removeMemoryAction(input: { sectionId: string; pluginProjectId: string; memoryId: string }): Promise<{ success: true } | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await removeProjectMemory(input)
+  if (!r.ok) return { error: r.error }
+  refresh(input.sectionId)
+  return { success: true }
+}
+
+export async function decideMemoryAction(input: { sectionId: string; runId: string; memoryId: string; approve: boolean }): Promise<{ success: true } | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await decideMemoryProposal(input)
+  if (!r.ok) return { error: r.error }
+  refresh(input.sectionId)
+  return { success: true }
 }
 
 /** The service audits the undo (project and both short hashes, no content). */

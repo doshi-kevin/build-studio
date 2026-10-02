@@ -26,7 +26,7 @@
 
 **Repository rules that apply throughout:**
 - Work on `feature/studio`. Never commit or push unless the user asks. Where a task says **Checkpoint**, stop, run the checks, and offer a commit.
-- Migrations are applied to the LOCAL Supabase only (running in WSL `Ubuntu-Scholera`). Never run anything against the production project `ywdqaoahfmmzcsczxvxn`.
+- Migrations are applied to a LOCAL database only. When this plan was written that was the Supabase CLI stack in WSL (`Ubuntu-Scholera`); on a machine without Docker or a running WSL distribution it is a native PostgreSQL with PostgREST on loopback (see `scripts/README.md`, "Which database am I about to touch?"). Never run anything against the production project `ywdqaoahfmmzcsczxvxn`.
 - No `any` casts to silence errors, no `eslint-disable` except the existing pattern `// eslint-disable-next-line @typescript-eslint/no-explicit-any` on admin-client handles, which the codebase already uses for `createAdminClient()`.
 - UI: semantic tokens only, radius classes `rounded-xl`/`rounded-2xl`/`rounded-3xl`/`rounded-full`, 44px touch targets.
 
@@ -395,7 +395,7 @@ set -e
 cd /mnt/c/Projects/Scholera/Scholera-prod
 supabase migration new studio_plugins
 ```
-Run: `powershell.exe -NoProfile -Command 'wsl -d Ubuntu-Scholera -- bash /mnt/c/wsl-images/new-migration.sh'`
+Run: `powershell.exe -NoProfile -Command 'wsl -d Ubuntu-Scholera -- bash /mnt/c/wsl-images/new-migration.sh'` (needs the WSL distribution running; without it, name the file by hand as `YYYYMMDDHHMMSS_name.sql`, the same timestamp format the CLI writes)
 Expected: `Created new migration at supabase/migrations/<timestamp>_studio_plugins.sql`
 
 - [ ] **Step 2: Write the migration**
@@ -497,7 +497,7 @@ set -e
 cd /mnt/c/Projects/Scholera/Scholera-prod
 supabase migration up --local
 ```
-Run: `powershell.exe -NoProfile -Command 'wsl -d Ubuntu-Scholera -- bash /mnt/c/wsl-images/migrate-local.sh'`
+Run: `powershell.exe -NoProfile -Command 'wsl -d Ubuntu-Scholera -- bash /mnt/c/wsl-images/migrate-local.sh'` (needs the WSL distribution running; without it, apply the file to the local native PostgreSQL with `psql`, never to a hosted project)
 Expected: `Applying migration <timestamp>_studio_plugins.sql...` then `Local database is up to date.`
 
 - [ ] **Step 4: Write the real-Postgres test**

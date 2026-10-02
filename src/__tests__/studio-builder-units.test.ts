@@ -78,6 +78,7 @@ function baseState(): ToolState {
     slug: 'tool-abc12345',
     published: null,
     counters: { writes: 0, bytesWritten: 0, checkRuns: 0, repairRounds: 0, questions: 0 },
+    memory: { aliases: {}, professorTexts: [], proposals: 0 },
     runChecks: async () => {
       throw new Error('not in this test')
     },
@@ -145,7 +146,7 @@ describe('the manifest pipeline', () => {
 
 describe('the tool registry', () => {
   it('has exactly the nine approved tools', () => {
-    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'finish'])
+    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'finish'])
     expect(Object.keys(TOOLS).sort()).toEqual([...TOOL_NAMES].sort())
     expect(toolDeclarations().map((d) => d.name)).toEqual([...TOOL_NAMES])
   })
@@ -161,8 +162,10 @@ describe('the tool registry', () => {
   })
   it('every schema is flat: scalars, enums and arrays of scalars', () => {
     for (const t of Object.values(TOOLS)) {
-      for (const field of Object.values(t.schema.shape) as { def: { type: string; element?: { def: { type: string } } } }[]) {
-        expect(['string', 'enum', 'array', 'boolean', 'number']).toContain(field.def.type)
+      for (const field of Object.values(t.schema.shape) as { def: { type: string; element?: { def: { type: string } }; innerType?: { def: { type: string } } } }[]) {
+        // An optional scalar is still a scalar.
+        const type = field.def.type === 'optional' ? field.def.innerType!.def.type : field.def.type
+        expect(['string', 'enum', 'array', 'boolean', 'number']).toContain(type)
         if (field.def.type === 'array') expect(['string', 'enum']).toContain(field.def.element!.def.type)
       }
     }
@@ -241,6 +244,7 @@ describe('the context builder', () => {
     course: { code: 'BIO 101', title: 'Biology' },
     skills: null,
     history: [],
+    memories: [],
     steps: [],
     resumed: false,
     counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
