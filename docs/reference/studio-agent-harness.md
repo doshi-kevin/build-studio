@@ -4,10 +4,10 @@ A professor describes a teaching tool, and Athena builds it. This document is ho
 
 | | |
 |---|---|
-| **Status** | Step 7D: accepted locally on PostgreSQL 17 with real PostgREST and a production build; real Supabase, the live Cloud Run service and staging are still pending (see [Verification](#verification)). Step 8B adds project memory, verified on the same local stack |
+| **Status** | Step 7D: accepted locally on PostgreSQL 17 with real PostgREST and a production build; real Supabase, the live Cloud Run service and staging are still pending (see [Verification](#verification)). Steps 8B to 8D add project memory, verified on the same local stack and accepted in a browser walkthrough |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-10-02 |
-| **Migrations** | `supabase/migrations/20261002160000_studio_builder.sql`, and `supabase/migrations/20261002210000_studio_project_memory.sql` for project memory |
+| **Migrations** | `supabase/migrations/20261002160000_studio_builder.sql`; for project memory `supabase/migrations/20261002210000_studio_project_memory.sql` and `supabase/migrations/20261002230000_studio_memory_slots.sql` |
 | **Code** | `src/lib/studio/builder/`, the builder section of `src/lib/studio/db.ts`, `builderActor` in `src/lib/studio/context.ts`, `publishDraft` in `src/lib/studio/lifecycle.ts`, the draft frame in `src/lib/studio/runtime/frame{,-ticket}.ts`, the builder UI in `src/components/studio/builder/` |
 | **Endpoints** | `src/app/(dashboard)/professor/courses/[sectionId]/studio/actions.ts`, `GET /api/studio/builder/runs/[runId]`, `GET /studio-frame/v1/draft/[projectId]/[view]` (runtime origin only) |
 
@@ -53,7 +53,7 @@ Five server-only tables (the fifth, `studio_plugin_memories`, came with Step 8B)
 | `studio_plugin_builder_runs` | One build: one professor message | Lifecycle, the private working copy (`work`), plan, approval card, questions, counters and cost, the claim token, the result |
 | `studio_plugin_builder_steps` | One observable action | Append-only. Unique on `(run_id, seq)` and `(run_id, tool_call_id)` |
 | `studio_plugin_builder_spend` | The cost of one model call | Append-only. The school's daily cap sums it (see [Budgets](#budgets-the-kill-switch-and-entitlement)) |
-| `studio_plugin_memories` | One saved decision, or one proposal waiting for the professor | Project-scoped. Status `proposed`, `active`, `superseded`, `removed` or `rejected`. Words and scope never change; see [Project memory](#project-memory) |
+| `studio_plugin_memories` | One saved decision, or one proposal waiting for the professor | Project-scoped, with a topic and a slot. Status `proposed`, `active`, `superseded`, `removed` or `rejected`. Words, slot and scope never change; see [Project memory](#project-memory) |
 
 Changes to Step 1 tables: `studio_plugin_projects.draft` (never used) is replaced by `draft_head_hash`, `draft_rev` and `draft_undo_hash`, each hash with a composite key to the project's own snapshots. `studio_plugin_versions` gains `source_snapshot_hash`, unique per project, so every saved version names the draft it came from and the same draft can't be saved twice.
 
@@ -159,7 +159,7 @@ The model sees the same ten tools every turn. There is no shell, filesystem, net
 | `run_checks` | Compile, typecheck, Stage 1, builder checks | The model can't choose or skip checks. Unchanged work returns the cached result |
 | `submit_plan` | Records goal, files, manifest changes, checks | Plain text, at most 8 KiB. A plan grants nothing |
 | `ask_professor` | Pauses for one answer | At most 2 per run |
-| `propose_memory` | Suggests one lasting decision for the professor to keep | At most 2 per run; needs a quote of the professor's own words; inert until the professor approves it (see [Project memory](#project-memory)) |
+| `propose_memory` | Suggests one lasting decision for the professor to keep | Topic and slot from closed lists; at most 2 per run; needs a quote of the professor's own words; inert until the professor approves it (see [Project memory](#project-memory)) |
 | `finish` | Asks to end: `completed` or `blocked` with a summary | `completed` triggers the harness's own gate |
 
 Refusals use one vocabulary (`RefusalCode` in `tools.ts`), each with a fixed hint for the next turn. A plan is required before any manifest change, before writing on a first build, and before changing both views; on a first build the manifest must exist before any view is written.
@@ -210,7 +210,7 @@ Repair is bounded:
 
 ## Context
 
-Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v3`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
+Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v4`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
 
 1. The manifest's structure, unfenced, and its own words, fenced.
 2. The file map, frozen collections and available capabilities.
@@ -240,7 +240,7 @@ No id (tenant, section, user, project, run, memory), student data, course materi
 
 ## Project memory
 
-Step 8B. A project remembers the professor's lasting decisions about one tool, such as "keep the student view extremely simple", so the next build respects them without being told again. It is small on purpose: one table, project scope only, no embeddings, no vector store and no summary of past conversations.
+Steps 8B to 8D. A project remembers the professor's lasting decisions about one tool, such as "keep the student view extremely simple", so the next build respects them without being told again. It is small on purpose: one table, project scope only, no embeddings, no vector store and no summary of past conversations.
 
 ### What is remembered, and what is not
 
@@ -256,45 +256,86 @@ Step 8B. A project remembers the professor's lasting decisions about one tool, s
 
 A decision belongs to one project, and through it to one professor and one institution. A project is installable in many sections, so a decision is deliberately not tied to a course. The model reads decisions for the run's own project only: the project and institution come from the run row, never from a tool argument. An archived project loads none. Deleting a project deletes its decisions; deleting a run only clears the link on the proposals it raised.
 
+### Topics and slots
+
+A decision has a topic and a slot, both from closed lists (`MEMORY_SLOTS` in `memory.ts`; the database's `studio_plugin_memories_slot_check` lists the same pairs, and a unit test keeps the two in step). A slot names one independent decision within a topic, so "no AI" and "reviews stay anonymous" are both `content_policy` but live in different slots and never replace each other.
+
+| Topic | Slots |
+|---|---|
+| `student_ui` | `general`, `complexity`, `layout`, `interaction`, `feedback` |
+| `professor_ui` | `general`, `layout`, `analytics`, `workflow` |
+| `content_policy` | `general`, `ai_usage`, `anonymity`, `answer_visibility`, `grading`, `tone` |
+| `accessibility` | `general`, `motion`, `contrast`, `keyboard`, `readability`, `target_size` |
+| `data_collection` | `general`, `tracking`, `retention`, `identity`, `free_text` |
+| `terminology` | `general`, `naming`, `reading_level` |
+| `other` | `general` |
+
+Thirty slots in all, so the cap of 20 active decisions per project is reachable. A project keeps at most one active decision per (topic, slot); a partial unique index enforces it. The model can't invent a slot: the tool's schema lists the slot names, the harness refuses a slot that isn't one of the topic's, and so does the database. Professors see the pair in words, such as "Content and AI rules: Use of AI", never the enum names.
+
+`general` holds a decision that fits no narrower slot, and every decision made before slots existed: the migration `20261002230000_studio_memory_slots.sql` moved every row to its topic's `general` slot, keeping ids, statuses, history and timestamps.
+
+Two kinds: `constraint` ("Every build" to a professor) and `preference` ("When relevant").
+
 ### How a decision gets saved
 
 Only two things write memory, and neither is the model.
 
-1. **The professor types it** in the "Studio remembers" panel (add, edit, remove). An edit is a new row that supersedes the old one, so history is never rewritten.
-2. **The professor approves a suggestion.** The model can call `propose_memory`. The call records an inert `proposed` row and nothing else. The professor then sees "Remember for this tool?" on the build's ending card, with the sentence, their own quoted words, and what it would replace. Remember activates that exact row; Not now rejects it. A suggestion nobody answers is rejected by the builder's upkeep after 72 hours. Active decisions never expire.
+1. **The professor types it** in the "Studio remembers" panel (add, edit, remove; "About" picks the topic and "Which part" the slot). An edit is a new row that supersedes the old one, so history is never rewritten. Saving into a part that already holds a decision replaces it; the panel says what before the professor saves, and the button reads Replace.
+2. **The professor approves a suggestion.** The model can call `propose_memory`. The call records an inert `proposed` row and nothing else. The professor then sees "Remember for this tool?" on the build's ending card, with the category, the sentence, their own quoted words, and everything approving would replace. Remember activates that exact row; Not now rejects it. An answered suggestion stays on the card, in place, with focus on its "Saved." or "Skipped." line. A suggestion nobody answers can't be approved after 72 hours, and the builder's upkeep rejects it. Active decisions never expire.
 
 Every model-originated decision needs that approval, including ones that sound final ("always", "never").
 
-`propose_memory` takes a topic, a kind, one sentence, a quote and an optional label to replace. The checks, in the harness and again in the database function:
+`propose_memory` takes a topic, a slot, a kind, one sentence, a quote and an optional label to replace. The checks:
 
-- **The quote must be the professor's own words from this run.** It is an exact substring of this run's request or of an answer the professor gave in it, 4 to 200 characters. The model's own text, plugin code, check output, course titles, skill names, an earlier build's summary and an earlier request are never consulted, so none of them can be the evidence. This is the main defense against a malicious course document, a poisoned skill name or a stored injection becoming a lasting instruction.
-- **The sentence must describe the tool.** At most 200 characters, one line, no markup, no control or bidi characters, and nothing that talks to the builder (switching off checks, naming tools, the validator, "ignore previous instructions"). A false positive only asks the professor to reword.
-- At most 2 proposals per run; no duplicate of an active decision; a project can't pass 20 active decisions.
-- `replaces` is a label such as `m1` that the prompt showed this turn. The harness maps it to a row of this project, or refuses it. No id is ever accepted or shown.
+- **The quote must be the professor's own words from this run** (harness and database). It is an exact substring of this run's request or of an answer the professor gave in it, 4 to 200 characters. The model's own text, plugin code, check output, course titles, skill names, an earlier build's summary, an earlier request and the saved decisions in the prompt are never consulted, so none of them can be the evidence. This is the main defense against a malicious course document, a poisoned skill name or a stored injection becoming a lasting instruction.
+- **The quote must support the sentence** (harness). They share a content word; "to" or "no" doesn't count.
+- **The quote can't start just after a negation** (harness). "answers to students" cut out of "Don't show answers to students" is refused; the quote has to carry the "Don't".
+- **The sentence must describe the tool** (harness, and the panel for the professor's own typing). At most 200 characters, one line, no markup, no control or bidi characters, and nothing that talks to the builder (switching off checks, naming tools, the validator, publishing or installing the tool, "ignore previous instructions"). A false positive only asks for a rewording.
+- **The slot is one of the topic's** (harness and database).
+- At most 2 proposals per run; no duplicate of an active decision; a project can't pass 20 active decisions (harness, database function and a trigger).
+- **`replaces` is a label** such as `m1` that the prompt showed this turn. The harness maps it to a row of this project, or refuses it. It may name the active decision in the proposal's own topic and slot, or the topic's `general` decision, never one in another specific slot (harness, database function and the insert guard). No id is ever accepted or shown.
 
 The write goes through `studio_memory_propose`, behind the same claim-token fence as every other run write, so a stale slice or a stopped run records nothing.
 
-### Topics, kinds and supersession
+### Supersession
 
-Seven topics: `student_ui`, `professor_ui`, `content_policy`, `accessibility`, `data_collection`, `terminology`, `other`. Two kinds: `constraint` (a rule that holds on every build) and `preference` (relevant when a request is about it). A project keeps at most one active decision per topic; a partial unique index enforces it. Approving a decision supersedes, in the same transaction, the decision it named and any other active decision on its topic, so the old and the new are never both active. Because the card shows what it would replace, nothing is replaced silently.
+Approving a decision supersedes, in the same transaction, the active decision in its own topic and slot and the one it named (which can only be in that slot or the topic's `general` one), so the old and the new are never both active. Nothing else on the topic changes: changing the decision about AI use leaves the one about anonymity alone. Approvals and panel saves for one project take the same per-project lock, so two of them racing for one slot end with exactly one active. The card lists every statement approval would supersede, so nothing is replaced silently.
 
 ### What the model reads
 
-The context builder picks decisions deterministically (`selectMemories` in `memory.ts`):
+The context builder picks decisions deterministically (`selectMemories` and `relevance` in `memory.ts`). A decision's relevance to a turn is: 2 for each topic word in the professor's request and answers, 3 for each word of its slot, 1 for each word it shares with the request, and 1 when the build may touch the decision's view.
 
-- Tier A: every active constraint, oldest first, up to 6.
-- Tier B: preferences scored against the professor's request and answers (topic keywords, word overlap with the decision, and whether the build may touch the student or professor view), best first, up to 4. A decision about a view reaches any build that may change that view, even if the request never names it.
-- At most 8 in all and 2 KiB of text. Preferences give way before constraints, under the byte cap and under the prompt's token limit.
+- Tier A: active constraints, the most relevant first (oldest first on a tie), up to 6. Any constraint is sent while there is room.
+- Tier B: preferences with a relevance above zero, best first (the most recently decided first on a tie), up to 4. A decision about a view reaches any build that may change that view, even if the request never names it.
+- At most 8 in all and 2 KiB of text. Preferences give way before constraints, under the byte cap and under the prompt's token limit, where they are the first trim.
 
-They appear as one fenced block with provenance `project-memory`, after the earlier builds and before the course, labelled `m1`, `m2` and so on, with a short preamble outside the fence. The request is the last thing in the prompt.
+They appear as one fenced block with provenance `project-memory`, after the earlier builds and before the course, one line each: `m1 constraint (content_policy/ai_usage): Do not use AI.`, with a short preamble outside the fence. The request is the last thing in the prompt.
 
-### Authority
+### Authority and conflicts
 
-From highest to lowest: the platform rules (including the tool schemas, tool policies, validator rules and each tool's refusals); the current system and code facts (the tool's manifest, files and frozen collections); the professor's request in this build and their answers; saved decisions; earlier builds and findings; anything the model inferred. A saved decision is data. It can't relax a platform rule, a check or a limit, and it yields to the current request. When a request conflicts with a decision, the model follows the request and proposes a replacement; the old decision stays active until the professor approves the new one.
+From highest to lowest: the platform rules (including the tool schemas, tool policies, validator rules and each tool's refusals); the current system and code facts (the tool's manifest, files and frozen collections); the professor's request in this build and their answers; saved decisions; earlier builds and findings; anything the model inferred. A saved decision is data. It can't relax a platform rule, a check or a limit, and it yields to the current request.
+
+When a request conflicts with a decision, the model follows the request and proposes a replacement in the same slot (or names the topic's general decision). The old decision stays active until the professor approves the new one. A request that touches one slot leaves the others standing: "Add AI-generated hints but keep reviews anonymous" replaces only the AI decision.
 
 ### Failure and visibility
 
 A failed memory read is logged (the error's name, never its message) and the build goes on without memory. Platform rules never depend on memory. After a build the card says "Applied N saved decisions", which counts what the last prompt carried and doesn't claim they changed the output. The panel lists only active decisions: no proposals, no superseded or rejected rows, nothing the model worked out for itself.
+
+### Acceptance (Step 8D)
+
+On the production standalone build against the local stand-in, with no model key on the server and the school's builder switch off, a Playwright walkthrough passed 50 of 50 checks. It covered:
+
+- add, edit and remove;
+- a suggestion's Remember and Not now;
+- a replacement that names exactly what it replaces and leaves the neighbouring slot active;
+- a conflict that leaves the stored decision unchanged until approval;
+- superseded, removed and rejected decisions staying out of later prompts;
+- project isolation;
+- axe checks with no violations, keyboard order, focus after a decision, 44 px targets, and phone width.
+
+A probe ran the real harness with a scripted model against the same database to read what a later build's prompt carried. No real model turn happened.
+
+The live eval has five memory cases (M1 to M5 in `eval/studio-builder/cases.ts`). They record only check names and booleans.
 
 ## Budgets, the kill switch and entitlement
 
@@ -403,7 +444,15 @@ Two suites, kept apart (`eval/studio-builder/README.md`):
 
 `eval/studio-builder/baseline.json` records one live run with safe metrics only. Per case: the expected and actual outcome, turns, tool calls, repairs, check runs, approvals, questions, approximate tokens and cost, and failing check ids. For the run: the model, instructions, validator ruleset, compiler, limits and commit. `--compare` fails only when a case misses an outcome it met in the baseline; every other difference is reported as drift. Re-record it after any change to the instructions, model, ruleset or limits.
 
-The recorded baseline (2026-10-02, `gemini-3.1-pro-preview`, instructions `studio-builder-l1-v2`, validator ruleset 2) met every expected outcome: 9 of 9 cases, no invariant failures, $0.57 in total. The run before it, on `l1-v1`, failed E4 because the prompt showed the manifest only as a summary, so the model kept rebuilding its JSON wrongly; the prompt now carries the whole manifest. One live run is a sample, not a rate.
+The recorded baseline (2026-10-02, Step 8C, `gemini-3.1-pro-preview`, instructions `studio-builder-l1-v4`, validator ruleset 2) ran under a $1 cap and is partial: 8 cases ran for $0.60, with no invariant failures.
+
+- M1, M3, M4 and M5 passed every memory check and met their outcome.
+- M2 passed both memory checks but ended `blocked`: its request named a submit button the base tool doesn't have. The case now asks for the Next button and hasn't been re-run live.
+- E1 and E2 passed.
+- E3 was cut short by the cap (`cappedByEval`).
+- E4, E5, E6, E7, E9 and E12 were skipped by the cap, so `--compare` lists them as not compared.
+
+The Step 7C baseline (`l1-v2`) met all 9 of its cases for $0.57. A full re-record needs a cap of about $3, because the gate reserves one worst-case call ($0.42) before each case. The `l1-v1` run before 7C failed E4 because the prompt showed the manifest only as a summary; the prompt now carries the whole manifest. One live run is a sample, not a rate.
 
 ## Verification
 
@@ -425,8 +474,8 @@ What ran, and on what. Status words: **verified**, **verified with a stand-in** 
 | Budgets | Verified | Exact boundaries in the hermetic and DB suites. In the browser, the school's daily cap stopped resumed runs before any model call |
 | Kill switch | Verified with a stand-in | The institution admin's own RPC turned the builder off: a new build was refused, a recovered slice ended `ai_disabled` with no model call. Turning it off mid-call is covered by `studio-builder-config.test.ts` |
 | Entitlement | Verified with a stand-in | Without `studio` the page offers no build and says why; history and the draft are kept |
-| Live eval | Verified | The Step 7C baseline (9 of 9). Not re-run in 7D or 8B. The instructions changed in 8B, so the baseline needs re-recording |
-| Project memory (Step 8B) | Verified with a stand-in | The same stand-in as above, passed to the test process explicitly with no `.env` file loaded. `npm run test:db` 272 of 272 (40 of them memory), the memory unit, harness, service, action and UI suites, and 29 mutations that each broke one safeguard (evidence check, project scoping, institution guard, professor approval, topic uniqueness, request-over-memory rule, caps, claim fence) and were each caught. No model was called |
+| Live eval | Partly verified | Step 8C baseline, $1 cap: 8 cases ran, 6 met their outcome, every memory check passed, no invariant failures; 6 cases skipped by the cap. See the live eval section above |
+| Project memory (Steps 8B to 8D) | Verified with a stand-in | The same stand-in as above, passed to the test process explicitly with no `.env` file loaded. `npm run test:db` 290 of 290, with a super admin in the fixture (58 memory tests, among them overlapping-transaction races proven to wait on the per-project lock). The browser walkthrough passed 50 of 50 on the production build. 34 mutations each broke one safeguard and were each caught: slot uniqueness, cross-slot replacement in the tool, the function and the guard, project and institution binding, the evidence, support and negation checks, professor approval, the proposal TTL, the lock, retrieval of superseded rows, the retrieval and byte caps, slot scoring, the request-over-memory rule and order, the active cap and the claim fence |
 
 The walkthrough found that every plugin frame 404ed in a production build (`request.nextUrl.host` is the server's own address there; fixed in 7C with `requestHost`), and in 7D that the school's daily cap told professors to ask again in smaller steps (now `limit_daily_cost`).
 
@@ -437,10 +486,10 @@ The walkthrough found that every plugin frame 404ed in a production build (`requ
 - Spend from calls that never report usage (timeout, abort, provider failure) is an estimate: the worst case for one call.
 - Saving a version checks the draft head and then writes without holding the project lock. A racing undo can move the head in between; the saved version is still the owner's own fully re-checked snapshot.
 - The usage ledger's generated `total_tokens` column counts cached input twice. Cost is unaffected; fixing it needs a migration outside Studio.
-- Memory: with seven topics and one active decision per topic, a project holds at most seven active decisions in practice, so the cap of 20 is a backstop that can't be reached today. Two separate rules on one topic ("no AI" and "reviews stay anonymous", both `content_policy`) can't both stay active: the newer replaces the older, and the card says so. The model is told to restate anything that must survive. Splitting topics or adding a slot key would lift this; it needs a decision.
+- Memory: the slot lists are closed. A decision that fits no slot goes in its topic's `general` slot, and `other` has only `general`, so two unrelated "other" decisions replace each other. Adding a slot is a migration (the check constraint) plus a line in `MEMORY_SLOTS`.
+- Memory: the support and negation checks on a proposal's quote are heuristics in the harness. The database checks only that the quote is the professor's exact words; the professor's approval of the exact card is what decides.
 - Memory: relevance for preferences is keyword and word-overlap scoring, not understanding. A preference with an unusual topic can be missed by a request that doesn't use its words. Constraints are always sent.
 - Memory: only quotes from the current run count as evidence, so a preference stated two builds ago can't be proposed later without being said again.
-- The instructions changed (`studio-builder-l1-v3`), so `eval/studio-builder/baseline.json` still records `l1-v2` and needs re-recording by a live eval run. Step 8B did not make a live model call.
 
 ## Not in Step 7
 

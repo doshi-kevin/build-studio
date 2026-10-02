@@ -19,7 +19,7 @@
     "eval:needles": "dotenv -e .env.local -- tsx --tsconfig eval/tsconfig.json eval/retrieval/needles-run.ts",
     "eval:needles:generate": "dotenv -e .env.local -- tsx --tsconfig eval/tsconfig.json eval/retrieval/generate-needles.ts",
     "eval:grounding": "dotenv -e .env.local -- tsx --tsconfig eval/tsconfig.json eval/grounding/export.ts",
-    "eval:studio-builder": "dotenv -e .env.local -e .env -- tsx --tsconfig eval/tsconfig.json eval/studio-builder/run.ts",
+    "eval:studio-builder": "tsx --tsconfig eval/tsconfig.json eval/studio-builder/run.ts",
     "db:seed:e2e": "dotenv -e .env.test -- tsx scripts/seed-e2e.ts",
     "e2e:prep": "bash scripts/e2e-prep-local.sh",
     "e2e": "playwright test --config=e2e/playwright.config.ts",

@@ -11,7 +11,7 @@ The live eval spends money. It is never part of `npm run test` or CI.
 
 ## Running it
 
-It needs `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` and no database. Each case runs the real harness, draft gate and check worker against the in-memory run store, with a scripted professor who approves or declines each approval card and answers questions.
+It needs `GOOGLE_GENERATIVE_AI_API_KEY` and no database. The script loads no env file: export the model key in the shell that runs it and nothing else. If the process has a Supabase secret (`SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DATABASE_PASSWORD`, `SUPABASE_DB_URL` or `SUPABASE_MGMT_TOKEN`), it refuses to start before any model call (`guard.ts`), since on a developer machine that secret can be production's. Each case runs the real harness, draft gate and check worker against the in-memory run store, with a scripted professor who approves or declines each approval card and answers questions.
 
 ```bash
 npm run eval:studio-builder                               # every live case
@@ -26,11 +26,13 @@ npm run eval:studio-builder -- --write-baseline           # record baseline.json
 
 The process exits 1 when a hard invariant fails (a run that never ended, an unapproved capability, a file outside the two views, a capability outside the catalog), or when `--compare` finds a regression.
 
+Cases M1 to M5 test project memory. Each seeds saved decisions into the in-memory store, or runs a first build whose suggestion the scripted professor approves, then runs a build that should respect them: a suggestion from the first build reaches the second and the student view stays small (M1), relevant decisions reach the prompt and unrelated ones don't (M2), a conflicting request gets a replacement suggestion while the old decision stays active until approval (M3), replacing the AI decision leaves the anonymity one active (M4), and a hostile course title and skill name never become a suggestion (M5). They run first. Every case also checks that no decision became active without the professor's approval.
+
 Cases E8, E10 and E11 (repeated failure, Stop, draft conflict) can only be forced by a script. They run in the harness suite, not here. `cases.ts` names the test for each one.
 
 ## The baseline
 
-`baseline.json` records one live run, so a later run can be compared with it. Per case it holds the expected and actual outcome, the end reason, whether it passed, model turns, tool calls, repair rounds, check runs, approval cards approved and declined, questions asked, approximate tokens (output tokens already include the reasoning tokens, so don't add the two), cost to the tenth of a cent, and the failing check ids of the final check. For the whole run it holds the model ids, the builder instructions version, the validator version and ruleset, the compiler id, the harness limits, the date, the git commit and whether the tree had uncommitted changes.
+`baseline.json` records one live run, so a later run can be compared with it. Per case it holds the expected and actual outcome, the end reason, whether it passed, model turns, tool calls, repair rounds, check runs, approval cards approved and declined, questions asked, approximate tokens (output tokens already include the reasoning tokens, so don't add the two), cost to the tenth of a cent, and the failing check ids of the final check. A memory case also records how many suggestions it raised and each memory check's name with a pass or fail; nothing it records quotes a decision. For the whole run it holds the model ids, the builder instructions version, the validator version and ruleset, the compiler id, the harness limits, the date, the git commit and whether the tree had uncommitted changes.
 
 It never holds prompts, model replies or summaries, the request, questions or answers, generated source or manifests, or keys. `src/__tests__/studio-builder-eval-baseline.test.ts` checks that.
 

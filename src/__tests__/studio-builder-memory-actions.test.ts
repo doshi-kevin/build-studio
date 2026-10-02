@@ -38,7 +38,7 @@ let actions: Actions
 // Each action, its service, what a success returns and whether a success refreshes the page.
 const cases = (): [string, () => Promise<unknown>, ReturnType<typeof vi.fn>, unknown, boolean][] => [
   ['loadMemoriesAction', () => actions.loadMemoriesAction({ sectionId: SECTION, pluginProjectId: PROJECT }), service.listProjectMemories, [], false],
-  ['saveMemoryAction', () => actions.saveMemoryAction({ sectionId: SECTION, pluginProjectId: PROJECT, topic: 'other', kind: 'preference', statement: 'x', replaceId: null }), service.saveProjectMemory, { ok: true, value: { id: MEMORY } }, true],
+  ['saveMemoryAction', () => actions.saveMemoryAction({ sectionId: SECTION, pluginProjectId: PROJECT, topic: 'other', slot: 'general', kind: 'preference', statement: 'x', replaceId: null }), service.saveProjectMemory, { ok: true, value: { id: MEMORY } }, true],
   ['removeMemoryAction', () => actions.removeMemoryAction({ sectionId: SECTION, pluginProjectId: PROJECT, memoryId: MEMORY }), service.removeProjectMemory, { ok: true, value: null }, true],
   ['decideMemoryAction', () => actions.decideMemoryAction({ sectionId: SECTION, runId: RUN, memoryId: MEMORY, approve: true }), service.decideMemoryProposal, { ok: true, value: null }, true],
 ]

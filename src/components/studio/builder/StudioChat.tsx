@@ -111,9 +111,11 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         role="log"
         aria-label="Conversation with Athena"
+        // Focusable, so a keyboard user can scroll a long conversation.
+        tabIndex={0}
         onScroll={(e) => {
           const el = e.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < PINNED_PX

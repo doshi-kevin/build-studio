@@ -1,11 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
-import { Bookmark, Pencil, Trash2 } from 'lucide-react'
+import { Bookmark, Pencil, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -14,18 +14,19 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { loadMemoriesAction, removeMemoryAction, saveMemoryAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
 import type { MemoryItem } from '@/lib/studio/builder/service'
-import { KIND_LABEL, MEMORY_KINDS, MEMORY_TOPICS, TOPIC_LABEL, type MemoryKind, type MemoryTopic } from '@/lib/studio/builder/memory'
+import { KIND_LABEL, MEMORY_KINDS, MEMORY_SLOTS, MEMORY_TOPICS, SLOT_LABEL, TOPIC_LABEL, type MemoryKind, type MemorySlot, type MemoryTopic } from '@/lib/studio/builder/memory'
 import { STUDIO_MEMORY_STATEMENT_MAX_CHARS } from '@/lib/studio/limits'
 
 interface Draft {
   /** The decision being edited, or null for a new one. */
   replaceId: string | null
   topic: MemoryTopic
+  slot: MemorySlot
   kind: MemoryKind
   statement: string
 }
 
-const NEW_DRAFT: Draft = { replaceId: null, topic: 'student_ui', kind: 'preference', statement: '' }
+const NEW_DRAFT: Draft = { replaceId: null, topic: 'student_ui', slot: 'general', kind: 'preference', statement: '' }
 
 const updatedLabel = (iso: string) => {
   const at = new Date(iso)
@@ -70,7 +71,7 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
   const save = () => {
     if (!draft) return
     startSave(async () => {
-      const r = await saveMemoryAction({ sectionId, pluginProjectId, topic: draft.topic, kind: draft.kind, statement: draft.statement, replaceId: draft.replaceId })
+      const r = await saveMemoryAction({ sectionId, pluginProjectId, topic: draft.topic, slot: draft.slot, kind: draft.kind, statement: draft.statement, replaceId: draft.replaceId })
       if ('error' in r) {
         // About the text box, so it appears under the text box and keeps what was typed.
         setFormError(r.error)
@@ -99,8 +100,8 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
 
   const count = items?.length ?? 0
   const trimmed = draft?.statement.trim() ?? ''
-  // A topic holds one decision, so saving into an occupied topic replaces it. Say so before it happens.
-  const replacing = draft ? items?.find((i) => i.topic === draft.topic && i.id !== draft.replaceId) : undefined
+  // Each part holds one decision, so saving into an occupied part replaces it. Say so before it happens.
+  const replacing = draft ? items?.find((i) => i.topic === draft.topic && i.slot === draft.slot && i.id !== draft.replaceId) : undefined
 
   return (
     <Dialog
@@ -119,9 +120,17 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
           Studio remembers{items ? ` (${count})` : ''}
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Studio remembers</DialogTitle>
+      <DialogContent showCloseButton={false} className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader className="text-left">
+          <div className="flex items-start justify-between gap-2">
+            <DialogTitle>Studio remembers</DialogTitle>
+            {/* The dialog's own close button is smaller than a 44 px target. */}
+            <DialogClose asChild>
+              <Button type="button" variant="ghost" size="icon" className="-mt-2 -mr-2 h-11 w-11 shrink-0" aria-label="Close">
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </DialogClose>
+          </div>
           <DialogDescription>
             Decisions Athena keeps in mind each time you build this tool. Whatever you ask for in a new request still comes first.
           </DialogDescription>
@@ -156,7 +165,7 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
             {items.map((item) => (
               <li key={item.id} className="space-y-2 rounded-2xl bg-card p-4 shadow-sm">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">{item.topicLabel}</Badge>
+                  <Badge variant="secondary" className="whitespace-normal text-left">{item.categoryLabel}</Badge>
                   <span className="text-xs text-muted-foreground">{item.kindLabel}</span>
                   {updatedLabel(item.updatedAt) && <span className="text-xs text-muted-foreground">Updated {updatedLabel(item.updatedAt)}</span>}
                 </div>
@@ -170,7 +179,7 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                     disabled={removing === item.id}
                     onClick={() => {
                       setFormError(null)
-                      setDraft({ replaceId: item.id, topic: item.topic, kind: item.kind, statement: item.statement })
+                      setDraft({ replaceId: item.id, topic: item.topic, slot: item.slot, kind: item.kind, statement: item.statement })
                     }}
                   >
                     <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
@@ -220,10 +229,11 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                 </p>
               )}
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            {/* Stacked: the longer part names don't fit half the dialog. */}
+            <div className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="memory-topic">About</Label>
-                <Select value={draft.topic} onValueChange={(v) => setDraft({ ...draft, topic: v as MemoryTopic })}>
+                <Select value={draft.topic} onValueChange={(v) => setDraft({ ...draft, topic: v as MemoryTopic, slot: 'general' })}>
                   <SelectTrigger id="memory-topic" className="min-h-11 w-full">
                     <SelectValue />
                   </SelectTrigger>
@@ -231,6 +241,21 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                     {MEMORY_TOPICS.map((t) => (
                       <SelectItem key={t} value={t}>
                         {TOPIC_LABEL[t]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="memory-slot">Which part</Label>
+                <Select value={draft.slot} onValueChange={(v) => setDraft({ ...draft, slot: v as MemorySlot })} disabled={MEMORY_SLOTS[draft.topic].length === 1}>
+                  <SelectTrigger id="memory-slot" className="min-h-11 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MEMORY_SLOTS[draft.topic].map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {SLOT_LABEL[draft.topic][s]}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -254,13 +279,16 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                 </ToggleGroup>
               </div>
             </div>
-            {replacing && (
-              <p className="rounded-xl bg-card p-3 text-sm">
-                This replaces: “{replacing.statement}”. A topic keeps one decision, so put anything that should stay into the new one.
-              </p>
-            )}
+            {/* Always mounted, so changing "Which part" announces the warning when it appears. */}
+            <div role="status" aria-live="polite">
+              {replacing && (
+                <p id="memory-replaces" className="rounded-xl bg-card p-3 text-sm">
+                  This replaces: “{replacing.statement}”. Each part keeps one decision, so put anything that should stay into the new one.
+                </p>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2">
-              <Button type="submit" className="min-h-11" disabled={saving || trimmed.length === 0}>
+              <Button type="submit" className="min-h-11" disabled={saving || trimmed.length === 0} aria-describedby={replacing ? 'memory-replaces' : undefined}>
                 {saving ? 'Saving…' : replacing ? 'Replace' : 'Save'}
               </Button>
               <Button type="button" variant="outline" className="min-h-11" disabled={saving} onClick={() => setDraft(null)}>

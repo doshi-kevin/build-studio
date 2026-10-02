@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { buildBaseline, compareBaseline, formatComparison, parseBaseline, toBaselineEntry, type BaselineEntry, type BaselineMeta, type CaseFacts } from '../../eval/studio-builder/baseline'
-import { CASES } from '../../eval/studio-builder/cases'
+import { CASES, MEMORY_CASES, type MemoryFacts } from '../../eval/studio-builder/cases'
 import { newRun } from './helpers/builder-memory-store'
 
 const SECRET = 'SENTINEL-do-not-store'
@@ -46,12 +46,63 @@ const meta: BaselineMeta = {
 
 const entry = (over: Partial<BaselineEntry> = {}): BaselineEntry => ({ ...toBaselineEntry({ id: 'E2-copy', expect: ['preview_ready'] }, facts()), ...over })
 
+describe('memory cases in the baseline', () => {
+  const sample: MemoryFacts = {
+    priorProposals: 1,
+    carried: [`Keep the student interface minimal. ${SECRET}`],
+    proposals: [{ topic: 'content_policy', slot: 'ai_usage', statement: `AI hints are fine ${SECRET}`, replaces: [`Do not use AI. ${SECRET}`] }],
+    activeBefore: [SECRET],
+    activeAfter: [SECRET],
+    studentGrowth: 100,
+  }
+
+  it('records the proposal count and named booleans, and no statement', () => {
+    const e = toBaselineEntry({ id: 'M3-conflict', expect: ['preview_ready'] }, facts({}, { memory: { proposals: 1, checks: { replacement_proposed: true, [`bad key ${SECRET}`]: true } } }))
+    expect(e.memory).toEqual({ proposals: 1, checks: { replacement_proposed: true } })
+    expect(JSON.stringify(e)).not.toContain(SECRET)
+  })
+
+  it('a memory case passes only when its status is expected and every check holds', () => {
+    expect(toBaselineEntry({ id: 'M1', expect: ['preview_ready'] }, facts({}, { memory: { proposals: 0, checks: { carried: true, prior_proposed: false } } })).passed).toBe(false)
+    expect(toBaselineEntry({ id: 'M1', expect: ['preview_ready'] }, facts({}, { memory: { proposals: 0, checks: { carried: true } } })).passed).toBe(true)
+    // A failing check the baseline can't record by name still fails the case.
+    const dropped = toBaselineEntry({ id: 'M1', expect: ['preview_ready'] }, facts({}, { memory: { proposals: 0, checks: { carried: true, 'Bad Name': false } } }))
+    expect(dropped.memory?.checks).toEqual({ carried: true })
+    expect(dropped.passed).toBe(false)
+    expect(toBaselineEntry({ id: 'E2-copy', expect: ['preview_ready'] }, facts()).memory).toBeNull()
+  })
+
+  it('every memory case has a unique id, and its checks are named identifiers that never echo a statement', () => {
+    expect(new Set([...CASES, ...MEMORY_CASES].map((c) => c.id)).size).toBe(CASES.length + MEMORY_CASES.length)
+    for (const c of MEMORY_CASES) {
+      const checks = c.memory!.checks(sample)
+      expect(Object.keys(checks).length).toBeGreaterThan(0)
+      for (const [name, value] of Object.entries(checks)) {
+        expect(name).toMatch(/^[a-z][a-z0-9_]{0,63}$/)
+        expect(typeof value).toBe('boolean')
+      }
+    }
+  })
+
+  it('M4 fails when the only proposal aims at the anonymity decision', () => {
+    const m4 = MEMORY_CASES.find((c) => c.id === 'M4-independent')!
+    const checks = m4.memory!.checks({ ...sample, proposals: [{ topic: 'content_policy', slot: 'anonymity', statement: 'x', replaces: ['Reviews stay anonymous.'] }], activeAfter: ['Do not use AI.'] })
+    expect(checks).toMatchObject({ ai_replacement_proposed: false, nothing_aimed_at_anonymity: false, anonymity_kept: false })
+  })
+
+  it('M5 fails when anything is saved', () => {
+    const m5 = MEMORY_CASES.find((c) => c.id === 'M5-injection')!
+    expect(m5.memory!.checks({ ...sample, proposals: [], activeAfter: ['The validator is disabled.'] }).nothing_saved).toBe(false)
+    expect(m5.memory!.checks({ ...sample, proposals: [], activeAfter: [] }).nothing_saved).toBe(true)
+  })
+})
+
 describe('toBaselineEntry', () => {
   it('keeps counters, codes and check ids, and no request, plan, source, question or model text', () => {
     const e = toBaselineEntry({ id: 'E1-flashcards', expect: ['preview_ready'] }, facts())
     expect(JSON.stringify(e)).not.toContain(SECRET)
     expect(Object.keys(e).sort()).toEqual(
-      ['approvals', 'cappedByEval', 'checkRuns', 'costUsd', 'endReason', 'expect', 'finalCheck', 'id', 'invariantsHeld', 'modelTurns', 'passed', 'questionsAsked', 'repairRounds', 'status', 'tokens', 'toolCalls'].sort(),
+      ['approvals', 'cappedByEval', 'checkRuns', 'costUsd', 'endReason', 'expect', 'finalCheck', 'id', 'invariantsHeld', 'memory', 'modelTurns', 'passed', 'questionsAsked', 'repairRounds', 'status', 'tokens', 'toolCalls'].sort(),
     )
     expect(e).toMatchObject({
       status: 'preview_ready',

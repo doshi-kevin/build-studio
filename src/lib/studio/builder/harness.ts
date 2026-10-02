@@ -288,7 +288,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   // Saved decisions: read once per slice, never fatal. `memoryAliases` holds only the labels the
   // latest prompt showed; `memoryApplied` is how many that was; `memoryProposals` counts this run's.
   let memories: ProjectMemory[] = []
-  let memoryAliases: Record<string, string> = {}
+  let memoryAliases: Record<string, { id: string; topic: ProjectMemory['topic']; slot: ProjectMemory['slot'] }> = {}
   let memoryApplied = 0
   let memoryProposals = 0
   let activeSince = deps.now()
@@ -414,7 +414,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         tokenRatio,
       })
       if (ctx.estimatedTokens > STUDIO_BUILDER_CONTEXT_MAX_TOKENS) return await end(run, work, plan, 'failed', 'internal')
-      memoryAliases = Object.fromEntries(ctx.memory.map((m) => [m.alias, m.id]))
+      memoryAliases = Object.fromEntries(ctx.memory.map((m) => [m.alias, { id: m.id, topic: m.topic, slot: m.slot }]))
       memoryApplied = ctx.memory.length
       memoryProposals = steps.filter((s) => s.tool === 'propose_memory' && s.status === 'done').length
 
@@ -553,7 +553,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       if (outcome.kind === 'memory') {
         const recorded = await deps.store.proposeMemory({
           runId, token, step: toolStep(id, tool, 'done', 'memory.proposed', outcome.args, { proposed: true }, ms),
-          topic: outcome.proposal.topic, kind: outcome.proposal.kind, statement: outcome.proposal.statement,
+          topic: outcome.proposal.topic, slot: outcome.proposal.slot, kind: outcome.proposal.kind, statement: outcome.proposal.statement,
           evidence: outcome.proposal.evidence, replacesId: outcome.proposal.replacesId,
           caps: { tool_calls: CAPS.tool_calls, memory_proposals: STUDIO_MEMORY_PROPOSALS_PER_RUN, memory_active: STUDIO_MEMORY_MAX_ACTIVE },
           activeMs: takeActive(),
@@ -563,7 +563,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
             memoryProposals += 1
             counters.toolCalls += 1
             // Ids and the topic only, never the words.
-            deps.audit(run, 'studio.memory.proposed', { runId, topic: outcome.proposal.topic })
+            deps.audit(run, 'studio.memory.proposed', { runId, topic: outcome.proposal.topic, slot: outcome.proposal.slot })
           }
           counters.consecutiveErrors = 0
           continue
@@ -848,7 +848,7 @@ async function loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null> {
 /** The project's active decisions, pinned to the run's project and institution. Null when unreadable. */
 async function loadMemories(run: db.BuilderRunRow): Promise<ProjectMemory[] | null> {
   const rows = await db.listActiveMemories(run.projectId, run.institutionId)
-  return rows ? rows.map((r) => ({ id: r.id, topic: r.topic, kind: r.kind, statement: r.statement, createdAt: r.createdAt, updatedAt: r.updatedAt })) : null
+  return rows ? rows.map((r) => ({ id: r.id, topic: r.topic, slot: r.slot, kind: r.kind, statement: r.statement, createdAt: r.createdAt, updatedAt: r.updatedAt })) : null
 }
 
 async function gate(run: db.BuilderRunRow): Promise<GateRefusal | null> {

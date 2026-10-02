@@ -31,6 +31,8 @@ export interface BaselineEntry {
   tokens: { input: number; cachedInput: number; output: number; reasoning: number }
   costUsd: number
   finalCheck: { passed: boolean; failing: string[] } | null
+  /** Memory cases only: how many proposals the measured build raised, and each named check. */
+  memory: { proposals: number; checks: Record<string, boolean> } | null
 }
 
 export interface BaselineMeta {
@@ -59,6 +61,7 @@ export interface CaseFacts {
   tokens: { input: number; cachedInput: number; output: number; reasoning: number }
   invariantsHeld: boolean
   cappedByEval: boolean
+  memory?: { proposals: number; checks: Record<string, boolean> }
 }
 
 const usd = (n: number) => Math.round(n * 1000) / 1000
@@ -73,15 +76,25 @@ function finalCheck(result: Record<string, unknown> | null): BaselineEntry['fina
   return { passed: checks.passed === true, failing: [...new Set(unresolved.map((u) => code(u?.check_id)))].sort() }
 }
 
+/** Check names are fixed identifiers; the values are booleans. Nothing else gets in. */
+function memoryEntry(m: CaseFacts['memory']): BaselineEntry['memory'] {
+  if (!m) return null
+  const checks = Object.fromEntries(Object.entries(m.checks).filter(([k]) => /^[a-z][a-z0-9_]{0,63}$/.test(k)).map(([k, v]) => [k, v === true]))
+  return { proposals: count(m.proposals), checks }
+}
+
 export function toBaselineEntry(c: { id: string; expect: string[] }, facts: CaseFacts): BaselineEntry {
   const { run } = facts
   const status = code(run.status)
+  const memory = memoryEntry(facts.memory)
+  // A check dropped for its name still counts: the case fails closed.
+  const allChecks = !facts.memory || Object.values(facts.memory.checks).every((v) => v === true)
   return {
     id: c.id,
     expect: [...c.expect],
     status,
     endReason: run.errorCode === null ? null : code(run.errorCode),
-    passed: c.expect.includes(status),
+    passed: c.expect.includes(status) && allChecks,
     invariantsHeld: facts.invariantsHeld,
     cappedByEval: facts.cappedByEval,
     modelTurns: count(run.counters.modelTurns),
@@ -102,6 +115,7 @@ export function toBaselineEntry(c: { id: string; expect: string[] }, facts: Case
     },
     costUsd: usd(run.counters.costUsd),
     finalCheck: finalCheck(run.result),
+    memory,
   }
 }
 

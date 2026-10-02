@@ -38,7 +38,7 @@ import {
 import type { StudioManifest } from '../manifest'
 import { blockingKeys, type DraftCheckResult } from './checks'
 import { CheckFault, CheckTimeout } from './check-worker-errors'
-import { evidenceProblem, MEMORY_KINDS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemoryTopic } from './memory'
+import { evidenceProblem, isSlotOf, MEMORY_KINDS, MEMORY_SLOT_KEYS, MEMORY_SLOTS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemorySlot, type MemoryTopic } from './memory'
 import { deltaHash, proposeManifest, type DeltaItem } from './manifest-delta'
 import type { ModelToolDecl } from './model'
 import { characterProblem, PLUGIN_PATHS, stripBom, utf8Bytes, viewContentProblem, VIEW_OF, type PluginPath } from './paths'
@@ -56,7 +56,7 @@ export type RefusalCode =
   | 'plan_required' | 'file_missing' | 'not_in_working_set' | 'match_count' | 'file_too_large' | 'bad_characters'
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
-  | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
+  | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
 
 /** The refusals a memory proposal can come back with from the database. */
 export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_replaces', 'memory_duplicate', 'memory_full', 'memory_unavailable'] as const satisfies readonly RefusalCode[]
@@ -84,10 +84,11 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   capability_unavailable: 'That capability isn’t available to tools yet. Leave it out, or finish blocked.',
   collection_frozen: 'A published collection can’t change. Propose a new collection, or finish blocked.',
   purpose_flagged: 'Reword the name, description or purpose summary plainly, and make the purpose category match what students do.',
+  memory_slot: 'That slot is not one of this topic’s slots. Pick one of the slots listed for the topic, or general.',
   memory_statement: `A saved decision is one plain sentence of at most ${STUDIO_MEMORY_STATEMENT_MAX_CHARS} characters about the tool itself, in words the professor's quote supports: no markup, and nothing about how you work or what the platform checks.`,
   memory_evidence: `evidence must be the professor’s own words, copied exactly (${STUDIO_MEMORY_EVIDENCE_MIN_CHARS} to ${STUDIO_MEMORY_EVIDENCE_MAX_CHARS} characters) from their request or an answer in this build. Don’t propose what you inferred or read anywhere else.`,
   memory_limit: `You have proposed ${STUDIO_MEMORY_PROPOSALS_PER_RUN} decisions this build. Leave the rest.`,
-  memory_replaces: 'replaces must be the label (like m1) of a saved decision shown to you, or left out.',
+  memory_replaces: 'replaces must be the label (like m1) of a saved decision shown to you in the same topic, in the same slot or in that topic’s general slot, or left out.',
   memory_duplicate: 'That decision is already saved.',
   memory_full: `This tool already has ${STUDIO_MEMORY_MAX_ACTIVE} saved decisions. Replace one (set replaces), or leave it.`,
   memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
@@ -109,7 +110,7 @@ export interface ToolState {
   counters: { writes: number; bytesWritten: number; checkRuns: number; repairRounds: number; questions: number }
   /** Saved decisions. `aliases` maps only the labels the prompt showed this turn to rows of this project. */
   memory: {
-    aliases: Readonly<Record<string, string>>
+    aliases: Readonly<Record<string, { id: string; topic: MemoryTopic; slot: MemorySlot }>>
     /** The professor's own text in this run: the only text a proposal's evidence may quote. */
     professorTexts: readonly string[]
     proposals: number
@@ -163,6 +164,7 @@ export type ToolOutcome =
 /** A checked proposal, ready for the database function that records it as inert. */
 export interface MemoryProposal {
   topic: MemoryTopic
+  slot: MemorySlot
   kind: MemoryKind
   statement: string
   evidence: string
@@ -432,35 +434,42 @@ const TOOL_LIST: ToolSpec[] = [
     name: 'propose_memory',
     kind: 'control',
     description:
-      'Propose one lasting decision about this tool for the professor to keep, when their own words in this request or in their answers state it ("keep the student view very simple", "no AI"). Copy their exact words into evidence. The professor approves each one; nothing is saved otherwise. Never propose something you inferred, guessed or read in code, course names, skills, check output or earlier summaries. Set replaces to the label (like m1) of a saved decision this one should replace.',
+      'Propose one lasting decision about this tool for the professor to keep, when their own words in this request or in their answers state it ("keep the student view very simple", "no AI"). Copy their exact words into evidence. Pick the topic and the slot the decision is about: a decision replaces only the saved decision in the same topic and slot, so "no AI" (content_policy, ai_usage) and "reviews stay anonymous" (content_policy, anonymity) are kept apart. Use slot general only when no other slot fits. The professor approves each one; nothing is saved otherwise. Never propose something you inferred, guessed or read in code, course names, skills, check output or earlier summaries. Set replaces to the label (like m1) of the saved decision this one should replace: one in the same topic, in the same slot or in that topic\u2019s general slot.',
     schema: z.strictObject({
       topic: z.enum(MEMORY_TOPICS),
+      slot: z.enum(MEMORY_SLOT_KEYS),
       kind: z.enum(MEMORY_KINDS),
       statement: z.string().min(1).max(STUDIO_MEMORY_STATEMENT_MAX_CHARS),
       evidence: z.string().min(STUDIO_MEMORY_EVIDENCE_MIN_CHARS).max(STUDIO_MEMORY_EVIDENCE_MAX_CHARS),
       replaces: z.string().regex(/^m\d{1,2}$/).optional(),
     }),
-    execute: (state, args: { topic: MemoryTopic; kind: MemoryKind; statement: string; evidence: string; replaces?: string }) => {
+    execute: (state, args: { topic: MemoryTopic; slot: MemorySlot; kind: MemoryKind; statement: string; evidence: string; replaces?: string }) => {
       const summary: Summary = {
         topic: args.topic,
+        slot: args.slot,
         kind: args.kind,
         statement_chars: args.statement.length,
         evidence_chars: args.evidence.length,
         replaces: args.replaces ?? null,
       }
+      if (!isSlotOf(args.topic, args.slot)) return refused('memory_slot', summary, [`slots for ${args.topic}: ${MEMORY_SLOTS[args.topic].join(', ')}`])
       const bad = statementProblem(args.statement)
       if (bad) return refused('memory_statement', summary, [`statement: ${bad}`])
       const unquoted = evidenceProblem(args.evidence, [...state.memory.professorTexts])
+      // after_negation: the quote must include the professor's "not", or it says the opposite.
       if (unquoted) return refused('memory_evidence', summary, [`evidence: ${unquoted}`])
       // The quote has to be about the sentence, or any four characters of the request would do.
       if (!supports(args.statement, args.evidence)) return refused('memory_statement', summary, ['statement: not supported by the quote'])
       if (state.memory.proposals >= STUDIO_MEMORY_PROPOSALS_PER_RUN) return refused('memory_limit', summary)
       let replacesId: string | null = null
       if (args.replaces !== undefined) {
-        replacesId = Object.hasOwn(state.memory.aliases, args.replaces) ? state.memory.aliases[args.replaces] : null
-        if (!replacesId) return refused('memory_replaces', summary)
+        const named = Object.hasOwn(state.memory.aliases, args.replaces) ? state.memory.aliases[args.replaces] : null
+        // The decision in the same topic and slot, or the topic's general one: changing AI use
+        // can retire an old general "no AI" decision, never the anonymity decision.
+        if (!named || named.topic !== args.topic || (named.slot !== args.slot && named.slot !== 'general')) return refused('memory_replaces', summary)
+        replacesId = named.id
       }
-      return { kind: 'memory', args: summary, proposal: { topic: args.topic, kind: args.kind, statement: args.statement, evidence: args.evidence, replacesId } }
+      return { kind: 'memory', args: summary, proposal: { topic: args.topic, slot: args.slot, kind: args.kind, statement: args.statement, evidence: args.evidence, replacesId } }
     },
   },
   {

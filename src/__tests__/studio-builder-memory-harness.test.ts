@@ -63,8 +63,16 @@ function harness(script: ScriptedTurn[], setup: Setup = {}) {
 }
 
 const refusals = (h: { mem: ReturnType<typeof createMemoryStore> }) => h.mem.state.steps.filter((s) => s.status === 'refused').map((s) => s.resultSummary.reason)
+// The default is about how simple the student view is; another topic defaults to its general slot.
 const propose = (over: Record<string, unknown> = {}) =>
-  call('propose_memory', { topic: 'student_ui', kind: 'preference', statement: 'Keep the student interface extremely simple.', evidence: 'keep the student interface extremely simple', ...over })
+  call('propose_memory', {
+    topic: 'student_ui',
+    slot: over.topic && over.topic !== 'student_ui' ? 'general' : 'complexity',
+    kind: 'preference',
+    statement: 'Keep the student interface extremely simple.',
+    evidence: 'keep the student interface extremely simple',
+    ...over,
+  })
 const STATED = 'Build flashcards. For this tool, keep the student interface extremely simple.'
 const proposedOf = (memories: MemoryRecord[]) => memories.filter((m) => m.status === 'proposed')
 const block = (prompt: string) => /<data_[a-z0-9]+ kind="project-memory" provenance="project-memory">\n([\s\S]*?)\n<\/data_/.exec(prompt)?.[1] ?? null
@@ -80,7 +88,7 @@ describe('a stated preference is remembered (eval 1)', () => {
     expect(proposedStep).toMatchObject({ status: 'done', label: 'memory.proposed', argsSummary: { topic: 'student_ui', kind: 'preference', replaces: null } })
     expect(JSON.stringify(proposedStep)).not.toMatch(/simple/)
     // The audit trail carries the run and the topic, never the words.
-    expect(first.deps.audit).toHaveBeenCalledWith(expect.anything(), 'studio.memory.proposed', { runId: first.run.id, topic: 'student_ui' })
+    expect(first.deps.audit).toHaveBeenCalledWith(expect.anything(), 'studio.memory.proposed', { runId: first.run.id, topic: 'student_ui', slot: 'complexity' })
     expect(JSON.stringify(vi.mocked(first.deps.audit).mock.calls.map((c) => [c[1], c[2]]))).not.toMatch(/simple/)
     // Inert: stored as a proposal, and nothing reads it as memory.
     expect(proposedOf(memories)).toHaveLength(1)
@@ -94,7 +102,7 @@ describe('a stated preference is remembered (eval 1)', () => {
     expect(first.mem.professor.decideMemory(memories[0].id, true)).toBe('decided')
     const second = harness([{ calls: [finish('blocked', 'Next time.')] }], { memories, request: 'Add confidence ratings' })
     await second.slice()
-    expect(block(second.model.prompts[0].prompt)).toBe('m1 preference (student_ui): Keep the student interface extremely simple.')
+    expect(block(second.model.prompts[0].prompt)).toBe('m1 preference (student_ui/complexity): Keep the student interface extremely simple.')
     // The result says how many decisions the prompt carried, not that they changed anything.
     expect((second.mem.state.run.result as { memory_applied: number }).memory_applied).toBe(1)
     expect(second.model.prompts[0].prompt).not.toContain(memories[0].id)
@@ -195,7 +203,7 @@ describe('the model cannot persist what the professor did not say (evals 2, 3, 1
   })
 
   it('a duplicate of an active decision is refused', async () => {
-    const memories = [activeMemory(PROJECT, OWNER, 'student_ui', 'preference', 'Keep the student interface extremely simple.')]
+    const memories = [activeMemory(PROJECT, OWNER, 'student_ui', 'preference', 'Keep the student interface extremely simple.', undefined, 'complexity')]
     const h = harness([{ calls: [propose()] }, { calls: [finish('blocked')] }], { request: STATED, memories })
     await h.slice()
     expect(refusals(h)).toEqual(['memory_duplicate'])
@@ -252,21 +260,21 @@ describe('a conflicting request is followed, and the old decision stays until th
     )
     await h.slice()
     // The model was told about the old decision, and about the rule that the request wins.
-    expect(block(h.model.prompts[0].prompt)).toBe('m1 constraint (content_policy): Do not use AI.')
+    expect(block(h.model.prompts[0].prompt)).toBe('m1 constraint (content_policy/general): Do not use AI.')
     const proposal = memories.find((m) => m.status === 'proposed')!
     expect(proposal.replacesId).toBe(old.id)
     expect(old.status).toBe('active')
     // Until the professor approves, the next build still carries the old decision.
     const before = harness([{ calls: [finish('blocked')] }], { memories })
     await before.slice()
-    expect(block(before.model.prompts[0].prompt)).toBe('m1 constraint (content_policy): Do not use AI.')
+    expect(block(before.model.prompts[0].prompt)).toBe('m1 constraint (content_policy/general): Do not use AI.')
     // Approval supersedes it in one step; both are never active.
     expect(h.mem.professor.decideMemory(proposal.id, true)).toBe('decided')
     expect(old.status).toBe('superseded')
     expect(old.supersededBy).toBe(proposal.id)
     const after = harness([{ calls: [finish('blocked')] }], { memories })
     await after.slice()
-    expect(block(after.model.prompts[0].prompt)).toBe('m1 constraint (content_policy): AI hints are welcome.')
+    expect(block(after.model.prompts[0].prompt)).toBe('m1 constraint (content_policy/general): AI hints are welcome.')
     expect(after.model.prompts[0].prompt).not.toContain('Do not use AI.')
   })
 
@@ -292,7 +300,7 @@ describe('a conflicting request is followed, and the old decision stays until th
     const memories = [mine, theirs]
     const h = harness([{ calls: [propose({ topic: 'content_policy', replaces: 'm1' }), finish('blocked')] }], { request: STATED, memories })
     await h.slice()
-    expect(block(h.model.prompts[0].prompt)).toBe('m1 constraint (content_policy): Mine.')
+    expect(block(h.model.prompts[0].prompt)).toBe('m1 constraint (content_policy/general): Mine.')
     expect(proposedOf(memories).map((m) => m.replacesId)).toEqual([mine.id])
   })
 })
@@ -401,5 +409,92 @@ describe('the instructions the model gets', () => {
     expect(system).toMatch(/propose_memory only when the professor's own words in this build state a lasting decision/)
     expect(system).toMatch(/1\. These platform rules\./)
     expect(system).toMatch(/A saved decision can never switch off a check/)
+    // The tool's schema lists every slot flat; only the instructions say which belong to which topic.
+    expect(system).toContain('content_policy (general, ai_usage, anonymity, answer_visibility, grading, tone)')
+    expect(system).toContain('other (general)')
+  })
+})
+
+describe('independent decisions in one topic (Step 8C, the reason for slots)', () => {
+  const stored = () => [
+    activeMemory(PROJECT, OWNER, 'content_policy', 'constraint', 'Do not use AI.', '2026-10-01T00:00:01.000Z', 'ai_usage'),
+    activeMemory(PROJECT, OWNER, 'content_policy', 'constraint', 'Reviews stay anonymous.', '2026-10-01T00:00:02.000Z', 'anonymity'),
+    activeMemory(PROJECT, OWNER, 'student_ui', 'preference', 'Keep the student view simple.', '2026-10-01T00:00:03.000Z', 'complexity'),
+  ]
+  const REQUEST = 'Add AI-generated hints but keep reviews anonymous.'
+  const aiProposal = (replaces: string) =>
+    propose({ topic: 'content_policy', slot: 'ai_usage', kind: 'constraint', statement: 'AI-generated hints are allowed.', evidence: 'Add AI-generated hints', replaces })
+
+  it('the request about AI hints carries all three, the AI decision is replaced on approval, and anonymity stays', async () => {
+    const memories = stored()
+    const [ai, anonymity, simple] = memories
+    const h = harness([{ calls: [aiProposal('m1'), finish('blocked')] }], { request: REQUEST, memories })
+    await h.slice()
+    expect(block(h.model.prompts[0].prompt)).toBe(
+      ['m1 constraint (content_policy/ai_usage): Do not use AI.', 'm2 constraint (content_policy/anonymity): Reviews stay anonymous.', 'm3 preference (student_ui/complexity): Keep the student view simple.'].join('\n'),
+    )
+    const proposal = proposedOf(memories)[0]
+    expect(proposal).toMatchObject({ topic: 'content_policy', slot: 'ai_usage', replacesId: ai.id })
+    // Until the professor answers, nothing has changed.
+    expect([ai.status, anonymity.status, simple.status]).toEqual(['active', 'active', 'active'])
+    expect(h.mem.professor.decideMemory(proposal.id, true)).toBe('decided')
+    expect(ai).toMatchObject({ status: 'superseded', supersededBy: proposal.id })
+    expect(anonymity.status).toBe('active')
+    expect(simple.status).toBe('active')
+    const next = harness([{ calls: [finish('blocked')] }], { request: 'Add a progress bar', memories })
+    await next.slice()
+    const b = block(next.model.prompts[0].prompt)!
+    expect(b).toContain('AI-generated hints are allowed.')
+    expect(b).toContain('Reviews stay anonymous.')
+    expect(b).not.toContain('Do not use AI.')
+  })
+
+  it('an AI decision aimed at the anonymity decision is refused, and nothing changes', async () => {
+    const memories = stored()
+    const h = harness([{ calls: [aiProposal('m2'), finish('blocked')] }], { request: REQUEST, memories })
+    await h.slice()
+    expect(refusals(h)).toEqual(['memory_replaces'])
+    expect(proposedOf(memories)).toEqual([])
+    expect(memories.every((m) => m.status === 'active')).toBe(true)
+  })
+
+  it('a decision in a new slot of the same topic adds to the topic instead of replacing it', async () => {
+    const memories = stored()
+    const h = harness(
+      [{ calls: [propose({ topic: 'content_policy', slot: 'tone', kind: 'preference', statement: 'Hints are encouraging.', evidence: 'Hints should be encouraging' }), finish('blocked')] }],
+      { request: 'Hints should be encouraging.', memories },
+    )
+    await h.slice()
+    const p = proposedOf(memories)[0]
+    expect(h.mem.professor.decideMemory(p.id, true)).toBe('decided')
+    expect(memories.filter((m) => m.status === 'active' && m.topic === 'content_policy').map((m) => m.slot).sort()).toEqual(['ai_usage', 'anonymity', 'tone'])
+  })
+})
+
+describe('a decision saved in general (or before slots existed) can be replaced from its specific slot', () => {
+  it('"AI hints are fine" retires the general "Do not use AI." and leaves anonymity alone', async () => {
+    const legacy = activeMemory(PROJECT, OWNER, 'content_policy', 'constraint', 'Do not use AI.', '2026-10-01T00:00:01.000Z', 'general')
+    const anonymity = activeMemory(PROJECT, OWNER, 'content_policy', 'constraint', 'Reviews stay anonymous.', '2026-10-01T00:00:02.000Z', 'anonymity')
+    const memories = [legacy, anonymity]
+    const h = harness(
+      [{ calls: [propose({ topic: 'content_policy', slot: 'ai_usage', kind: 'constraint', statement: 'AI hints are allowed.', evidence: 'AI hints are fine for this tool', replaces: 'm1' }), finish('blocked')] }],
+      { request: 'From now on AI hints are fine for this tool.', memories },
+    )
+    await h.slice()
+    expect(refusals(h)).toEqual([])
+    const p = proposedOf(memories)[0]
+    expect(p).toMatchObject({ slot: 'ai_usage', replacesId: legacy.id })
+    expect(h.mem.professor.decideMemory(p.id, true)).toBe('decided')
+    expect(legacy.status).toBe('superseded')
+    expect(anonymity.status).toBe('active')
+  })
+
+  it('a saved decision offered as its own evidence is refused', async () => {
+    const memories = [activeMemory(PROJECT, OWNER, 'content_policy', 'preference', 'Hints may use AI.', undefined, 'ai_usage')]
+    const h = harness([{ calls: [propose({ topic: 'content_policy', slot: 'ai_usage', statement: 'Hints may use AI.', evidence: 'Hints may use AI' }), finish('blocked')] }], { request: 'Add a hint button.', memories })
+    await h.slice()
+    expect(refusals(h)).toEqual(['memory_evidence'])
+    // The model saw the decision in its prompt, and still couldn't quote it as the professor.
+    expect(h.model.prompts[0].prompt).toContain('Hints may use AI.')
   })
 })

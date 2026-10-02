@@ -7,7 +7,7 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
-import type { MemoryKind, MemoryTopic } from './builder/memory'
+import type { MemoryKind, MemorySlot, MemoryTopic } from './builder/memory'
 import { STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
 
 const PROJECTS = 'studio_plugin_projects'
@@ -1481,6 +1481,7 @@ export interface MemoryRow {
   institutionId: string
   ownerId: string
   topic: MemoryTopic
+  slot: MemorySlot
   kind: MemoryKind
   statement: string
   origin: 'professor_edit' | 'approved_proposal'
@@ -1489,21 +1490,20 @@ export interface MemoryRow {
   status: 'proposed' | 'active' | 'superseded' | 'removed' | 'rejected'
   createdAt: string
   updatedAt: string
-  /** For a proposal: the statement of the active decision it would replace. */
-  replacesStatement: string | null
+  /** For a proposal: the statements of every active decision approval would supersede. */
+  replacesStatements: string[]
 }
 
-const MEMORY_FIELDS = 'id, project_id, institution_id, owner_id, topic, kind, statement, origin, evidence, source_run_id, status, created_at, updated_at'
+const MEMORY_FIELDS = 'id, project_id, institution_id, owner_id, topic, slot_key, kind, statement, origin, evidence, source_run_id, status, created_at, updated_at'
 
 function toMemoryRow(r: Record<string, unknown>): MemoryRow {
-  const replaces = r.replaces as { statement?: string } | { statement?: string }[] | null | undefined
-  const replaced = Array.isArray(replaces) ? replaces[0] : replaces
   return {
     id: r.id as string,
     projectId: r.project_id as string,
     institutionId: r.institution_id as string,
     ownerId: r.owner_id as string,
     topic: r.topic as MemoryTopic,
+    slot: r.slot_key as MemorySlot,
     kind: r.kind as MemoryKind,
     statement: r.statement as string,
     origin: r.origin as MemoryRow['origin'],
@@ -1512,7 +1512,7 @@ function toMemoryRow(r: Record<string, unknown>): MemoryRow {
     status: r.status as MemoryRow['status'],
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
-    replacesStatement: replaced?.statement ?? null,
+    replacesStatements: Array.isArray(r.replaces) ? (r.replaces as string[]) : [],
   }
 }
 
@@ -1539,8 +1539,8 @@ export async function listActiveMemories(projectId: string, institutionId: strin
 
 /**
  * The proposals one run raised that still wait for the professor, owner-pinned. Each carries
- * the statement it would replace on approval: the decision it named, else the active one on
- * its topic, since approving supersedes both. The card shows that, so nothing is lost silently.
+ * every statement approval would supersede, exactly as studio_memory_decide does: the active
+ * decision it named, and the active decision in its own topic and slot. The card shows that, so nothing is lost silently.
  */
 export async function listRunMemoryProposals(runId: string, ownerId: string): Promise<MemoryRow[] | null> {
   const admin = createAdminClient()
@@ -1561,7 +1561,7 @@ export async function listRunMemoryProposals(runId: string, ownerId: string): Pr
   if (proposals.length === 0) return []
   const { data: active, error: activeError } = await admin
     .from(MEMORIES)
-    .select('id, topic, statement')
+    .select('id, topic, slot_key, statement')
     .eq('project_id', proposals[0].project_id as string)
     .eq('status', 'active')
     .limit(STUDIO_MEMORY_MAX_ACTIVE + 5)
@@ -1570,8 +1570,10 @@ export async function listRunMemoryProposals(runId: string, ownerId: string): Pr
     return null
   }
   return proposals.map((p) => {
-    const target = (active ?? []).find((a) => a.id === p.replaces_id) ?? (active ?? []).find((a) => a.topic === p.topic)
-    return toMemoryRow({ ...p, replaces: target ? { statement: target.statement } : null })
+    const superseded = (active ?? []).filter((a) => a.id === p.replaces_id || (a.topic === p.topic && a.slot_key === p.slot_key))
+    // The named decision first, then the one in the slot.
+    superseded.sort((x, y) => Number(y.id === p.replaces_id) - Number(x.id === p.replaces_id))
+    return toMemoryRow({ ...p, replaces: superseded.map((a) => a.statement) })
   })
 }
 
@@ -1580,6 +1582,7 @@ export interface ProposeMemoryArgs {
   token: string
   step: Record<string, unknown>
   topic: MemoryTopic
+  slot: MemorySlot
   kind: MemoryKind
   statement: string
   evidence: string
@@ -1591,13 +1594,13 @@ export interface ProposeMemoryArgs {
 export const memoryRpcs = {
   propose: (a: ProposeMemoryArgs) =>
     builderRpc('studio_memory_propose', {
-      p_run: a.runId, p_token: a.token, p_step: a.step, p_topic: a.topic, p_kind: a.kind, p_statement: a.statement,
+      p_run: a.runId, p_token: a.token, p_step: a.step, p_topic: a.topic, p_slot: a.slot, p_kind: a.kind, p_statement: a.statement,
       p_evidence: a.evidence, p_replaces: a.replacesId, p_caps: a.caps, p_active_ms: a.activeMs,
     }),
   decide: (memoryId: string, runId: string, ownerId: string, approve: boolean, maxActive: number, ttlMs: number) =>
     builderRpc('studio_memory_decide', { p_memory: memoryId, p_run: runId, p_owner: ownerId, p_approve: approve, p_max_active: maxActive, p_ttl_ms: ttlMs }),
-  save: (projectId: string, ownerId: string, topic: MemoryTopic, kind: MemoryKind, statement: string, replaceId: string | null, maxActive: number) =>
-    builderRpc('studio_memory_save', { p_project: projectId, p_owner: ownerId, p_topic: topic, p_kind: kind, p_statement: statement, p_replace: replaceId, p_max_active: maxActive }),
+  save: (projectId: string, ownerId: string, topic: MemoryTopic, slot: MemorySlot, kind: MemoryKind, statement: string, replaceId: string | null, maxActive: number) =>
+    builderRpc('studio_memory_save', { p_project: projectId, p_owner: ownerId, p_topic: topic, p_slot: slot, p_kind: kind, p_statement: statement, p_replace: replaceId, p_max_active: maxActive }),
   remove: (memoryId: string, ownerId: string, projectId: string) => builderRpc('studio_memory_remove', { p_memory: memoryId, p_owner: ownerId, p_project: projectId }),
   /** The builder's upkeep: rejects proposals nobody answered. Returns how many. */
   expire: async (ttlMs: number, limit: number): Promise<number | null> => {

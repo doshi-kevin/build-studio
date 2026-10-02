@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { Bookmark, CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
@@ -119,31 +119,43 @@ export function ApprovalCard({ approval, onDecide }: {
 }
 
 /** One suggestion to remember. The words are Athena's; the quote under them is the professor's own. */
-function MemoryProposalItem({ proposal, onDecide }: {
-  proposal: ProgressRead['memory']['proposals'][number]
-  onDecide: (memoryId: string, approve: boolean) => Promise<string | null>
+type Proposal = ProgressRead['memory']['proposals'][number]
+type Answer = 'saved' | 'skipped'
+
+/** "“A”" or "“A” and “B”": what approving would replace. */
+const quoted = (items: string[]) => items.map((s) => `“${s}”`).join(' and ')
+
+/** One suggestion to remember. The words are Athena's; the quote under them is the professor's own. */
+function MemoryProposalItem({ proposal, answered, onDecide }: {
+  proposal: Proposal
+  /** Set once the professor has answered. The item stays on screen after the card refreshes. */
+  answered: Answer | null
+  onDecide: (proposal: Proposal, approve: boolean) => Promise<string | null>
 }) {
   const [pending, start] = useTransition()
   const [clicked, setClicked] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Once answered, the buttons stay gone until the card refreshes, so a second click can't hit a closed suggestion.
-  const [answered, setAnswered] = useState<'saved' | 'skipped' | null>(null)
+  // The buttons go away on an answer, so focus moves to the line that replaces them. The item
+  // outlives the refresh that drops the proposal from the server's list, so focus stays put.
+  const done = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    if (answered) done.current?.focus()
+  }, [answered])
   const decide = (approve: boolean) => {
     setClicked(approve)
-    start(async () => {
-      const failure = await onDecide(proposal.id, approve)
-      setError(failure)
-      if (!failure) setAnswered(approve ? 'saved' : 'skipped')
-    })
+    start(async () => setError(await onDecide(proposal, approve)))
   }
   return (
     <li className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground">{proposal.categoryLabel}</p>
       <p className="text-sm font-medium">{proposal.statement}</p>
       {proposal.evidence && <p className="text-xs text-muted-foreground">You said: “{proposal.evidence}”</p>}
-      {proposal.replaces && <p className="text-xs text-muted-foreground">This replaces: “{proposal.replaces}”</p>}
+      {proposal.replaces.length > 0 && <p className="text-xs text-muted-foreground">This replaces: {quoted(proposal.replaces)}</p>}
       {error && <p className="text-sm text-destructive">{error}</p>}
       {answered ? (
-        <p className="text-sm text-muted-foreground">{answered === 'saved' ? 'Saved.' : 'Skipped.'}</p>
+        <p ref={done} tabIndex={-1} className="text-sm text-muted-foreground focus:outline-none">
+          {answered === 'saved' ? 'Saved.' : 'Skipped.'}
+        </p>
       ) : (
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="outline" className="min-h-11" onClick={() => decide(true)} disabled={pending}>
@@ -160,10 +172,24 @@ function MemoryProposalItem({ proposal, onDecide }: {
 
 /** Decisions Athena heard in this build and suggests keeping for the tool. Nothing is saved until the professor says yes. */
 export function MemoryProposals({ proposals, onDecide }: {
-  proposals: ProgressRead['memory']['proposals']
+  proposals: Proposal[]
   onDecide: (memoryId: string, approve: boolean) => Promise<string | null>
 }) {
-  if (proposals.length === 0) return null
+  // Every suggestion this card has shown, in the order it first appeared, and the answers given.
+  // The server stops listing a suggestion once it is decided; the card keeps it, in place.
+  const [seen, setSeen] = useState<Proposal[]>(proposals)
+  const [answers, setAnswers] = useState<Record<string, Answer>>({})
+  const fresh = proposals.filter((p) => !seen.some((s) => s.id === p.id))
+  if (fresh.length > 0) setSeen([...seen, ...fresh])
+  const decide = async (proposal: Proposal, approve: boolean) => {
+    const failure = await onDecide(proposal.id, approve)
+    if (!failure) setAnswers((prev) => ({ ...prev, [proposal.id]: approve ? 'saved' : 'skipped' }))
+    return failure
+  }
+  const answerOf = (id: string) => answers[id] ?? null
+  // A suggestion that left the list without an answer here (it expired) is not shown.
+  const shown = seen.filter((s) => answerOf(s.id) !== null || proposals.some((p) => p.id === s.id))
+  if (shown.length === 0) return null
   return (
     <section aria-labelledby="memory-heading" className="space-y-3 rounded-xl bg-muted p-3">
       <div className="flex items-center gap-2">
@@ -171,8 +197,8 @@ export function MemoryProposals({ proposals, onDecide }: {
         <h3 id="memory-heading" className="text-sm font-semibold">Remember for this tool?</h3>
       </div>
       <ul className="space-y-4">
-        {proposals.map((p) => (
-          <MemoryProposalItem key={p.id} proposal={p} onDecide={onDecide} />
+        {shown.map((p) => (
+          <MemoryProposalItem key={p.id} proposal={p} answered={answerOf(p.id)} onDecide={decide} />
         ))}
       </ul>
       <p className="text-xs text-muted-foreground">Studio will remember it the next time you build this tool. Anything you ask for later still comes first.</p>

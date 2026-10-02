@@ -3,12 +3,18 @@
  * own words, which decisions reach a prompt, how the prompt carries them, and what the
  * propose_memory tool lets through. Hermetic: no database, no model.
  */
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { buildTurnContext, type TurnInput } from '@/lib/studio/builder/context-builder'
 import { BUILDER_INSTRUCTIONS } from '@/lib/studio/builder/instructions'
 import {
   aliased,
+  categoryLabel,
   evidenceProblem,
+  isSlotOf,
+  MEMORY_SLOTS,
+  MEMORY_TOPICS,
+  relevance,
   memoryLine,
   professorTextsOf,
   selectMemories,
@@ -26,13 +32,14 @@ import {
   STUDIO_MEMORY_CONTEXT_MAX_ITEMS,
   STUDIO_MEMORY_CONSTRAINTS_MAX,
   STUDIO_MEMORY_PREFERENCES_MAX,
+  STUDIO_MEMORY_STATEMENT_MAX_CHARS,
 } from '@/lib/studio/limits'
 
 let n = 0
 const mem = (topic: MemoryTopic, kind: MemoryKind, statement: string, over: Partial<ProjectMemory> = {}): ProjectMemory => {
   n += 1
   const at = new Date(Date.UTC(2026, 9, 1, 0, 0, n)).toISOString()
-  return { id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, topic, kind, statement, createdAt: at, updatedAt: at, ...over }
+  return { id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, topic, slot: 'general', kind, statement, createdAt: at, updatedAt: at, ...over }
 }
 
 describe('what a saved decision may say', () => {
@@ -171,8 +178,17 @@ describe('which decisions reach a prompt', () => {
     expect(sel.constraints).toHaveLength(STUDIO_MEMORY_CONSTRAINTS_MAX)
     expect(sel.preferences).toHaveLength(Math.min(STUDIO_MEMORY_PREFERENCES_MAX, STUDIO_MEMORY_CONTEXT_MAX_ITEMS - STUDIO_MEMORY_CONSTRAINTS_MAX))
     expect(sel.constraints.length + sel.preferences.length).toBeLessThanOrEqual(STUDIO_MEMORY_CONTEXT_MAX_ITEMS)
-    // The oldest constraints stay; the newest go.
+    // All tied: the oldest constraints stay, and the most recently decided preferences.
     expect(sel.constraints.map((m) => m.alias)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6'])
+    expect(sel.preferences.map((m) => m.statement)).toEqual(['Student view preference 8.', 'Student view preference 7.'])
+  })
+
+  it('a tied preference the professor decided later wins over one written later', () => {
+    const older = mem('student_ui', 'preference', 'Student view uses one column.', { updatedAt: '2026-10-02T12:00:00.000Z' })
+    const rest = Array.from({ length: 4 }, (_, i) => mem('student_ui', 'preference', `Student view preference ${i}.`))
+    const sel = selectMemories([older, ...rest], input('Make the student view button larger'))
+    expect(sel.preferences[0].statement).toBe('Student view uses one column.')
+    expect(sel.preferences.map((m) => m.statement)).not.toContain('Student view preference 0.')
   })
 
   it('never exceeds 2 KiB, and gives up preferences before constraints (eval 15)', () => {
@@ -190,7 +206,7 @@ describe('which decisions reach a prompt', () => {
     expect(sel.preferences.length).toBeLessThan(4)
   })
 
-  it('constraints alone over the byte cap lose the newest first', () => {
+  it('constraints alone over the byte cap lose the least relevant first (the newest on a tie)', () => {
     const wide = 'あ'.repeat(150)
     const many = Array.from({ length: 6 }, (_, i) => mem('other', 'constraint', `${wide}${i}`))
     const sel = selectMemories(many, input('x'))
@@ -242,7 +258,7 @@ describe('the prompt carries them as data, below the request', () => {
     expect(at('# Earlier builds')).toBeGreaterThan(-1)
     expect(at('# Earlier builds')).toBeLessThan(at('# Saved decisions for this tool'))
     expect(at('# Saved decisions for this tool')).toBeLessThan(at('# The course'))
-    expect(out.prompt).toContain('<data_n0nce123 kind="project-memory" provenance="project-memory">\nm1 constraint (content_policy): Do not use AI.\nm2 preference (student_ui): Keep the student view extremely simple.\n</data_n0nce123>')
+    expect(out.prompt).toContain('<data_n0nce123 kind="project-memory" provenance="project-memory">\nm1 constraint (content_policy/general): Do not use AI.\nm2 preference (student_ui/general): Keep the student view extremely simple.\n</data_n0nce123>')
     for (const m of saved) expect(out.prompt).not.toContain(m.id)
     expect(out.memory.map((m) => [m.alias, m.id])).toEqual(saved.map((m, i) => [`m${i + 1}`, m.id]))
   })
@@ -339,13 +355,19 @@ describe('propose_memory', () => {
     slug: 'tool-abc12345',
     published: null,
     counters: { writes: 0, bytesWritten: 0, checkRuns: 0, repairRounds: 0, questions: 0 },
-    memory: { aliases: { m1: 'id-of-m1', m3: 'id-of-m3' }, professorTexts: [REQUEST], proposals: 0, ...over },
+    memory: {
+      aliases: { m1: { id: 'id-of-m1', topic: 'student_ui', slot: 'complexity' }, m3: { id: 'id-of-m3', topic: 'student_ui', slot: 'complexity' }, m4: { id: 'id-of-m4', topic: 'content_policy', slot: 'anonymity' } },
+      professorTexts: [REQUEST],
+      proposals: 0,
+      ...over,
+    },
     runChecks: async () => {
       throw new Error('not in this test')
     },
   })
   const args = (over: Record<string, unknown> = {}) => ({
     topic: 'student_ui',
+    slot: 'complexity',
     kind: 'preference',
     statement: 'Keep the student interface extremely simple.',
     evidence: 'keep the student interface extremely simple',
@@ -356,7 +378,7 @@ describe('propose_memory', () => {
   it('is one of the ten tools the model may call, with a flat strict schema and no id', () => {
     expect(toolDeclarations().map((d) => d.name)).toContain('propose_memory')
     const shape = TOOLS.propose_memory.schema.shape
-    expect(Object.keys(shape).sort()).toEqual(['evidence', 'kind', 'replaces', 'statement', 'topic'])
+    expect(Object.keys(shape).sort()).toEqual(['evidence', 'kind', 'replaces', 'slot', 'statement', 'topic'])
     expect(TOOLS.propose_memory.schema.safeParse({ ...args(), memoryId: 'x' }).success).toBe(false)
     expect(TOOLS.propose_memory.schema.safeParse({ ...args(), topic: 'agent_inference' }).success).toBe(false)
     expect(TOOLS.propose_memory.schema.safeParse({ ...args(), kind: 'guess' }).success).toBe(false)
@@ -367,7 +389,7 @@ describe('propose_memory', () => {
   it('passes a proposal whose evidence is the professor’s exact words', async () => {
     const r = await run(state(), args())
     expect(r.kind).toBe('memory')
-    expect(r.proposal).toEqual({ topic: 'student_ui', kind: 'preference', statement: 'Keep the student interface extremely simple.', evidence: 'keep the student interface extremely simple', replacesId: null })
+    expect(r.proposal).toEqual({ topic: 'student_ui', slot: 'complexity', kind: 'preference', statement: 'Keep the student interface extremely simple.', evidence: 'keep the student interface extremely simple', replacesId: null })
   })
 
   it('refuses evidence the professor did not write: a guess, or anything copied from elsewhere (eval 2, 3)', async () => {
@@ -438,7 +460,244 @@ describe('propose_memory', () => {
 
   it('records only enum values, lengths and a label in the step, never the words', async () => {
     const r = (await run(state(), args({ replaces: 'm1' }))) as unknown as { args: Record<string, unknown> }
-    expect(r.args).toEqual({ topic: 'student_ui', kind: 'preference', statement_chars: 'Keep the student interface extremely simple.'.length, evidence_chars: 'keep the student interface extremely simple'.length, replaces: 'm1' })
+    expect(r.args).toEqual({ topic: 'student_ui', slot: 'complexity', kind: 'preference', statement_chars: 'Keep the student interface extremely simple.'.length, evidence_chars: 'keep the student interface extremely simple'.length, replaces: 'm1' })
     expect(JSON.stringify(r.args)).not.toMatch(/simple/)
+  })
+})
+
+describe('slots: independent decisions within one topic (Step 8C)', () => {
+  it('every topic has a closed list of slots that includes general, and the database lists exactly the same pairs', () => {
+    for (const topic of MEMORY_TOPICS) expect(MEMORY_SLOTS[topic]).toContain('general')
+    // The slot check in the migration is the database's copy of the catalog; the two must not drift.
+    const sql = readFileSync('supabase/migrations/20261002230000_studio_memory_slots.sql', 'utf8')
+    const check = /studio_plugin_memories_slot_check check \(\(topic, slot_key\) in \(([\s\S]*?)\)\);/.exec(sql)![1]
+    const pairs = [...check.matchAll(/\('([a-z_]+)', '([a-z_]+)'\)/g)].map((m) => `${m[1]}/${m[2]}`).sort()
+    const catalog = MEMORY_TOPICS.flatMap((t) => MEMORY_SLOTS[t].map((s) => `${t}/${s}`)).sort()
+    expect(pairs).toEqual(catalog)
+    // Room for the 20-decision cap: one active decision per slot.
+    expect(catalog.length).toBeGreaterThanOrEqual(20)
+  })
+
+  it('a slot belongs to one topic’s list or it is refused', () => {
+    expect(isSlotOf('content_policy', 'ai_usage')).toBe(true)
+    expect(isSlotOf('content_policy', 'complexity')).toBe(false)
+    expect(isSlotOf('other', 'general')).toBe(true)
+  })
+
+  it('labels read as the professor would say them, never as enum names', () => {
+    expect(categoryLabel('content_policy', 'ai_usage')).toBe('Content and AI rules: Use of AI')
+    expect(categoryLabel('content_policy', 'anonymity')).toBe('Content and AI rules: Anonymity')
+    expect(categoryLabel('student_ui', 'general')).toBe('Student view: Overall')
+    expect(categoryLabel('other', 'general')).toBe('Other')
+    for (const topic of MEMORY_TOPICS) {
+      for (const slot of MEMORY_SLOTS[topic]) expect(categoryLabel(topic, slot)).not.toMatch(/_/)
+    }
+  })
+
+  it('the prompt names each decision’s topic and slot', () => {
+    const line = memoryLine({ ...mem('content_policy', 'constraint', 'Do not use AI.', { slot: 'ai_usage' }), alias: 'm1' })
+    expect(line).toBe('m1 constraint (content_policy/ai_usage): Do not use AI.')
+  })
+
+  it('slot words outrank topic words: a request about AI ranks the AI decision above another content rule', () => {
+    const ai = mem('content_policy', 'preference', 'Prefer no automated help.', { slot: 'ai_usage' })
+    const tone = mem('content_policy', 'preference', 'Feedback is friendly.', { slot: 'tone' })
+    const grading = mem('content_policy', 'preference', 'Scores are out of ten.', { slot: 'grading' })
+    const input = { text: 'Add AI-generated hints', views: { student: false, professor: false } }
+    expect(relevance(ai, input)).toBeGreaterThan(relevance(tone, input))
+    expect(relevance(tone, input)).toBe(relevance(grading, input))
+    expect(selectMemories([tone, grading, ai], input).preferences[0].statement).toBe('Prefer no automated help.')
+  })
+
+  it('the conflict case: a request about AI and anonymity carries both decisions, and the unrelated one stays out', () => {
+    const all = [
+      mem('content_policy', 'constraint', 'Do not use AI.', { slot: 'ai_usage' }),
+      mem('content_policy', 'constraint', 'Reviews stay anonymous.', { slot: 'anonymity' }),
+      mem('student_ui', 'preference', 'Keep the student view simple.', { slot: 'complexity' }),
+      mem('data_collection', 'preference', 'Keep data for one term only.', { slot: 'retention' }),
+    ]
+    const sel = selectMemories(all, { text: 'Add AI-generated hints but keep reviews anonymous.', views: { student: true, professor: true } })
+    expect(sel.constraints.map((m) => m.statement)).toEqual(['Do not use AI.', 'Reviews stay anonymous.'])
+    expect(sel.preferences.map((m) => m.statement)).toEqual(['Keep the student view simple.'])
+  })
+
+  it('with more constraints than room, the most relevant constraints are the ones sent', () => {
+    const rules = Array.from({ length: 8 }, (_, i) => mem('other', 'constraint', `Unrelated rule ${i}.`))
+    const anonymity = mem('content_policy', 'constraint', 'Reviews stay anonymous.', { slot: 'anonymity' })
+    const sel = selectMemories([...rules, anonymity], { text: 'Show reviewer names to the professor', views: { student: false, professor: true } })
+    expect(sel.constraints).toHaveLength(6)
+    expect(sel.constraints[0].statement).toBe('Reviews stay anonymous.')
+  })
+})
+
+describe('propose_memory with slots', () => {
+  const REQUEST = 'Add AI-generated hints but keep reviews anonymous.'
+  const state = (): ToolState => ({
+    work: initialWork(null),
+    plan: null,
+    firstBuild: false,
+    slug: 'tool-abc12345',
+    published: null,
+    counters: { writes: 0, bytesWritten: 0, checkRuns: 0, repairRounds: 0, questions: 0 },
+    memory: {
+      aliases: {
+        m1: { id: 'ai-row', topic: 'content_policy', slot: 'ai_usage' },
+        m2: { id: 'anon-row', topic: 'content_policy', slot: 'anonymity' },
+        m3: { id: 'legacy-row', topic: 'content_policy', slot: 'general' },
+        m4: { id: 'ui-general-row', topic: 'student_ui', slot: 'general' },
+      },
+      professorTexts: [REQUEST],
+      proposals: 0,
+    },
+    runChecks: async () => {
+      throw new Error('not in this test')
+    },
+  })
+  const ai = (over: Record<string, unknown> = {}) => ({ topic: 'content_policy', slot: 'ai_usage', kind: 'constraint', statement: 'AI-generated hints are allowed.', evidence: 'Add AI-generated hints', ...over })
+  const run = (a: Record<string, unknown>) => TOOLS.propose_memory.execute(state(), a as never) as { kind: string; code?: string; proposal?: Record<string, unknown>; issues?: string[] }
+
+  it('replaces the AI decision by its label', () => {
+    expect(run(ai({ replaces: 'm1' }))).toMatchObject({ kind: 'memory', proposal: { topic: 'content_policy', slot: 'ai_usage', replacesId: 'ai-row' } })
+  })
+  it('can’t replace the anonymity decision with an AI decision, though both are content rules', () => {
+    expect(run(ai({ replaces: 'm2' }))).toMatchObject({ kind: 'refused', code: 'memory_replaces' })
+  })
+  it('can replace the topic’s general decision, but not another topic’s general one', () => {
+    expect(run(ai({ replaces: 'm3' }))).toMatchObject({ kind: 'memory', proposal: { replacesId: 'legacy-row' } })
+    expect(run(ai({ replaces: 'm4' }))).toMatchObject({ kind: 'refused', code: 'memory_replaces' })
+  })
+  it('refuses a slot from another topic, and names the topic’s slots in the issue', () => {
+    const r = run(ai({ slot: 'complexity' }))
+    expect(r).toMatchObject({ kind: 'refused', code: 'memory_slot' })
+    expect(r.issues?.[0]).toContain('ai_usage, anonymity')
+  })
+  it('the schema knows only the catalog’s slot names', () => {
+    expect(TOOLS.propose_memory.schema.safeParse(ai({ slot: 'my_new_slot' })).success).toBe(false)
+    expect(TOOLS.propose_memory.schema.safeParse(ai({ slot: 'other_1' })).success).toBe(false)
+  })
+})
+
+describe('worst-case memory in a full prompt (Step 8D)', () => {
+  const longest = (i: number) => `Rule ${i} ${'keepitsimple'.repeat(20)}`.slice(0, STUDIO_MEMORY_STATEMENT_MAX_CHARS)
+  const twenty = () => {
+    const slots = MEMORY_TOPICS.flatMap((t) => MEMORY_SLOTS[t].map((s) => [t, s] as const)).slice(0, 20)
+    return slots.map(([topic, slot], i) => mem(topic, i % 2 ? 'constraint' : 'preference', longest(i), { slot }))
+  }
+
+  it('20 active decisions at the longest length still give at most 8 and 2 KiB, inside the 64K context, the same way every time', () => {
+    const all = twenty()
+    expect(all.every((m) => m.statement.length === STUDIO_MEMORY_STATEMENT_MAX_CHARS)).toBe(true)
+    const input: TurnInput = {
+      nonce: 'n0nce123', request: 'Make the student view button larger and keep it simple'.padEnd(4000, ' x'), answers: [],
+      work: { ...initialWork(null), files: { 'views/student.tsx': 'x'.repeat(32 * 1024), 'views/professor.tsx': 'y'.repeat(32 * 1024) }, working_set: ['views/student.tsx', 'views/professor.tsx'] },
+      plan: null, phase: 'editing', firstBuild: false, baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null,
+      course: { code: 'BIO 101', title: 'Biology' }, skills: null,
+      history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r'.repeat(600), summary: 's'.repeat(1000), filesChanged: [] })),
+      memories: all, steps: [], resumed: false,
+      counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 }, tokenRatio: 1,
+    }
+    const out = buildTurnContext(input)
+    expect(out.memory.length).toBeLessThanOrEqual(STUDIO_MEMORY_CONTEXT_MAX_ITEMS)
+    const block = /<data_n0nce123 kind="project-memory"[^>]*>\n([\s\S]*?)\n<\/data_n0nce123>/.exec(out.prompt)!
+    expect(new TextEncoder().encode(block[1]).length).toBeLessThanOrEqual(STUDIO_MEMORY_CONTEXT_MAX_BYTES)
+    expect(out.estimatedTokens).toBeLessThanOrEqual(STUDIO_BUILDER_CONTEXT_MAX_TOKENS)
+    // Deterministic: same inputs, same block, same labels, in any storage order.
+    const again = buildTurnContext({ ...input, memories: [...all].reverse() })
+    expect(again.memory.map((m) => m.alias)).toEqual(out.memory.map((m) => m.alias))
+    expect(again.prompt).toBe(out.prompt)
+  })
+
+  it('under pressure the trims run in their fixed order, memory preferences first, and constraints survive', () => {
+    const all = twenty()
+    const base: TurnInput = {
+      nonce: 'n0nce123', request: 'Make the student view button larger', answers: [],
+      work: { ...initialWork(null), files: { 'views/student.tsx': 'x'.repeat(32 * 1024) }, working_set: ['views/student.tsx'] },
+      plan: null, phase: 'editing', firstBuild: false, baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null,
+      course: { code: 'BIO 101', title: 'Biology' }, skills: null,
+      history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r', summary: 's'.repeat(1000), filesChanged: [] })),
+      memories: all, steps: [], resumed: false,
+      counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 }, tokenRatio: 1,
+    }
+    const free = buildTurnContext(base)
+    const squeezed = buildTurnContext({ ...base, tokenRatio: STUDIO_BUILDER_CONTEXT_MAX_TOKENS / free.estimatedTokens + 0.02 })
+    expect(squeezed.trims[0]).toBe('memory_preferences')
+    expect(['memory_preferences', 'history', 'skills', 'action_log', 'kit_refs', 'findings']).toEqual(expect.arrayContaining(squeezed.trims))
+    expect(squeezed.memory.every((m) => m.kind === 'constraint')).toBe(true)
+    expect(squeezed.memory.length).toBeGreaterThan(0)
+  })
+})
+
+describe('review fixes (Step 8C)', () => {
+  it('a shared function word is not support: the quote has to share a content word with the sentence', () => {
+    expect(supports('Students may use AI to get hints on every card.', 'want to')).toBe(false)
+    expect(supports('Show it to students.', 'it is up to me')).toBe(false)
+    expect(supports('Do not use AI.', 'no AI')).toBe(true)
+  })
+
+  it('a quote cut out right after a negation is refused; the quote has to carry the "not"', () => {
+    const texts = ['Don’t show answers to students until the quiz closes. I want to keep it simple.']
+    expect(evidenceProblem('answers to students', texts)).toBe('after_negation')
+    expect(evidenceProblem('show answers to students', texts)).toBe('after_negation')
+    expect(evidenceProblem('Don’t show answers to students', texts)).toBeNull()
+    expect(evidenceProblem('keep it simple', texts)).toBeNull()
+    expect(evidenceProblem('use AI', ['Never use AI here.'])).toBe('after_negation')
+    expect(evidenceProblem('use AI', ['Never use AI here.', 'Students may use AI for hints.'])).toBeNull()
+    expect(evidenceProblem('hints', ['No hints, please.'])).toBe('after_negation')
+    expect(evidenceProblem('see answers', ['Students cannot see answers.'])).toBe('after_negation')
+    expect(evidenceProblem('AI hints', ['Build it without AI hints.'])).toBe('after_negation')
+    expect(evidenceProblem('track names', ['Neither store nor track names.'])).toBe('after_negation')
+  })
+
+  it('the M2 eval seeds: a button request keeps the button and simplicity decisions and leaves out the data and skill ones', () => {
+    const seeds = [
+      mem('accessibility', 'preference', 'Buttons are large and easy to tap.', { slot: 'target_size' }),
+      mem('student_ui', 'preference', 'Keep the student view minimal.', { slot: 'complexity' }),
+      mem('other', 'preference', 'Bind the mastery skill slot to the main course skill.'),
+      mem('data_collection', 'preference', 'Delete responses at the end of term.', { slot: 'retention' }),
+    ]
+    const sel = selectMemories(seeds, { text: 'Make the Next button in the student view larger.', views: { student: true, professor: true } })
+    expect(sel.preferences.map((m) => m.statement).sort()).toEqual(['Buttons are large and easy to tap.', 'Keep the student view minimal.'])
+  })
+
+  it('a saved decision is never its own evidence: only this run’s professor text counts', () => {
+    const retrieved = 'Hints may use AI.'
+    expect(evidenceProblem(retrieved, ['Add a hint button.'])).toBe('not_professor_words')
+  })
+
+  it('every trim runs, in its fixed order, when the prompt can’t fit any other way', () => {
+    const memories = Array.from({ length: 10 }, (_, i) => mem('student_ui', i % 2 ? 'constraint' : 'preference', `Rule ${i} for the student view.`, { slot: i % 2 ? 'layout' : 'complexity' }))
+    const findings = Array.from({ length: 30 }, (_, i) => ({ check_id: 'kit.required_states', severity: 'error', required: true, file: 'views/student.tsx', line: i, message: `finding ${i}`, hint: 'add it' }))
+    const work = {
+      ...initialWork(null),
+      files: { 'views/student.tsx': 'x'.repeat(1000) },
+      working_set: ['views/student.tsx' as const],
+      kit_refs: ['Screen', 'Stack', 'Card', 'Text', 'Button'] as never,
+      last_check: { work_hash: 'h', passed: false, findings, total: 30, summary: { compile: 'passed', unresolved: [] } } as never,
+    }
+    const steps = Array.from({ length: 20 }, (_, i) => ({ seq: i + 1, kind: 'tool', toolCallId: `${i}.0`, tool: 'read_file', status: 'done', argsSummary: { path: 'views/student.tsx' }, resultSummary: {} }))
+    const out = buildTurnContext({
+      nonce: 'n0nce123', request: 'Track mastery of each skill in the student view', answers: [], work, plan: null, phase: 'editing', firstBuild: false,
+      baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null, course: { code: 'BIO 101', title: 'Biology' },
+      skills: Array.from({ length: 100 }, (_, i) => `Skill ${i}`),
+      history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r', summary: 's'.repeat(1000), filesChanged: [] })),
+      memories, steps, resumed: false,
+      counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
+      tokenRatio: 1000,
+    })
+    expect(out.trims).toEqual(['memory_preferences', 'history', 'skills', 'action_log', 'kit_refs', 'findings'])
+    // Constraints are never trimmed.
+    expect(out.memory.length).toBeGreaterThan(0)
+    expect(out.memory.every((m) => m.kind === 'constraint')).toBe(true)
+  })
+})
+
+describe('the eval’s environment guard', () => {
+  it('names every Supabase secret present, and nothing for a model-key-only environment', async () => {
+    const { leakedSecrets } = await import('../../eval/studio-builder/guard')
+    expect(leakedSecrets({ GOOGLE_GENERATIVE_AI_API_KEY: 'k' })).toEqual([])
+    expect(leakedSecrets({ SUPABASE_SERVICE_ROLE_KEY: 'x', SUPABASE_DATABASE_PASSWORD: 'y', SUPABASE_DB_URL: 'z', SUPABASE_MGMT_TOKEN: 't' })).toEqual([
+      'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_DATABASE_PASSWORD', 'SUPABASE_DB_URL', 'SUPABASE_MGMT_TOKEN',
+    ])
+    expect(leakedSecrets({ SUPABASE_SERVICE_ROLE_KEY: '' })).toEqual([])
   })
 })

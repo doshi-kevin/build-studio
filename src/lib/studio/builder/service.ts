@@ -45,7 +45,7 @@ import {
 import { parseManifest, type StudioManifest } from '../manifest'
 import { draftFrameUrl } from '../runtime/frame-ticket'
 import type { PluginView } from '../runtime/protocol'
-import { KIND_LABEL, MEMORY_KINDS, MEMORY_TOPICS, statementProblem, TOPIC_LABEL, type MemoryKind, type MemoryTopic, type StatementProblem } from './memory'
+import { categoryLabel, isSlotOf, KIND_LABEL, MEMORY_KINDS, MEMORY_SLOT_KEYS, MEMORY_TOPICS, statementProblem, type MemoryKind, type MemorySlot, type MemoryTopic, type StatementProblem } from './memory'
 import { characterProblem } from './paths'
 
 export const BUILDER_NOT_AVAILABLE = 'This isn’t available.'
@@ -306,13 +306,14 @@ export interface ProgressRead {
 
 export interface MemoryProposalView {
   id: string
-  topicLabel: string
+  /** What the decision is about, in words: "Content and AI rules: Use of AI". */
+  categoryLabel: string
   kindLabel: string
   statement: string
   /** The professor's own words that the proposal rests on. */
   evidence: string
-  /** The saved decision this one would replace, if any. */
-  replaces: string | null
+  /** Every saved decision approving this one would replace: none, one, or (a general one it names plus the one in its slot) two. */
+  replaces: string[]
 }
 
 /** A run that ended in a way the professor may want to keep a decision from. */
@@ -402,11 +403,11 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
       applied: typeof result?.memory_applied === 'number' ? result.memory_applied : 0,
       proposals: proposals.map((m) => ({
         id: m.id,
-        topicLabel: TOPIC_LABEL[m.topic],
+        categoryLabel: categoryLabel(m.topic, m.slot),
         kindLabel: KIND_LABEL[m.kind],
         statement: m.statement,
         evidence: m.evidence ?? '',
-        replaces: m.replacesStatement,
+        replaces: m.replacesStatements,
       })),
     },
     events,
@@ -602,7 +603,9 @@ export async function undoDraft(input: z.input<typeof undoInput>): Promise<Servi
 export interface MemoryItem {
   id: string
   topic: MemoryTopic
-  topicLabel: string
+  slot: MemorySlot
+  /** What the decision is about, in words: "Content and AI rules: Use of AI". */
+  categoryLabel: string
   kind: MemoryKind
   kindLabel: string
   statement: string
@@ -637,18 +640,30 @@ export async function listProjectMemories(input: z.input<typeof memoryProjectInp
   if ((await studioAccess(professor.institutionId)) === 'off') return null
   const rows = await db.listActiveMemories(project.id, project.institutionId)
   if (!rows) return null
-  return rows.map((m) => ({ id: m.id, topic: m.topic, topicLabel: TOPIC_LABEL[m.topic], kind: m.kind, kindLabel: KIND_LABEL[m.kind], statement: m.statement, updatedAt: m.updatedAt }))
+  return rows.map((m) => ({
+    id: m.id,
+    topic: m.topic,
+    slot: m.slot,
+    categoryLabel: categoryLabel(m.topic, m.slot),
+    kind: m.kind,
+    kindLabel: KIND_LABEL[m.kind],
+    statement: m.statement,
+    updatedAt: m.updatedAt,
+  }))
 }
 
-const saveMemoryInput = z.strictObject({
-  sectionId: id,
-  pluginProjectId: id,
-  topic: z.enum(MEMORY_TOPICS),
-  kind: z.enum(MEMORY_KINDS),
-  statement: z.string().trim(),
-  /** The decision being edited. The edit is a new row that supersedes it. */
-  replaceId: id.nullable(),
-})
+const saveMemoryInput = z
+  .strictObject({
+    sectionId: id,
+    pluginProjectId: id,
+    topic: z.enum(MEMORY_TOPICS),
+    slot: z.enum(MEMORY_SLOT_KEYS),
+    kind: z.enum(MEMORY_KINDS),
+    statement: z.string().trim(),
+    /** The decision being edited. The edit is a new row that supersedes it. */
+    replaceId: id.nullable(),
+  })
+  .refine((v) => isSlotOf(v.topic, v.slot), 'that slot is not one of the topic’s slots')
 
 /** Add a decision, or edit one. The professor is the author, so there is no confirmation step. */
 export async function saveProjectMemory(input: z.input<typeof saveMemoryInput>): Promise<ServiceResult<{ id: string }>> {
@@ -662,10 +677,10 @@ export async function saveProjectMemory(input: z.input<typeof saveMemoryInput>):
   if (problem) return { ok: false, error: STATEMENT_COPY[problem] }
   const refused = await memoryRefused(professor)
   if (refused) return refused
-  const r = await db.memoryRpcs.save(project.id, professor.userId, parsed.data.topic, parsed.data.kind, parsed.data.statement, parsed.data.replaceId, STUDIO_MEMORY_MAX_ACTIVE)
+  const r = await db.memoryRpcs.save(project.id, professor.userId, parsed.data.topic, parsed.data.slot, parsed.data.kind, parsed.data.statement, parsed.data.replaceId, STUDIO_MEMORY_MAX_ACTIVE)
   switch (r?.outcome) {
     case 'saved':
-      audit(professor, 'studio.memory.saved', { pluginProjectId: project.id, memoryId: String(r.id), topic: parsed.data.topic })
+      audit(professor, 'studio.memory.saved', { pluginProjectId: project.id, memoryId: String(r.id), topic: parsed.data.topic, slot: parsed.data.slot })
       return { ok: true, value: { id: String(r.id) } }
     case 'unchanged':
       return { ok: true, value: { id: String(r.id) } }

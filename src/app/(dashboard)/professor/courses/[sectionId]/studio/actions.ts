@@ -34,7 +34,7 @@ import {
   type DraftHistory,
   type MemoryItem,
 } from '@/lib/studio/builder/service'
-import type { MemoryKind, MemoryTopic } from '@/lib/studio/builder/memory'
+import type { MemoryKind, MemorySlot, MemoryTopic } from '@/lib/studio/builder/memory'
 import type { StudioManifest } from '@/lib/studio/manifest'
 
 const NOT_AVAILABLE = 'This isn’t available.'
@@ -148,6 +148,7 @@ export async function saveMemoryAction(input: {
   sectionId: string
   pluginProjectId: string
   topic: MemoryTopic
+  slot: MemorySlot
   kind: MemoryKind
   statement: string
   replaceId: string | null
