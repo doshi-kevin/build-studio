@@ -183,6 +183,8 @@ export const STUDIO_BUILDER_HEARTBEAT_MS = 5_000
 /** A slice silent this long is presumed dead and its run may be re-claimed. */
 export const STUDIO_BUILDER_HEARTBEAT_STALE_MS = 60_000
 export const STUDIO_BUILDER_MAX_RESUMES = 2
+/** Runs the job worker's sweep tends per kick, oldest first; the rest wait for the next kick. */
+export const STUDIO_BUILDER_SWEEP_LIMIT = 50
 /** How long an approval card or a question waits for the professor. */
 export const STUDIO_BUILDER_WAITING_TTL_MS = 72 * 3600_000
 /** Progress polling, and the most trajectory rows one poll returns. */

@@ -56,6 +56,7 @@ import {
   STUDIO_BUILDER_SLICE_CUSHION_MS,
   STUDIO_BUILDER_SLICE_MAX_MS,
   STUDIO_BUILDER_SLICE_MIN_BUDGET_MS,
+  STUDIO_BUILDER_SWEEP_LIMIT,
   STUDIO_BUILDER_WAITING_TTL_MS,
 } from '../limits'
 import { parseManifest, type StudioManifest, type StudioManifestV2 } from '../manifest'
@@ -99,7 +100,7 @@ const CAPS = {
   questions: STUDIO_BUILDER_MAX_QUESTIONS,
 }
 
-export type GateRefusal = 'studio_paused' | 'not_entitled' | 'ai_disabled' | 'access_lost' | 'project_archived' | 'limit_cost'
+export type GateRefusal = 'studio_paused' | 'not_entitled' | 'ai_disabled' | 'access_lost' | 'project_archived' | 'limit_daily_cost'
 
 export interface SliceData {
   slug: string
@@ -361,7 +362,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
 
       // ── The combined gate, before every model call ──
       const refusal = await deps.gate(run)
-      if (refusal === 'limit_cost') return await end(run, work, plan, 'budget_exhausted', 'limit_cost')
+      if (refusal === 'limit_daily_cost') return await end(run, work, plan, 'budget_exhausted', 'limit_daily_cost')
       if (refusal) return await end(run, work, plan, 'blocked', refusal)
       const budget = budgetStop(run.counters)
       if (budget) return await end(run, work, plan, budget.status, budget.code)
@@ -797,7 +798,7 @@ async function gate(run: db.BuilderRunRow): Promise<GateRefusal | null> {
   if (!ai.allowed) return 'ai_disabled'
   if (!actor.ok) return actor.reason
   // Fails closed: unreadable spend stops the build.
-  if (spend === null || spend + WORST_CASE_CALL_USD > STUDIO_BUILDER_INSTITUTION_DAILY_COST_USD) return 'limit_cost'
+  if (spend === null || spend + WORST_CASE_CALL_USD > STUDIO_BUILDER_INSTITUTION_DAILY_COST_USD) return 'limit_daily_cost'
   return null
 }
 
@@ -834,5 +835,13 @@ export const builderSlicePipeline: BackgroundPipeline = {
   run: async (params, ctx) => {
     const outcome = await runBuilderSlice(params, { id: ctx.job.id, deadline: ctx.deadline }, realHarnessDeps())
     return { result: { outcome }, summary: `Builder slice: ${outcome}` }
+  },
+  // Recovers or releases stalled runs whether or not anyone has the page open, so a dead
+  // slice can't hold a live slot and an unanswered card expires on time. Counts only.
+  upkeep: async () => {
+    const swept = await db.builderRpcs.sweep(STUDIO_BUILDER_HEARTBEAT_STALE_MS, STUDIO_BUILDER_MAX_RESUMES, STUDIO_BUILDER_SWEEP_LIMIT)
+    if (!swept) return
+    const counts = Object.fromEntries(['requeued', 'failed', 'cancelled', 'expired', 'error'].map((k) => [k, Number(swept[k] ?? 0)]))
+    if (Object.values(counts).some((n) => n > 0)) logger.info('studio/builder.upkeep', counts)
   },
 }

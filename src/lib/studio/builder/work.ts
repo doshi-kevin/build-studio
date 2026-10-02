@@ -69,7 +69,7 @@ export type Plan = z.infer<typeof planSchema>
 
 export type TerminalStatus = 'preview_ready' | 'completed' | 'blocked' | 'cancelled' | 'budget_exhausted' | 'failed'
 
-export const BUDGET_CODES = ['limit_turns', 'limit_tool_calls', 'limit_writes', 'limit_bytes', 'limit_active_time', 'limit_slices', 'limit_cost'] as const
+export const BUDGET_CODES = ['limit_turns', 'limit_tool_calls', 'limit_writes', 'limit_bytes', 'limit_active_time', 'limit_slices', 'limit_cost', 'limit_daily_cost'] as const
 export const VALIDATION_CODES = ['repair_rounds', 'same_finding', 'check_runs'] as const
 export const BLOCK_CODES = ['agent_blocked', 'draft_changed', 'studio_paused', 'not_entitled', 'ai_disabled', 'access_lost', 'project_archived'] as const
 export const FAILURE_CODES = ['repeated_tool_errors', 'model_unavailable', 'check_timeout', 'interrupted', 'internal'] as const

@@ -182,6 +182,22 @@ export function claimableTypes(remainingMs: number, requested?: string[]): strin
 }
 
 /**
+ * Run every registered pipeline's upkeep, one after another. A pipeline whose upkeep
+ * throws is logged and skipped: it never blocks the others or the drain that follows.
+ */
+export async function runPipelineUpkeep(opts: Pick<WorkerOptions, 'adminClient'> = {}): Promise<void> {
+  const admin = getAdmin(opts)
+  for (const pipeline of listPipelines()) {
+    if (!pipeline.upkeep) continue
+    try {
+      await pipeline.upkeep({ adminDb: admin })
+    } catch (err) {
+      logger.error('jobs.worker.runPipelineUpkeep: upkeep threw', err, { type: pipeline.type })
+    }
+  }
+}
+
+/**
  * Drain the queue until empty or until `deadline` (unix ms) is reached. The
  * kick route provides a deadline that leaves a cushion before its maxDuration.
  */

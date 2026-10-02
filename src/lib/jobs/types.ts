@@ -74,4 +74,7 @@ export interface BackgroundPipeline {
    * claimed late in a drain isn't started with seconds to spare. */
   minBudgetMs?: number
   run: (params: Record<string, unknown>, ctx: PipelineContext) => Promise<PipelineResult>
+  /** Optional housekeeping the kick runs before each drain (after the reaper), so work it
+   * requeues is claimed by the same drain. Errors are caught and logged by the worker. */
+  upkeep?: (ctx: { adminDb: SupabaseClient }) => Promise<void>
 }

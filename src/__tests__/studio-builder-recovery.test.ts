@@ -417,10 +417,10 @@ describe('run budgets at their exact boundaries', () => {
     vi.mocked(db.loadInstitutionBuilderSpend).mockResolvedValueOnce(cap - WORST_CASE_CALL_USD)
     expect(await gate(run)).toBeNull()
     vi.mocked(db.loadInstitutionBuilderSpend).mockResolvedValueOnce(cap - WORST_CASE_CALL_USD + 0.000001)
-    expect(await gate(run)).toBe('limit_cost')
+    expect(await gate(run)).toBe('limit_daily_cost')
     // Unreadable spend fails closed.
     vi.mocked(db.loadInstitutionBuilderSpend).mockResolvedValueOnce(null)
-    expect(await gate(run)).toBe('limit_cost')
+    expect(await gate(run)).toBe('limit_daily_cost')
   })
 
   it('a model reply’s spend is stored before the next gate reads the run, and a school-spend refusal ends it budget_exhausted', async () => {
@@ -430,7 +430,7 @@ describe('run budgets at their exact boundaries', () => {
       gate: async (run) => {
         order.push('gate')
         gateRuns = [...gateRuns, run]
-        return gateRuns.length > 1 ? 'limit_cost' : null
+        return gateRuns.length > 1 ? 'limit_daily_cost' : null
       },
     })
     const addCost = h.mem.store.addCost
@@ -438,6 +438,6 @@ describe('run budgets at their exact boundaries', () => {
     await h.slice()
     expect(order).toEqual(['gate', 'addCost', 'gate'])
     expect(gateRuns[1].counters.costUsd).toBeCloseTo(TURN_USD, 9)
-    expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_cost' })
+    expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_daily_cost' })
   })
 })

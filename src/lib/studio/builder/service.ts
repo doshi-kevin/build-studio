@@ -93,7 +93,9 @@ export function endingCopy(status: db.BuilderRunStatus, reason: string | null, h
     case 'cancelled':
       return reason === 'expired' ? 'This request expired. Your tool is unchanged.' : reason === 'superseded' ? 'Replaced by your newer request. Your tool is unchanged.' : 'Stopped. Your tool is unchanged.'
     case 'budget_exhausted':
-      return 'I reached the limit for one build, so I stopped without saving. Ask me again, in smaller steps if you can.'
+      return reason === 'limit_daily_cost'
+        ? 'Your school has used today’s budget for Athena’s tool builder, so I stopped without saving. Try again tomorrow.'
+        : 'I reached the limit for one build, so I stopped without saving. Ask me again, in smaller steps if you can.'
     case 'failed':
       return reason === 'interrupted' ? 'The build was interrupted too many times. Your tool is unchanged.' : 'Something went wrong on our side. Your tool is unchanged.'
     case 'blocked':

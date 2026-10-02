@@ -1460,6 +1460,9 @@ export const builderRpcs = {
   stop: (runId: string, ownerId: string, staleMs: number) => builderRpc('studio_builder_stop', { p_run: runId, p_owner: ownerId, p_stale_ms: staleMs }),
   tend: (runId: string, ownerId: string, staleMs: number, maxResumes: number) =>
     builderRpc('studio_builder_tend', { p_run: runId, p_owner: ownerId, p_stale_ms: staleMs, p_max_resumes: maxResumes }),
+  /** The job worker's upkeep across every school: per-outcome counts and the requeued job ids. */
+  sweep: (staleMs: number, maxResumes: number, limit: number) =>
+    builderRpc('studio_builder_sweep', { p_stale_ms: staleMs, p_max_resumes: maxResumes, p_limit: limit }),
   undo: (projectId: string, actorId: string, expectedHead: string, expectedRev: number) =>
     builderRpc('studio_builder_undo', { p_project: projectId, p_actor: actorId, p_expected_head: expectedHead, p_expected_rev: expectedRev }),
 }

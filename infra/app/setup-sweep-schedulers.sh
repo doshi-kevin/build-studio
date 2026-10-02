@@ -28,12 +28,35 @@
 # Idempotent: create-or-update. Safe to re-run after a secret rotation or a
 # schedule tweak.
 #
-# Usage:  bash infra/app/setup-sweep-schedulers.sh
+# STAGING (--staging): creates or updates one job, jobs-worker-sweep-staging, for
+# the scholera-staging service, so Studio builds there recover from a lost kick.
+# None of the other three jobs is created for staging. Staging injects
+# BACKGROUND_JOBS_SECRET from Secret Manager, so the service env holds only a
+# secret reference: the value is read from the secret deploy-to-staging.sh
+# creates, and the kick URL from the service's plain BACKGROUND_JOBS_KICK_URL.
+# Deploy staging once before running this, so the service and secret exist.
+#
+# Usage:  bash infra/app/setup-sweep-schedulers.sh [--staging]
 set -euo pipefail
+# The jobs secret travels in the scheduler job's header argument. Keep gcloud from copying
+# its command lines, and so that value, into its log files on this machine.
+export CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true
 
 PROJECT="project-da8bebd0-f168-4cee-869"
 REGION="us-central1"
 SERVICE="scholera"
+# Same name as BG_JOBS_SECRET_NAME in deploy-to-staging.sh.
+STAGING_BG_SECRET_NAME="staging-background-jobs-secret"
+
+# Anything but no argument or --staging is refused, so a mistyped flag can never
+# fall through to the prod jobs.
+TARGET="prod"
+case "${1:-}" in
+  "") ;;
+  --staging) TARGET="staging"; SERVICE="scholera-staging" ;;
+  *) echo "Unknown argument: $1. Usage: bash infra/app/setup-sweep-schedulers.sh [--staging]" >&2; exit 1 ;;
+esac
+[ "$#" -le 1 ] || { echo "Too many arguments. Usage: bash infra/app/setup-sweep-schedulers.sh [--staging]" >&2; exit 1; }
 SCHEDULE="*/5 * * * *"
 # The kick route drains until the queue is empty or ~840s (maxDuration 900s
 # minus a 60s cushion). Give the scheduler attempt room to see a full drain,
@@ -69,6 +92,28 @@ upsert_job() {
     gcloud scheduler jobs create http "$name" "${args[@]}" >/dev/null
   fi
 }
+
+if [ "$TARGET" = "staging" ]; then
+  gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" >/dev/null 2>&1 \
+    || { echo "The '$SERVICE' service doesn't exist yet. Run infra/app/deploy-to-staging.sh first." >&2; exit 1; }
+  echo "Reading the kick URL from the '$SERVICE' Cloud Run service…"
+  BG_URL="$(svc_env BACKGROUND_JOBS_KICK_URL)"
+  SITE_URL="$(svc_env SITE_URL)"
+  # The kick must reach the app host. The runtime origin answers 404 to it.
+  case "$BG_URL" in
+    "${SITE_URL%/}/api/jobs-worker/kick") ;;
+    *) echo "BACKGROUND_JOBS_KICK_URL ($BG_URL) is not ${SITE_URL%/}/api/jobs-worker/kick. Re-deploy staging." >&2; exit 1 ;;
+  esac
+  # Read inside the substitution and never printed. A failed read exits here.
+  BG_SECRET="$(gcloud secrets versions access latest --secret="$STAGING_BG_SECRET_NAME" --project "$PROJECT")"
+  [ "${#BG_SECRET}" -ge 32 ] || { echo "Secret $STAGING_BG_SECRET_NAME is shorter than 32 characters. Replace it with a generated value." >&2; exit 1; }
+  upsert_job "jobs-worker-sweep-staging" "$BG_URL" "x-background-jobs-secret" "$BG_SECRET"
+  echo
+  echo "Done. Scheduler jobs in ${REGION}:"
+  gcloud scheduler jobs list --project "$PROJECT" --location "$REGION" \
+    --format='table(name.basename(),schedule,state,lastAttemptTime)'
+  exit 0
+fi
 
 echo "Reading kick URLs + secrets from the '$SERVICE' Cloud Run service…"
 BG_URL="$(svc_env BACKGROUND_JOBS_KICK_URL)"

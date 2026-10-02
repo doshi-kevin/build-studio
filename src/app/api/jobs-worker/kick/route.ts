@@ -9,7 +9,7 @@
 // Auth: shared secret in the x-background-jobs-secret header (dedicated —
 // NOT the extraction secret). Without it → 401.
 //
-// Behaviour: reaps abandoned jobs, then claims + runs jobs one at a time until
+// Behaviour: reaps abandoned jobs, runs each pipeline's upkeep, then claims + runs jobs one at a time until
 // the queue is empty OR we're within the safety cushion of maxDuration.
 
 import 'server-only'
@@ -17,7 +17,7 @@ import { timingSafeEqual } from 'crypto'
 import { NextResponse, type NextRequest } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { runUntilDrained } from '@/lib/jobs/worker'
+import { runPipelineUpkeep, runUntilDrained } from '@/lib/jobs/worker'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 
@@ -86,6 +86,9 @@ export async function POST(req: NextRequest) {
 
   try {
     const reaped = await reapAbandonedJobs()
+    // After the reaper, so a pipeline sees the jobs it just failed, and before the drain,
+    // so work an upkeep requeues is claimed by this same drain.
+    await runPipelineUpkeep()
     const { jobsRun, lastResult } = await runUntilDrained(deadline)
     return NextResponse.json(
       {

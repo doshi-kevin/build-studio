@@ -46,6 +46,18 @@ function stripSql(sql: string): string {
   return sql.replace(/^\s*--.*$/gm, '')
 }
 
+/** Functions some REVOKE in this SQL takes from PUBLIC while no REVOKE on them names anon. */
+function revokedFromPublicOnly(sql: string): string[] {
+  const fromPublic = new Set<string>()
+  const fromAnon = new Set<string>()
+  for (const m of sql.matchAll(/REVOKE\s[^;]*?ON\s+FUNCTION\s+(?:public\.)?(\w+)[^;]*?\bFROM\s+([^;]*);/gi)) {
+    const roles = m[2]
+    if (/\bPUBLIC\b/i.test(roles)) fromPublic.add(m[1])
+    if (/\banon\b/i.test(roles)) fromAnon.add(m[1])
+  }
+  return [...fromPublic].filter((fn) => !fromAnon.has(fn))
+}
+
 const allMigrations = readdirSync(DIR).filter((f) => f.endsWith('.sql')).sort()
 const governed = allMigrations.filter((f) => f.slice(0, 14) >= CUTOFF)
 
@@ -64,10 +76,11 @@ describe('new migrations keep the tenant boundary intact', () => {
   })
 
   it('every new function revokes the default PUBLIC execute grant', () => {
-    /* Postgres grants EXECUTE on a new function to PUBLIC automatically, and PUBLIC includes
-       anon — the role behind the publishable key in the browser bundle. A SECURITY DEFINER
-       helper left at the default is callable by anyone on the internet. This is exactly how
-       can_author_in_section became an unauthenticated membership oracle. */
+    /* Postgres grants EXECUTE on a new function to PUBLIC automatically, and Supabase's default
+       privileges grant it to anon (the role behind the publishable key) as well. A SECURITY
+       DEFINER helper left at the defaults is callable by anyone on the internet. This is exactly
+       how can_author_in_section became an unauthenticated membership oracle. The next rule checks
+       that anon is named, not just PUBLIC. */
     const offenders: string[] = []
     for (const { file, sql } of governedSql) {
       const created = [...sql.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?(\w+)/gi)]
@@ -85,6 +98,24 @@ describe('new migrations keep the tenant boundary intact', () => {
       `these functions never revoke the default PUBLIC/anon EXECUTE grant: ${offenders.join(', ')}. ` +
         `Add: REVOKE ALL ON FUNCTION public.<fn>(<args>) FROM PUBLIC, anon;  ` +
         `then GRANT EXECUTE back to the roles that genuinely need it.`,
+    ).toEqual([])
+  })
+
+  it('a function revoked from PUBLIC is revoked from anon too', () => {
+    /* Supabase's default privileges grant anon EXECUTE directly, not through PUBLIC, so
+       `REVOKE ... FROM PUBLIC` alone leaves anon able to call the function. That is how
+       roadmap_set_node_checkoff stayed anon-callable after 20260619143157 and 20260713120000
+       (both predate the cutoff; 20261002200100 fixed it). */
+    const incident = stripSql(readFileSync(join(DIR, '20260713120000_roadmap_node_pinned_page.sql'), 'utf8'))
+    expect(revokedFromPublicOnly(incident)).toContain('roadmap_set_node_checkoff')
+
+    const offenders = governedSql.flatMap(({ file, sql }) =>
+      revokedFromPublicOnly(sql).map((fn) => `${file} › ${fn}()`),
+    )
+    expect(
+      offenders,
+      `these functions are revoked from PUBLIC but never from anon, so anon keeps its default ` +
+        `grant: ${offenders.join(', ')}. Use: REVOKE ALL ON FUNCTION public.<fn>(<args>) FROM PUBLIC, anon;`,
     ).toEqual([])
   })
 

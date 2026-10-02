@@ -31,3 +31,43 @@ The machine Step 7C was built on can't run Docker, so this checklist still hasn'
 Two test bugs only real Postgres exposed are fixed: the builder suite passed JavaScript arrays to `jsonb` arguments (node-postgres sends a Postgres array literal), and the bridge test expected the stand-in's seed value for the course title.
 
 Still needed on real Supabase: this whole checklist, real GoTrue and Storage, the Supabase Postgres image's own roles and extensions, and step 5.
+
+## Step 7D: migration history and grants (2026-10-02)
+
+**`roadmap_set_node_checkoff` was callable by `anon`.** `20260619143157` and `20260713120000` revoked it from `public` only. Supabase's default privileges grant `anon` EXECUTE directly, not through `public`, so `anon` kept it. The only caller, `setMyNodeCheckedOff`, uses the service-role client after `verifyEnrollment`. `20261002200100_revoke_anon_roadmap_checkoff.sql` revokes it from `public, anon` and keeps `authenticated` and `service_role`. On the local database, PostgREST now answers an anon call with `42501 permission denied`, and `grants-and-policy-shape.test.ts` passes (10 of 10). No other public function failed that test. `migration-guards.test.ts` gained a rule that a function revoked from `PUBLIC` must also be revoked from `anon`. It checks itself against `20260713120000`, so it can't pass vacuously.
+
+`migration-guards.test.ts` still fails one rule, as it did before this step: `20260925220017_lc_auto_end_from_started_at.sql` has no revoke for `lc_auto_end_stale_rooms()`. That file runs `create or replace` on an existing function, which keeps the earlier ACL, and on the local database `anon` can't execute it. The guard can't tell a replacement from a new function, so this is a false positive.
+
+**The two `b` migrations the CLI skips change nothing on a database built from the repo.** A scratch database built with every file in filename order, the `b` files included, had the same policies, functions, function ACLs and RLS flags as the CLI-built one.
+
+- `00000000000033b_classroom_rls_fix_recursion.sql` is a back-port of a production hotfix (`20260424170256`). It drops two policies that only production had (`Professors can view enrollments in their sections` on `enrollments`, `Students view sections they are enrolled in` on `course_sections`), then recreates the helpers and policies that `32` and `33` already create, with the same names and bodies. On a database built from the repo it fails at `CREATE POLICY "Students view enrolled sections"` (already exists) and rolls back. If the two recursive policies are put back on the local database, `select count(*) from course_sections` as `authenticated` fails with `infinite recursion detected`. Without them it runs.
+- `00000000000037b_lc_drawings_drop_old_overload.sql` runs `DROP FUNCTION IF EXISTS lc_send_event(uuid, text, jsonb, boolean)`, the same statement as line 16 of `37`. It is a no-op. One `lc_send_event` exists, the 5-argument one. A 3-argument call resolves to it, and with the 4-argument overload added back the same call fails with `is not unique`.
+
+Git history starts at the repo's initial commit, so it can't show when they were applied. `00000000000069` cites "32 / 33 / 33b" as existing policies, and `00000000000070_reconcile_prod_schema_drift.sql`, which copied prod-only objects from production, added no policy on either table. That suggests production no longer had the recursive policies by then. No new migration is needed. The files are left as they are.
+
+Run these on production and staging (read-only) to confirm:
+
+```sql
+-- Which hotfix versions are recorded
+select version from supabase_migrations.schema_migrations
+where version like '00000000000033%' or version like '00000000000037%' or version = '20260424170256'
+order by version;
+
+-- Expected: exactly the five policies a repo build has. Neither recursive policy name may appear.
+select tablename, policyname, cmd, roles, qual from pg_policies
+where schemaname = 'public' and tablename in ('enrollments', 'course_sections')
+order by 1, 2;
+
+-- Expected: three rows, all prosecdef = true
+select p.oid::regprocedure, p.prosecdef, p.proconfig from pg_proc p
+where p.pronamespace = 'public'::regnamespace
+  and p.proname in ('is_professor_of_section', 'is_enrolled_in_section', 'is_staff_of_section');
+
+-- Expected: one row, lc_send_event(uuid,text,jsonb,boolean,boolean)
+select p.oid::regprocedure from pg_proc p where p.proname = 'lc_send_event';
+
+-- Expected: false after 20261002200100 is applied
+select has_function_privilege('anon', 'public.roadmap_set_node_checkoff(uuid,uuid,text,boolean)', 'execute');
+```
+
+The five policies a repo build has: `course_sections` "Professors view own sections", "Staff view assigned sections" and "Students view enrolled sections"; `enrollments` "Professors view enrollments in their sections" and "Students can view own enrollments". Any other policy on these tables whose `qual` queries the other table directly is a recursion risk, so check it before applying anything.

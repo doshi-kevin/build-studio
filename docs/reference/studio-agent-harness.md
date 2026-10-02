@@ -4,7 +4,7 @@ A professor describes a teaching tool, and Athena builds it. This document is ho
 
 | | |
 |---|---|
-| **Status** | Step 7C: accepted on a local PostgreSQL 17 with real PostgREST; real Supabase and the live Cloud Run settings still pending (see [Verification](#verification)) |
+| **Status** | Step 7D: accepted locally on PostgreSQL 17 with real PostgREST and a production build; real Supabase, the live Cloud Run service and staging are still pending (see [Verification](#verification)) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-10-02 |
 | **Migration** | `supabase/migrations/20261002160000_studio_builder.sql` |
@@ -121,7 +121,7 @@ Each build runs as checkpointed slices on the existing `background_jobs` queue (
 3. runs turns while it has time, persisting every step as it goes;
 4. hands off to a new slice (`studio_builder_handoff`), pauses, or ends.
 
-Nothing that steers the run lives only in memory. A crashed instance costs at most one re-asked model turn: the next claim marks any calls the interrupted turn proposed but never recorded as `interrupted`, and rebuilds context from the database. A slice silent for 60 seconds can be re-claimed, at most twice (`failed`, `interrupted` after that). The progress read requeues a stalled run.
+Nothing that steers the run lives only in memory. A crashed instance costs at most one re-asked model turn: the next claim marks any calls the interrupted turn proposed but never recorded as `interrupted`, and rebuilds context from the database. A slice silent for 60 seconds can be re-claimed, at most twice (`failed`, `interrupted` after that). Two paths requeue a stalled run, through the same database body (`studio_builder_tend_run` in `20261002200000_studio_builder_upkeep.sql`): the owner's progress read (`studio_builder_tend`), and the job worker's sweep (`studio_builder_sweep`), which every kick runs after the reaper and before its drain, so the drain claims the slices it requeues. A run counts as stalled when its job is gone, done or failed, or, while running, when its heartbeat is 60 seconds old. A queued run whose job is still pending is not stalled. The sweep also expires unanswered cards and questions, tends at most 50 runs per kick (`STUDIO_BUILDER_SWEEP_LIMIT`), oldest first, and skips a run whose row another transaction holds.
 
 Every write a slice makes carries its claim token. Once another slice holds the run, every write from the old one is refused; only its model spend still reaches the run's cost.
 
@@ -133,7 +133,7 @@ So nothing in a build runs on CPU that outlives a request:
 
 - Every kick is awaited by its caller (`kickWorker`), so the request leaves while the caller's own request still has CPU. It is abandoned after 2 seconds. The drain it starts is its own request to the service, with its own CPU, until it answers or reaches the 900-second timeout. Google documents that a client disconnect isn't passed to the container. That the drain keeps its CPU after the client has gone is an inference from the request-based billing docs, to confirm once on staging with a build longer than 5 minutes.
 - A slice is capped at 480 seconds (`STUDIO_BUILDER_SLICE_MAX_MS`), and no model turn starts in its last 270 seconds, so it ends well inside the drain's 900 seconds.
-- If an instance stalls or dies mid-slice, correctness holds: the claim token fences the stalled slice out. The professor's progress read requeues a run whose heartbeat is 60 seconds old, at most twice. Without an open page, the sweep re-claims the job once its 900-second claim expires.
+- If an instance stalls or dies mid-slice, correctness holds: the claim token fences the stalled slice out. The next kick, or the 5-minute Cloud Scheduler sweep at the latest, requeues a run whose heartbeat is 60 seconds old or whose job the reaper failed, at most twice, then fails it as `interrupted` and frees its live slot. With the page open, the professor's progress read does the same sooner.
 
 Step 7B kicked with a `hold` option that left the request open instead of awaiting it. Under request-based CPU that request might never be sent once the caller had answered, and Node's fetch gives up after 300 seconds without response headers anyway. The option is gone.
 
@@ -141,7 +141,7 @@ If staging shows slices stalling, the next step is a Cloud Tasks kick (a dispatc
 
 Shared worker changes, all additive: the drain's deadline reaches pipelines as `ctx.deadline`; a pipeline can declare `minBudgetMs` and a drain with less time left doesn't claim that type; a worker only writes completion for a job it still holds (`claimed_by`); `kickWorker` is exported. Existing pipelines behave as before (`jobs-worker.test.ts`).
 
-Staging needs `BACKGROUND_JOBS_SECRET`, `BACKGROUND_JOBS_KICK_URL` (on the app host, never the runtime origin), `STUDIO_RUNTIME_ORIGIN`, `STUDIO_FRAME_TICKET_SECRET` and a sweep job before builds and previews work there. `deploy-to-staging.sh` passes `--set-env-vars` and `--set-secrets`, which replace every variable on each deploy, so these have to go into that script rather than be set by hand. `infra/app/README.md` lists each setting and what happens when it is missing. Every missing setting makes the builder refuse, or end the run with a fixed reason (`studio-builder-config.test.ts`).
+Staging gets the builder's settings from `deploy-to-staging.sh`: the jobs and frame-ticket secrets from Secret Manager (created with a generated value the first time, never rotated by a deploy), the kick URL from `SITE_URL`, and `STUDIO_RUNTIME_ORIGIN` from the staging env file, checked before anything deploys. Its sweep job is `jobs-worker-sweep-staging`, created with `setup-sweep-schedulers.sh --staging`. `infra/app/README.md` lists each setting, where it comes from, and what happens when it is missing. Every missing setting makes the builder refuse, or end the run with a fixed reason (`studio-builder-config.test.ts`).
 
 ## The tools
 
@@ -338,23 +338,31 @@ The recorded baseline (2026-10-02, `gemini-3.1-pro-preview`, instructions `studi
 
 ## Verification
 
-What Step 7C ran, and on what:
+What ran, and on what. Status words: **verified**, **verified with a stand-in** (real PostgreSQL and PostgREST, but Supabase's own services stood in), **pending**, **blocked** (needs tools or access this machine doesn't have).
 
-- **Real PostgreSQL 17.6 with real PostgREST 16.4**, all 294 migrations applied in the CLI's order. Supabase's own pieces were stand-ins: a shim for the `auth`, `storage` and `realtime` schemas, roles and default privileges, record-only stubs of `pg_cron` and `pgvector`, and a minimal GoTrue for sign-in. `npm run test:db`: 221 of 222 pass. The one failure predates Studio (`roadmap_set_node_checkoff` executable by `anon`). That includes every builder race test: concurrent starts at each cap, Stop against a commit, stale claim tokens, two commits from one revision, the commit lock order, undo against start, and concurrent saves of one draft. The advisor lints (`splinter.sql`) found no Studio WARN beyond the known kill-switch function. Details are in [studio-supabase-acceptance.md](./studio-supabase-acceptance.md#step-7c-local-run-2026-10-02).
-- **Node 22.23.3**, the image's major version: the compiler and check-worker suite, and a production build whose standalone output traces `typescript` 5.9.3.
-- **A browser walkthrough** (`e2e/visual/studio-builder.md`) on that standalone build under Node 22, in production mode, against the database above and the live model, with an https runtime origin. It covered sign in, a first build, reload mid-run, the approval card, preview in both views and both sizes, the sandbox and sample data, Save as version, a second build, history, undo, Stop, a forbidden request, phone width and a TA. It found that every plugin frame 404ed in a production build (`request.nextUrl.host` is the server's own address there; fixed with `requestHost`).
-- **Unit and harness tests** (`npm run test`), mutation tests for the starred invariants and for the commit lock order, and the live eval above.
+| Area | Status | Evidence |
+|---|---|---|
+| Supabase | Blocked | No Docker or Supabase CLI. The checklist in [studio-supabase-acceptance.md](./studio-supabase-acceptance.md) still has to run |
+| PostgREST | Verified with a stand-in | Real PostgREST 16.4 served every Studio query in the DB suite and the walkthroughs |
+| PostgreSQL and concurrency | Verified with a stand-in | Real PostgreSQL 17.6, all 296 migrations in the CLI's order. `npm run test:db` 232 of 232, including every builder race and the sweep's `SKIP LOCKED` test |
+| Generated types | Blocked | `supabase gen types` needs the CLI's Docker image. Studio's `db.ts` doesn't use them |
+| Advisors | Verified with a stand-in | Supabase's lint SQL (`splinter.sql`) on the database above, in Step 7C |
+| Cloud Run | Pending | No `gcloud`. The repo's settings are described above; the live CPU, concurrency and environment are not |
+| Staging secrets and scheduler | Pending | The scripts are written and checked against a stub `gcloud`; nothing has deployed |
+| A build longer than 5 minutes on Cloud Run | Blocked | Needs staging |
+| Runtime origin | Verified with a stand-in | Production standalone build on Node 22 behind a local https runtime origin: draft and installed frames serve only there with no cookie, `frame-ancestors` is only the app, app pages 404 there, a foreign page can't embed a frame |
+| Browser walkthrough | Verified with a stand-in | One live build (approval, preview, Save, installed frame) and every other path from seeded run states: a question answered from the chat box resumes the same run, a stale approval in a second tab and a replayed decision are refused, decline, Stop, crash recovery after killing the server, kill switch, entitlement loss, and the accessibility checks below |
+| Accessibility | Verified with a stand-in | One status region outside both panes, every button named, a labelled dialog, keyboard order through History and preview controls, focus never dropped on a phone pane switch, history fits a phone. Not checked with a real screen reader |
+| Budgets | Verified | Exact boundaries in the hermetic and DB suites. In the browser, the school's daily cap stopped resumed runs before any model call |
+| Kill switch | Verified with a stand-in | The institution admin's own RPC turned the builder off: a new build was refused, a recovered slice ended `ai_disabled` with no model call. Turning it off mid-call is covered by `studio-builder-config.test.ts` |
+| Entitlement | Verified with a stand-in | Without `studio` the page offers no build and says why; history and the draft are kept |
+| Live eval | Verified | The Step 7C baseline (9 of 9). Not re-run in 7D |
 
-Still pending:
-
-- **Real Supabase:** the acceptance checklist itself, real GoTrue and Storage, the Supabase Postgres image's roles and extensions, and regenerated types.
-- **The live service:** its CPU allocation, concurrency and environment (`gcloud run services describe`), and whether a drain keeps CPU after its kick's client disconnects. Confirm with one staging build longer than 5 minutes.
-- **Staging:** the builder's variables and a sweep job in `deploy-to-staging.sh`.
+The walkthrough found that every plugin frame 404ed in a production build (`request.nextUrl.host` is the server's own address there; fixed in 7C with `requestHost`), and in 7D that the school's daily cap told professors to ask again in smaller steps (now `limit_daily_cost`).
 
 ## Known limitations
 
-- A slice that dies with no professor watching is re-claimed only when its 900-second job claim expires. One that dies three times is never re-claimed, and its run holds one of the school's three live slots until the owner opens the page.
-- Waiting approvals and questions expire only when progress is read or a new build starts.
+- A school stopped by its daily spend cap ends `budget_exhausted` with `limit_daily_cost`, which has its own copy (try again tomorrow); the run's own cap is `limit_cost`.
 - A model that keeps asking questions past the cap ends `failed` (`repeated_tool_errors`) after its third refused ask.
 - Spend from calls that never report usage (timeout, abort, provider failure) is an estimate: the worst case for one call.
 - Saving a version checks the draft head and then writes without holding the project lock. A racing undo can move the head in between; the saved version is still the owner's own fully re-checked snapshot.

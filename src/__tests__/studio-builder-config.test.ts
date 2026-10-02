@@ -118,9 +118,9 @@ describe('the studio-builder switch, through the real gate', () => {
     expect(vi.mocked(checkAiFeature).mock.calls[0][2]).toBe('studio-builder')
   })
 
-  it('an unreadable school spend stops the build (limit_cost)', async () => {
+  it('an unreadable school spend stops the build (limit_daily_cost)', async () => {
     vi.mocked(db.loadInstitutionBuilderSpend).mockResolvedValue(null)
-    expect(await realHarnessDeps(scriptedModel([])).gate(run)).toBe('limit_cost')
+    expect(await realHarnessDeps(scriptedModel([])).gate(run)).toBe('limit_daily_cost')
   })
 
   it('a live run ends blocked with ai_disabled at the next model call after the switch goes off', async () => {

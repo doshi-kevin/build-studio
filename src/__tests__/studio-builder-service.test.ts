@@ -142,6 +142,10 @@ describe('starting a build', () => {
 })
 
 describe('ending copy', () => {
+  it('the school’s daily cap says to wait, the run’s own cap says to ask in smaller steps', () => {
+    expect(service.endingCopy('budget_exhausted', 'limit_daily_cost')).toMatch(/Try again tomorrow/)
+    expect(service.endingCopy('budget_exhausted', 'limit_cost')).toMatch(/smaller steps/)
+  })
   it('a blocked run points at Athena’s note only when there is one', () => {
     expect(service.endingCopy('blocked', 'agent_blocked', true)).toMatch(/My note below/)
     expect(service.endingCopy('blocked', 'agent_blocked', false)).toBe('I couldn’t do this one. Try describing the change differently, or ask for something smaller.')
