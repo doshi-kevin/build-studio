@@ -11,10 +11,21 @@ configs, all run by hand from the repo root.
 | `cloudbuild.yaml` | Build config used by `deploy-to-prod.sh`. |
 | `cloudbuild.staging.yaml` | Build config used by `deploy-to-staging.sh`. |
 
-**These scripts deploy code only.** They never run database migrations and never change
-environment variables. Both of those are separate, deliberate steps. If your change needs a new
-migration or a new env var, that has to be in place *before* you deploy, or the new code will
-land on a database or a config that cannot support it.
+**These scripts deploy code only.** They never run database migrations. Migrations are a
+separate, deliberate step. If your change needs a new migration or a new env var, that has to be
+in place *before* you deploy, or the new code will land on a database or a config that cannot
+support it.
+
+The two scripts treat environment variables differently:
+
+- `deploy-to-prod.sh` passes no env flags, so production keeps whatever is set on the service.
+  Change a variable with `gcloud run services update scholera --region us-central1
+  --update-env-vars NAME=value` (or `--update-secrets` for a secret).
+- `deploy-to-staging.sh` passes `--set-env-vars` and `--set-secrets`. Those flags remove every
+  variable and every secret not in the script's list on each deploy
+  ([gcloud run deploy](https://docs.cloud.google.com/sdk/gcloud/reference/run/deploy)). A variable
+  set on `scholera-staging` by hand is gone after the next staging deploy. To keep one, add it to
+  the script's lists.
 
 ## Production
 
@@ -74,6 +85,61 @@ will authenticate with a stale one.
 
 Needs the Cloud Scheduler API enabled: `gcloud services enable cloudscheduler.googleapis.com`.
 Background on why this is not a GitHub Actions cron is in [`../README.md`](../README.md).
+
+## Cloud Run settings
+
+What the scripts set, and what only the live service can tell you:
+
+| Setting | Production | Staging | Where it comes from |
+|---|---|---|---|
+| Request timeout | 900 s | 900 s | `--timeout` in both scripts |
+| Memory and CPU | 4 GiB, 2 vCPU | 4 GiB, 2 vCPU | `--memory`, `--cpu` |
+| Instances | 0 to 10 | 0 to 2 | `--min-instances`, `--max-instances` |
+| CPU allocation | not set | not set | Live service only. Request-based (CPU only while a request is in flight) unless someone ran `--no-cpu-throttling` |
+| Startup CPU boost | not set | not set | Live service only |
+| Concurrency | not set | not set | Live service only |
+| Sweep cadence | every 5 min, 600 s attempt deadline, no retries | no sweep | `setup-sweep-schedulers.sh`, which only targets `scholera` |
+
+To read the live values (needs `gcloud` and the Scholera account):
+
+```bash
+gcloud run services describe scholera --region us-central1 --format=export
+gcloud run services describe scholera-staging --region us-central1 --format=export
+gcloud scheduler jobs describe jobs-worker-sweep --location us-central1 --format=export
+```
+
+In the service export, `run.googleapis.com/cpu-throttling: 'false'` means instance-based CPU,
+and its absence or `'true'` means request-based. `containerConcurrency`, `timeoutSeconds` and
+`run.googleapis.com/startup-cpu-boost` are the other three.
+
+## Environment for the Studio builder
+
+The Studio builder (`docs/reference/studio-agent-harness.md`) runs on the background-jobs queue
+and previews drafts on the plugin runtime origin. It has no variables of its own, but it does
+nothing useful without these:
+
+| Variable | What happens when it is missing |
+|---|---|
+| `GOOGLE_GENERATIVE_AI_API_KEY` | A build starts, then ends `failed` (`model_unavailable`) at its first model call. No request is sent |
+| `BACKGROUND_JOBS_SECRET` | Builds are saved as `queued` but never run: no kick is sent, and the kick route answers 401 to everyone, the sweep included |
+| `BACKGROUND_JOBS_KICK_URL` | The kick goes to `NEXT_PUBLIC_APP_URL` (or `VERCEL_URL`), else `http://localhost:3000`. Neither deploy script sets those two, so on Cloud Run it lands on localhost, the wrong port, and builds wait for the sweep. Staging has no sweep, so they wait until some other kick gets through |
+| `STUDIO_RUNTIME_ORIGIN` | No draft preview. The professor sees "Previews aren't available here right now." |
+| `STUDIO_FRAME_TICKET_SECRET` | The same. It must be at least 32 characters |
+
+Three settings live elsewhere. The `studio` entitlement is per school, granted in the super-admin
+plan editor. The "Studio Tool Builder" AI switch is per school or platform-wide, in the AI
+settings; it is on unless someone turns it off. The model (`STUDIO_BUILDER_MODEL` in
+`src/lib/ai/config.ts`) is a code constant, so staging can't override it.
+
+Two traps:
+
+- The kick URL must be on the app's host (`SITE_URL`), never on `STUDIO_RUNTIME_ORIGIN`. The
+  runtime origin serves only plugin frames, so a kick sent there gets a 404. If the runtime
+  origin is the service's own `*.run.app` URL, check that no kick URL or scheduler job uses that
+  URL.
+- On staging, all five have to go in `deploy-to-staging.sh` (the two secrets in
+  `--set-secrets`, the rest in `--set-env-vars`), or the next deploy deletes them. Staging also
+  needs its own sweep job before a lost kick can recover.
 
 ## If a deploy goes wrong
 

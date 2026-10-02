@@ -15,14 +15,11 @@ import type { ToastTone } from '@/lib/studio/runtime/host-methods'
 import { createPreviewBridge } from '@/lib/studio/runtime/preview-bridge'
 import type { PluginView } from '@/lib/studio/runtime/protocol'
 
-interface PluginHostProps {
-  /** A signed frame URL on the runtime origin, from issueFrameUrl on the server. */
+interface CommonProps {
+  /** A signed frame URL on the runtime origin, from issueFrameUrl or the builder's draft preview. */
   frameUrl: string
   title: string
   view: PluginView
-  installationId: string
-  /** The version this frame is built for. The bridge answers `stale` once it isn't current. */
-  versionId: string
   /** From allowedBridgeMethods on the server. */
   allowedMethods: readonly string[]
   /** The viewer may look but not change anything (archived, the school's plan, a
@@ -30,9 +27,7 @@ interface PluginHostProps {
   readOnly?: boolean
   /** Why, in a sentence, for the professor. Students get the generic notice. */
   readOnlyNotice?: string
-  /** Preview mode (rule 8.3): requests go to an in-memory bridge with sample data built
-   * from this manifest, and never to the server. */
-  preview?: StudioManifest
+
   /** Gets a fresh frame URL; tickets expire, so a reload needs a new one. */
   onReload?: () => void
   /** A reload is in progress: the Reload button shows it and can't be pressed twice. */
@@ -42,6 +37,15 @@ interface PluginHostProps {
   /** The label on the exit button. */
   exitLabel?: string
 }
+
+/** Live: requests go to the server for this installation's version. Preview (rule 8.3):
+ * requests go to an in-memory bridge with sample data built from the manifest, and never
+ * to the server. A builder draft is preview only: it has no installation or version. */
+type PluginHostProps = CommonProps &
+  (
+    | { preview?: undefined; installationId: string; versionId: string }
+    | { preview: StudioManifest; installationId?: string; versionId?: string }
+  )
 
 // Plain language only: a stop reason is never shown as a code (ui-design rules).
 // `retry`: a reload can help. Otherwise the same thing would happen again.
@@ -88,8 +92,9 @@ export function PluginHost({
 
   useEffect(() => {
     if (!container.current) return
-    const live = preview ? null : createBridgeClient({ installationId, versionId })
-    const bridge = preview ? createPreviewBridge(preview, view) : live!
+    const live = preview || !installationId || !versionId ? null : createBridgeClient({ installationId, versionId })
+    const bridge = preview ? createPreviewBridge(preview, view) : live
+    if (!bridge) return
     const mounted = mountPluginFrame({
       container: container.current,
       frameUrl,

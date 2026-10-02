@@ -128,6 +128,46 @@ describe('every way out of the frame the scanner knows', () => {
   )
 })
 
+describe('a bundle is a classic script', () => {
+  // The failing forms are fixtures (NOT_A_SCRIPT in fixtures.ts), run through Stage 1 above.
+  const notScript = (code: string) => {
+    const r = scanCode(code, Date.now() + 10_000)
+    return r.ok ? r.findings.filter((f) => f.kind === 'module_syntax').map((f) => f.detail) : [r.reason]
+  }
+
+  it.each([
+    'async function f() { await g(); for await (var x of y) {} }',
+    'var f = async () => { await g() }',
+    'var o = { async m() { await g() } }',
+    'async function f() { await using x = null; for (await using y of []) {} }',
+    'async function f() { var o = { [await g()]() {} }; class A { [await g()] = 1 } }',
+    'async function f(a = async () => await g()) {}',
+    'var o = { export: 1, import: 2 }; o.export = o.import',
+    'function F() { return new.target }',
+    'var await = 1',
+  ])('%s is a plain script', (code) => {
+    expect(notScript(code)).toEqual([])
+  })
+
+  it.each([
+    ['await in a plain arrow inside an async function', 'async function f() { [1].map(function () { return await g() }) }'],
+    ['await in a class field inside an async function', 'async function f() { class A { x = await g() } }'],
+    ['await using in a plain function', 'function f() { await using x = null }'],
+    ['an export modifier on a nested function', 'function f() { export function g() {} }'],
+  ])('%s is refused', (_name, code) => {
+    expect(notScript(code)).not.toEqual([])
+  })
+
+  it('dynamic import stays a dynamic-code finding, not a second syntax one', () => {
+    const r = scanCode("import('x')", Date.now() + 10_000)
+    expect(r.ok && r.findings.map((f) => f.kind)).toEqual(['dynamic_code'])
+  })
+
+  it('TypeScript-only syntax fails as a syntax error, with its line', () => {
+    expect(scanCode('var a = 1\nvar b = a as number', Date.now() + 10_000)).toEqual({ ok: false, reason: 'syntax', detail: 'line 2' })
+  })
+})
+
 describe('the scanner’s bounds', () => {
   it('measures nesting without recursion, ignoring brackets in strings and comments', () => {
     expect(maxNesting('a([{x}])')).toBe(3)

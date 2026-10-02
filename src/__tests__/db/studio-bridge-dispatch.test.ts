@@ -162,7 +162,7 @@ describe('Step 3 through dispatch()', () => {
 
   it('answers context.get from the database with no IDs, and refuses methods that don’t exist', async () => {
     const context = await call(PROFESSOR, 'context.get', null)
-    expect(context).toMatchObject({ ok: true, data: { view: 'professor', course: { code: 'CA101', title: 'Course a' }, readOnly: false } })
+    expect(context).toMatchObject({ ok: true, data: { view: 'professor', course: { code: 'CA101', title: 'Course A' }, readOnly: false } })
     expect(JSON.stringify(context)).not.toMatch(UUID)
     expect(await call(PROFESSOR, 'course.weakSpots', null)).toMatchObject({ ok: false, code: 'unsupported' })
   })

@@ -11,7 +11,7 @@ import { createClient } from '@/lib/supabase/server'
 import { canWriteAsProfessor, verifySectionAccess } from '@/lib/auth/section-access'
 import { logger } from '@/lib/logger'
 import { studioAccess } from './access'
-import { loadEnrollmentStatus, loadInstallation, loadSectionState, loadVersion } from './db'
+import { loadBuilderProject, loadEnrollmentStatus, loadInstallation, loadSectionState, loadVersion } from './db'
 import { parseManifest, type StudioManifest } from './manifest'
 import type { InstallationState, ViewerRole } from './policy'
 import { isPublishedToStudents } from './publication'
@@ -20,6 +20,7 @@ import { isPublishedToStudents } from './publication'
 // so a caller can't hand-assemble one from request fields.
 declare const viewerBrand: unique symbol
 declare const professorBrand: unique symbol
+declare const builderActorBrand: unique symbol
 
 export type StudioViewer = Readonly<{
   userId: string
@@ -155,4 +156,42 @@ export async function requireProfessor(sectionId: string): Promise<StudioProfess
   if (!section) return null
 
   return { userId, sectionId, institutionId: section.institution_id } as StudioProfessor
+}
+
+/** What a builder slice acts as. It has no session: everything comes from the run row and
+ * is re-verified on every model turn. A distinct brand, not assignable to StudioProfessor,
+ * so builder code can never be handed to a Step 5 operation (publish, install, show). */
+export type StudioBuilderActor = Readonly<{
+  ownerId: string
+  sectionId: string
+  institutionId: string
+  projectId: string
+}> & { readonly [builderActorBrand]: true }
+
+export type BuilderActorRefusal = 'access_lost' | 'project_archived'
+
+/** The run's owner, still the professor of the run's section, and the project still
+ * active and theirs. A professor removed from the section loses the build at its next turn. */
+export async function builderActor(run: {
+  ownerId: string
+  sectionId: string | null
+  institutionId: string
+  projectId: string
+}): Promise<{ ok: true; actor: StudioBuilderActor } | { ok: false; reason: BuilderActorRefusal }> {
+  if (!run.sectionId) return { ok: false, reason: 'access_lost' }
+  const [access, project, section] = await Promise.all([
+    verifySectionAccess(run.sectionId, run.ownerId),
+    loadBuilderProject(run.projectId),
+    loadSectionState(run.sectionId),
+  ])
+  if (!access.ok || !canWriteAsProfessor(access.role) || !section || section.institutionId !== run.institutionId) {
+    return { ok: false, reason: 'access_lost' }
+  }
+  if (!project || project.ownerId !== run.ownerId || project.institutionId !== run.institutionId || project.status !== 'active') {
+    return { ok: false, reason: 'project_archived' }
+  }
+  return {
+    ok: true,
+    actor: { ownerId: run.ownerId, sectionId: run.sectionId, institutionId: run.institutionId, projectId: run.projectId } as StudioBuilderActor,
+  }
 }

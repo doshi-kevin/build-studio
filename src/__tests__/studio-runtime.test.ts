@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BUNDLE_ELEMENT_ID, frameCsp, frameHeaders, frameHtml, escapeScriptText } from '@/lib/studio/runtime/frame-document'
-import { classifyRuntimeRequest, studioOrigins } from '@/lib/studio/runtime/origin'
+import { classifyRuntimeRequest, requestHost, studioOrigins } from '@/lib/studio/runtime/origin'
 import { parseFrameMessage } from '@/lib/studio/runtime/protocol'
 import type { StudioViewer } from '@/lib/studio/context'
 
@@ -110,6 +110,16 @@ describe('frame document', () => {
 })
 
 describe('origins', () => {
+  it('a request is classified by the host the browser asked for, not the server’s own address', () => {
+    // What a production Next server hands middleware and routes: nextUrl is built from its
+    // listen address, the Host header from the browser's request.
+    const origins = studioOrigins({ STUDIO_RUNTIME_ORIGIN: 'https://plugins.example.net', SITE_URL: 'https://app.example.com', NODE_ENV: 'production' })
+    const request = (host: string | null) => ({ headers: { get: (n: string) => (n === 'host' ? host : null) }, nextUrl: { host: 'localhost:8080' } })
+    expect(requestHost(request('plugins.example.net'))).toBe('plugins.example.net')
+    expect(classifyRuntimeRequest(requestHost(request('plugins.example.net')), '/studio-frame/v1/x/student', origins)).toBe('serve-runtime')
+    expect(classifyRuntimeRequest(requestHost(request('plugins.example.net')), '/login', origins)).toBe('not-found')
+    expect(requestHost(request(null))).toBe('localhost:8080')
+  })
   it.each([
     ['unset', {}],
     ['not a URL', { STUDIO_RUNTIME_ORIGIN: 'plugins' }],

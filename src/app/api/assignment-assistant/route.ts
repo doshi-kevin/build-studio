@@ -518,7 +518,9 @@ export async function POST(req: Request) {
       google: { thinkingConfig: { thinkingLevel: modelDef.thinkingLevel } },
     },
     experimental_transform: smoothStream({ chunking: 'word' }),
-    onFinish: async ({ usage, providerMetadata, steps }) => {
+    // totalUsage, not usage: `usage` is the final step alone, so a turn that
+    // called tools would leave every earlier step off the ledger.
+    onFinish: async ({ totalUsage: usage, providerMetadata, steps }) => {
       // Grounded search queries are billed per-query, separately from tokens —
       // counted by the shared dual-shape reader (see src/lib/ai/grounding.ts)
       // and priced into the external ledger below. See docs/reference/athena-cost-analysis.md.
@@ -565,7 +567,7 @@ export async function POST(req: Request) {
             inputTokens: usage?.inputTokens,
             cachedInputTokens: usage?.cachedInputTokens,
             outputTokens: usage?.outputTokens,
-            // Thinking tokens bill at the output rate — omitting them under-counts.
+            // The thinking share of outputTokens, kept for the ledger split.
             reasoningTokens: usage?.reasoningTokens,
           },
         })

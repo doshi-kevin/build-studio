@@ -114,8 +114,15 @@ export async function enqueueJob(input: EnqueueJobInput): Promise<EnqueueJobResu
   return { jobId, alreadyActive: false, ...kick }
 }
 
-/** Fire-and-forget POST to the kick route. Never throws — the sweep recovers. */
-async function kickWorker(jobId: string): Promise<{ kicked: boolean; kickError?: string }> {
+/**
+ * POST to the kick route. Never throws; the sweep recovers a lost kick.
+ *
+ * Callers await it, so the request leaves while their own request still has CPU. The
+ * fetch is then abandoned after 2 s: the drain is its own request to the service and runs
+ * until it answers (docs/reference/studio-agent-harness.md, "Cloud Run and CPU").
+ */
+export async function kickWorker(jobId: string): Promise<{ kicked: boolean; kickError?: string }> {
+  const abortAfterMs = 2000
   const secret = process.env.BACKGROUND_JOBS_SECRET ?? ''
   if (!secret) {
     logger.warn('enqueueJob: BACKGROUND_JOBS_SECRET not set, skipping kick (sweep will pick up)', {
@@ -126,7 +133,7 @@ async function kickWorker(jobId: string): Promise<{ kicked: boolean; kickError?:
 
   const kickUrl = resolveKickUrl()
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 2000)
+  const timeoutId = setTimeout(() => controller.abort(), abortAfterMs)
   try {
     const res = await fetch(kickUrl, {
       method: 'POST',

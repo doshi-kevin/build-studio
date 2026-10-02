@@ -83,6 +83,19 @@ The registry lives in `src/lib/studio/validator/ruleset.ts`. Each check has an I
 | `runtime.accessibility` | runtime | quality | 7.4 | axe-core finds a WCAG 2.0/2.1 A or AA violation |
 | `runtime.states` | runtime | quality | 7.5 | Loading, empty or error state missing under a slow, empty or failing Bridge, or a raw error message on screen |
 
+**What `artifact.syntax` refuses.** The runtime runs a bundle as a classic script (a plain `<script>`, not `type="module"`), so anything only a module or TypeScript allows would stop it from starting. The scanner parses with TypeScript's JavaScript parser, which accepts module and TypeScript syntax without an error, so the check looks for them itself, at any depth:
+
+- every import and export: `import` in any form, `export` on a declaration (`export const`, `export function`, `export class`, `export default function`), `export { a }`, `export * from`, `export default` an expression, `import x = require()`, `export =`, `export as namespace`;
+- `import.meta`;
+- `await`, `for await` or `await using` outside an async function's body, which includes top-level `await` and `await` in a parameter default. A computed key such as `{ [await x]() {} }` runs in the enclosing function, so it's allowed inside an async one;
+- TypeScript-only syntax such as type annotations, `as`, `interface`, `enum`, `type` and `declare`. This fails as "isn't valid JavaScript". It's found by asking a one-file TypeScript program for its syntax errors, with no library and no type checking.
+
+Dynamic `import()` is legal in a classic script, so it fails `code.dynamic_code` instead. `require` fails `artifact.syntax`.
+
+Until Step 7C, the check matched only import and export *declarations*. It missed an export modifier on a declaration (`export const x = 1` is a variable statement carrying `export`, not an export declaration), `import.meta`, top-level `await` (including `await using`) and all TypeScript-only syntax. A bundle with any of these passed Stage 1 and failed only when it ran. The fixtures in `NOT_A_SCRIPT` (`fixtures.ts`) cover each form.
+
+Some other code a browser refuses before a script starts is still not checked: a top-level `return`, a duplicate `let`, or syntax the browser doesn't support yet, such as decorators. `runtime.boot` catches these in Stage 2.
+
 Stage 2 runs every runtime check on both views. Each view is loaded at 375 by 812 pixels four times: with data, with no data, with a Bridge that answers slowly, and with one that fails. The failing Bridge returns a sentinel message; if that text reaches the screen, `runtime.states` fails.
 
 Plugins are built from the plugin kit (`src/lib/studio/kit/`). The runtime supplies React and the kit as `public/studio-runtime/v1/vendor.js`, pinned by hash in `src/lib/studio/kit/vendor-hash.ts`, so the validator scans only plugin-owned code (`npm run` the build in `scripts/studio/build-runtime-vendor.mjs` to regenerate it). The kit's state components carry `data-kit-state` markers, which is how Stage 2 recognizes loading, empty and error states.

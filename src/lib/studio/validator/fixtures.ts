@@ -85,6 +85,46 @@ const inStudent = (statement: string) => withStudent(view('Exit ticket', true, s
 const addToBody = (statement: string) => withStudent(view('Exit ticket', true, '', statement))
 const withManifest = (change: Record<string, unknown>): FixtureArtifact => ({ ...GOOD, manifest: { ...GOOD_MANIFEST, ...change } })
 
+/** Code a classic script refuses: module-only forms and TypeScript-only syntax. Each one
+ * is appended to the good student bundle. */
+const NOT_A_SCRIPT: [name: string, code: string][] = [
+  ['export const', 'export const meta = 1'],
+  ['export let', 'export let meta = 1'],
+  ['export var', 'export var meta = 1'],
+  ['export function', 'export function meta() {}'],
+  ['export async function', 'export async function meta() {}'],
+  ['export generator', 'export function* meta() {}'],
+  ['export class', 'export class Meta {}'],
+  ['export default function', 'export default function () {}'],
+  ['export default class', 'export default class {}'],
+  ['export default expression', 'export default 1'],
+  ['export list', 'var meta = 1\nexport { meta }'],
+  ['export renamed', 'var meta = 1\nexport { meta as info }'],
+  ['export star', "export * from 'x'"],
+  ['export star as', "export * as ns from 'x'"],
+  ['export enum', 'export enum Meta { A }'],
+  ['export interface', 'export interface Meta {}'],
+  ['export type', 'export type Meta = 1'],
+  ['named import', "import { x } from 'y'"],
+  ['namespace import', "import * as x from 'y'"],
+  ['side-effect import', "import 'y'"],
+  ['import require', "import x = require('y')"],
+  ['export equals', 'export = 1'],
+  ['export as namespace', 'export as namespace Meta'],
+  ['import.meta', 'var where = import.meta.url'],
+  ['top-level await', "await ScholeraKit.request('context.get', null)"],
+  ['top-level for await', 'for await (var x of []) {}'],
+  ['await in a plain function', "function later() { await ScholeraKit.request('context.get', null) }"],
+  ['top-level await using', 'await using meta = null'],
+  ['top-level for await using', 'for (await using meta of []) {}'],
+  ['await in async parameters', 'async function later(meta = await 1) {}'],
+  ['nested export', 'if (true) { export const meta = 1 }'],
+  ['nested import', "function later() { import x from 'y' }"],
+  ['type annotation', 'var meta: number = 1'],
+  ['interface', 'interface Meta {}'],
+  ['enum', 'enum Meta { A }'],
+]
+
 /** One bad fixture per static check, with the check it must fail. */
 export const STATIC_BAD: { name: string; check: string; artifact: FixtureArtifact; expect?: 'failed' | 'needs_review'; alsoFails?: string[] }[] = [
   { name: 'oversized source', check: 'artifact.size', artifact: { ...GOOD, source: { ...SOURCE, 'big.ts': 'x'.repeat(130 * 1024) } } },
@@ -93,6 +133,7 @@ export const STATIC_BAD: { name: string; check: string; artifact: FixtureArtifac
   { name: 'bundled React', check: 'artifact.vendor_free', artifact: inStudent("var el = { $$typeof: Symbol.for('react.transitional.element') }") },
   { name: 'syntax error', check: 'artifact.syntax', artifact: withStudent('function ( {') },
   { name: 'module syntax', check: 'artifact.syntax', artifact: withStudent("import x from 'y'\n" + GOOD.studentBundle) },
+  ...NOT_A_SCRIPT.map(([name, code]) => ({ name, check: 'artifact.syntax', artifact: withStudent(GOOD.studentBundle + code + '\n') })),
   { name: 'deep nesting', check: 'artifact.syntax', artifact: withStudent('x = ' + '['.repeat(600) + ']'.repeat(600)) },
   { name: 'unknown import', check: 'source.imports', artifact: { ...GOOD, source: { ...SOURCE, 'views/student.tsx': "import axios from 'axios'\n" } } },
   { name: 'import outside the plugin', check: 'source.imports', artifact: { ...GOOD, source: { ...SOURCE, 'views/student.tsx': "import x from '../../secrets'\n" } } },

@@ -21,7 +21,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GOOD, STATIC_BAD, type FixtureArtifact } from '@/lib/studio/validator/fixtures'
-import { RUNTIME_CHECK_IDS, checksFor } from '@/lib/studio/validator/ruleset'
+import { RUNTIME_CHECK_IDS, STUDIO_VALIDATOR_RULESET, checksFor } from '@/lib/studio/validator/ruleset'
 import type { PurposeClassifier } from '@/lib/studio/validator/purpose'
 import type { RuntimeJob } from '@/lib/studio/validator/runtime-runner'
 import { dbEnv } from './env'
@@ -223,7 +223,7 @@ describe('from publishing to showing students', () => {
     const res = await report(job)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, status: 'passed' })
-    expect(await service.currentVerdict(tool.version)).toMatchObject({ status: 'passed', rulesetVersion: 1 })
+    expect(await service.currentVerdict(tool.version)).toMatchObject({ status: 'passed', rulesetVersion: STUDIO_VALIDATOR_RULESET })
   })
 
   it('the same report can’t be replayed, even to change the result', async () => {
@@ -262,7 +262,7 @@ describe('from publishing to showing students', () => {
   })
 
   it('raising the minimum ruleset withdraws the verdict until the version is checked again', async () => {
-    await sql('update public.studio_validator_settings set min_accepted_ruleset = 2 where id')
+    await sql('update public.studio_validator_settings set min_accepted_ruleset = $1 where id', [STUDIO_VALIDATOR_RULESET + 1])
     expect(await service.currentVerdict(tool.version)).toEqual({ status: 'unavailable', reason: 'below_minimum_ruleset' })
     await sql('update public.studio_validator_settings set min_accepted_ruleset = 1 where id')
     expect(await service.currentVerdict(tool.version)).toMatchObject({ status: 'passed' })

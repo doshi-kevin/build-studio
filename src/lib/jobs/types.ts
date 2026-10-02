@@ -50,8 +50,12 @@ export interface BackgroundJobRow {
 export interface PipelineContext {
   adminDb: SupabaseClient
   job: BackgroundJobRow
-  /** Aborts when the job is cancelled or the worker nears its time budget. */
+  /** Never aborted by the generic worker today; a pipeline that needs Stop or a time
+   * limit keeps its own (the Studio builder reads its run row). */
   signal: AbortSignal
+  /** When the drain running this job stops claiming work (unix ms). A pipeline that does
+   * long work in steps checks it between steps and hands off before it. */
+  deadline?: number
   /** Report a discrete progress transition; persisted for the live roster. */
   reportProgress: (entry: ProgressEntry) => Promise<void>
 }
@@ -66,5 +70,8 @@ export interface PipelineResult {
 /** A background task plugs in by implementing this; the foundation does the rest. */
 export interface BackgroundPipeline {
   type: string
+  /** A drain with less time left than this doesn't claim jobs of this type, so a job
+   * claimed late in a drain isn't started with seconds to spare. */
+  minBudgetMs?: number
   run: (params: Record<string, unknown>, ctx: PipelineContext) => Promise<PipelineResult>
 }

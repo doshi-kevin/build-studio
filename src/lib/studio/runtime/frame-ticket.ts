@@ -115,3 +115,59 @@ export async function issueFrameUrl(
   )
   return `${origins.runtime}/studio-frame/v1/${viewer.installationId}/${view}?t=${ticket}`
 }
+
+// ── Draft tickets (the builder's preview, before any version exists) ──
+// Keyed by project and snapshot hash, never by a user. Signed with a key derived for
+// this purpose alone, so an installation ticket never verifies as a draft ticket and a
+// draft ticket never verifies as an installation ticket.
+
+export interface DraftFrameTicket {
+  projectId: string
+  hash: string
+  view: PluginView
+  expiresAt: number
+}
+
+const HASH = /^[0-9a-f]{64}$/
+const draftKey = (secret: string) => createHmac('sha256', secret).update('studio-draft-frame-v1').digest('base64url')
+
+export function signDraftFrameTicket(ticket: DraftFrameTicket, secret: string): string {
+  const body = Buffer.from(JSON.stringify({ k: 'draft', p: ticket.projectId, h: ticket.hash, w: ticket.view, e: ticket.expiresAt })).toString('base64url')
+  return `${body}.${mac(body, draftKey(secret))}`
+}
+
+export function verifyDraftFrameTicket(token: string | null, secret: string, now = Date.now()): DraftFrameTicket | null {
+  if (!token || token.length > 512) return null
+  const [body, signature, extra] = token.split('.')
+  if (!body || !signature || extra !== undefined) return null
+  const expected = Buffer.from(mac(body, draftKey(secret)))
+  const given = Buffer.from(signature)
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null
+  let raw: unknown
+  try {
+    raw = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  const t = raw as Record<string, unknown>
+  if (
+    t?.k !== 'draft' ||
+    typeof t.p !== 'string' || !UUID.test(t.p) ||
+    typeof t.h !== 'string' || !HASH.test(t.h) ||
+    (t.w !== 'student' && t.w !== 'professor') ||
+    typeof t.e !== 'number' || t.e <= now
+  ) {
+    return null
+  }
+  return { projectId: t.p, hash: t.h, view: t.w, expiresAt: t.e }
+}
+
+/** A draft frame URL for a snapshot the caller has already authorized, or null when the
+ * runtime isn't configured. The builder service is the only caller. */
+export function draftFrameUrl(projectId: string, hash: string, view: PluginView): string | null {
+  const origins = studioOrigins()
+  const secret = ticketSecret()
+  if (!origins || !secret) return null
+  const ticket = signDraftFrameTicket({ projectId, hash, view, expiresAt: Date.now() + STUDIO_FRAME_TICKET_TTL_MS }, secret)
+  return `${origins.runtime}/studio-frame/v1/draft/${projectId}/${view}?t=${ticket}`
+}

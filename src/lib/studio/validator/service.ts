@@ -40,6 +40,7 @@ import { createPurposeClassifier } from './purpose-ai'
 import {
   checkDefinition,
   checksFor,
+  requiredCheckIds,
   STUDIO_VALIDATOR_RULESET,
   VALIDATOR_RUNTIME_VERSION,
   VALIDATOR_VERSION,
@@ -87,7 +88,6 @@ function rowsFor(stage: 'static', outcomes: Record<StaticCheckId, CheckOutcome>)
   })
 }
 
-const requiredIds = (stage: 'static' | 'runtime') => checksFor(stage).filter((c) => c.required).map((c) => c.id)
 
 /** A run still open after the callback TTL was abandoned (a crashed process, a runner
  * that never reported). It ends as `error`, so it neither blocks a new run through the
@@ -187,7 +187,7 @@ export async function runStaticValidation(
       classify: options.classify ?? createPurposeClassifier({ institutionId: version.institutionId, userId: requestedBy }),
     })
     const rows = rowsFor('static', report.outcomes)
-    const status = stageStatus(rows, 'static', requiredIds('static'))
+    const status = stageStatus(rows, 'static', requiredCheckIds('static'))
     const wrote = await db.insertValidationChecks(validationId, rows)
     const final = wrote.ok && status !== 'pending' && status !== 'running' ? status : 'error'
     await db.finishValidation(validationId, {
@@ -421,7 +421,7 @@ export async function submitRuntimeReport(input: { validationId: string; token: 
       metadata: boundedMetadata({ views: r.views, findings: r.findings }),
     }
   })
-  const status = stageStatus(rows, 'runtime', requiredIds('runtime'))
+  const status = stageStatus(rows, 'runtime', requiredCheckIds('runtime'))
   const wrote = await db.insertValidationChecks(run.id, rows)
   const final = wrote.ok && (status === 'passed' || status === 'failed') ? status : 'error'
   const finished = await db.finishValidation(run.id, {

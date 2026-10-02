@@ -38,6 +38,8 @@ const AI_MARKERS = [
 const ALLOWED: Record<string, string> = {
   // ── Studio validator (guard inside the classifier, before the model call) ──
   'lib/studio/validator/purpose-ai.ts': 'guarded inline (studio-validator)',
+  // ── Studio builder (the harness's gate checks studio-builder before every model call) ──
+  'lib/studio/builder/model.ts': 'only caller is builder/harness.ts, whose gate checks studio-builder before every step',
   // ── Routes (guard inline in the route, before any model/token spend) ──
   'app/api/chat/route.ts': 'guarded inline (athena-student)',
   'app/api/professor-assistant/route.ts': 'guarded inline (athena-professor)',

@@ -7,7 +7,7 @@ How Studio stores plugins and their data. Rule numbers cite [studio-plugin-rules
 | **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
-| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql`, `20261001181829_studio_publication.sql` (student visibility, storage quota, kill switch; Step 5B) and `20261001192059_studio_student_quota.sql` (per-student quota, limits as settings; Step 5C) |
+| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql`, `20261001181829_studio_publication.sql` (student visibility, storage quota, kill switch; Step 5B), `20261001192059_studio_student_quota.sql` (per-student quota, limits as settings; Step 5C) and `20261002160000_studio_builder.sql` (draft snapshots, builder runs and steps; Step 7B) |
 | **Tests** | `src/__tests__/db/studio-storage.test.ts` and `src/__tests__/db/studio-publication.test.ts` (`npm run test:db`) |
 
 ## The model
@@ -16,7 +16,7 @@ Project, then version, then installation, then approval, then record.
 
 | Concept | Table | What it is |
 |---|---|---|
-| Project | `studio_plugin_projects` | Reusable plugin source, owned by one professor in one institution. Holds the work-in-progress `draft` |
+| Project | `studio_plugin_projects` | Reusable plugin source, owned by one professor in one institution. Points at its current draft snapshot (`draft_head_hash`, moved by compare-and-swap on `draft_rev`) and at the one before the last build (`draft_undo_hash`, what Undo goes back to) |
 | Version | `studio_plugin_versions` | One immutable published release: semantic version, manifest, frozen source, one compiled bundle per view |
 | Installation | `studio_plugin_installations` | One project attached to exactly one course section, pointing at its current version |
 | Approval | `studio_plugin_approvals` | Permission for one installation to activate one version. Kept forever as history |
@@ -29,7 +29,7 @@ An installation also carries `student_visibility` (`hidden` or `visible`), which
 
 One version can be installed in many sections. Each installation has its own approvals and its own records, and no installation can read another's (rule 2.4).
 
-Collections are not tables. A record's `collection` column names a collection its version's manifest declares. There is also no table for drafts (they live on the project), for an installation's version history (its approval rows are that history), or for audit (`logEvent` covers it).
+Collections are not tables. A record's `collection` column names a collection its version's manifest declares. Drafts are immutable snapshots in `studio_plugin_snapshots`, written by the builder, and a version saved from one records it in `source_snapshot_hash` (Step 7B, [studio-agent-harness.md](./studio-agent-harness.md)). There is no table for an installation's version history (its approval rows are that history), or for audit (`logEvent` covers it).
 
 ## Security model
 

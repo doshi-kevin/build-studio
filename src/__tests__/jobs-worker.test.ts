@@ -44,8 +44,9 @@ function makeFakeAdmin(seed: Partial<BackgroundJobRow>[]) {
     store.set(row.id, row)
   }
 
+  const claims: { types: string[] | null }[] = []
   const admin = {
-    rpc: async (fn: string, args?: { p_job_id?: string; p_entry?: ProgressEntry }) => {
+    rpc: async (fn: string, args?: { p_job_id?: string; p_entry?: ProgressEntry; p_worker_id?: string; p_types?: string[] | null }) => {
       if (fn === 'append_job_progress') {
         // Model the SQL RPC: atomic dedupe-by-label append.
         const row = args?.p_job_id ? store.get(args.p_job_id) : undefined
@@ -55,13 +56,16 @@ function makeFakeAdmin(seed: Partial<BackgroundJobRow>[]) {
         return { data: null, error: null }
       }
       if (fn !== 'claim_next_job') return { data: null, error: null }
-      // Oldest pending (or expired-running) claimable job.
+      claims.push({ types: args?.p_types ?? null })
+      // Oldest pending (or expired-running) claimable job, of the requested types.
       const claimable = [...store.values()]
         .filter((r) => r.attempts < r.max_attempts && r.status === 'pending')
+        .filter((r) => !args?.p_types || args.p_types.includes(r.type))
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
       const job = claimable[0]
       if (!job) return { data: null, error: null }
       job.status = 'running'
+      job.claimed_by = args?.p_worker_id ?? null
       job.attempts += 1
       job.started_at = new Date().toISOString()
       return { data: { ...job }, error: null }
@@ -72,17 +76,27 @@ function makeFakeAdmin(seed: Partial<BackgroundJobRow>[]) {
           single: async () => ({ data: store.get(id) ?? null, error: null }),
         }),
       }),
-      update: (patch: Partial<BackgroundJobRow>) => ({
-        eq: async (_c: string, id: string) => {
-          const row = store.get(id)
-          if (row) Object.assign(row, patch)
-          return { error: null }
-        },
-      }),
+      // update().eq(...).eq(...): every filter must match, like PostgREST.
+      update: (patch: Partial<BackgroundJobRow>) => {
+        const filters: [keyof BackgroundJobRow, unknown][] = []
+        const chain = {
+          eq(column: keyof BackgroundJobRow, value: unknown) {
+            filters.push([column, value])
+            return chain
+          },
+          then(resolve: (v: { error: null }) => void) {
+            for (const row of store.values()) {
+              if (filters.every(([c, v]) => row[c] === v)) Object.assign(row, patch)
+            }
+            resolve({ error: null })
+          },
+        }
+        return chain
+      },
     }),
   }
 
-  return { admin: admin as unknown as SupabaseClient, store }
+  return { admin: admin as unknown as SupabaseClient, store, claims }
 }
 
 describe('jobs worker', () => {
@@ -190,6 +204,53 @@ describe('jobs worker', () => {
       await runOneJob({ adminClient: admin })
       expect(store.get('j9')!.status).toBe('done')
       expect(checkAiFeatureMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('time budgets and claim ownership (Studio builder slices)', () => {
+    it('passes the drain deadline to the pipeline', async () => {
+      let seen: number | undefined
+      registerPipeline({ type: 'fake-deadline', async run(_p, ctx) { seen = ctx.deadline; return { result: null, summary: 'ok' } } })
+      const { admin } = makeFakeAdmin([{ id: 'd1', type: 'fake-deadline' }])
+      const deadline = Date.now() + 60_000
+      await runUntilDrained(deadline, { adminClient: admin })
+      expect(seen).toBe(deadline)
+    })
+
+    it('a drain without enough time left never claims a type that needs more', async () => {
+      const ran = vi.fn()
+      registerPipeline({ type: 'fake-long', minBudgetMs: 300_000, async run() { ran(); return { result: null, summary: 'ok' } } })
+      const { admin, store, claims } = makeFakeAdmin([{ id: 'l1', type: 'fake-long' }, { id: 'o1', type: 'fake-ok' }])
+      await runUntilDrained(Date.now() + 30_000, { adminClient: admin })
+      expect(ran).not.toHaveBeenCalled()
+      expect(store.get('l1')!.status).toBe('pending')
+      expect(store.get('o1')!.status).toBe('done')
+      expect(claims.every((c) => c.types !== null && !c.types.includes('fake-long'))).toBe(true)
+    })
+
+    it('with time to spare, the same type is claimed', async () => {
+      const ran = vi.fn()
+      registerPipeline({ type: 'fake-long', minBudgetMs: 300_000, async run() { ran(); return { result: null, summary: 'ok' } } })
+      const { admin, store } = makeFakeAdmin([{ id: 'l2', type: 'fake-long' }])
+      await runUntilDrained(Date.now() + 600_000, { adminClient: admin })
+      expect(ran).toHaveBeenCalledOnce()
+      expect(store.get('l2')!.status).toBe('done')
+    })
+
+    it('a stale worker cannot finish a job another worker has re-claimed', async () => {
+      const { admin, store } = makeFakeAdmin([{ id: 's1', type: 'fake-steal' }])
+      registerPipeline({
+        type: 'fake-steal',
+        async run() {
+          // While this worker runs, its lease lapses and another worker takes the job.
+          store.get('s1')!.claimed_by = 'someone-else'
+          return { result: { stale: true }, summary: 'stale' }
+        },
+      })
+      await runOneJob({ adminClient: admin, workerId: 'first-worker' })
+      const job = store.get('s1')!
+      expect(job.status).toBe('running')
+      expect(job.result).toBeNull()
     })
   })
 })

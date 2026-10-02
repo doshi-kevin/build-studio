@@ -227,7 +227,8 @@ export async function POST(req: Request) {
           // extraction call when every selected source has them.
           concepts: concepts ?? undefined,
           onUsage: (usage) => {
-            tokensUsed += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + (usage.reasoningTokens ?? 0)
+            // outputTokens already includes reasoning.
+            tokensUsed += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
             send({ type: 'usage', tokens: tokensUsed })
           },
           attribution: { sectionId },

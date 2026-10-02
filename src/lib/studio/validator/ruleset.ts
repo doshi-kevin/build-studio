@@ -18,7 +18,7 @@
 /** The validator's own code version, recorded on every run. */
 export const VALIDATOR_VERSION = '1.0.0'
 /** The ruleset every new run uses. */
-export const STUDIO_VALIDATOR_RULESET = 1
+export const STUDIO_VALIDATOR_RULESET = 2
 /** The runtime and bridge version the validator exercises. */
 export const VALIDATOR_RUNTIME_VERSION = 'v1'
 
@@ -90,6 +90,11 @@ export type RuntimeCheckId = Extract<(typeof CHECKS)[number], { stage: 'runtime'
 
 export function checksFor(stage: CheckStage, ruleset = STUDIO_VALIDATOR_RULESET): readonly CheckDefinition[] {
   return CHECKS.filter((c) => c.stage === stage && c.sinceRuleset <= ruleset)
+}
+
+/** The checks a stage must pass. One list, shared by the validator and the builder's draft gate. */
+export function requiredCheckIds(stage: CheckStage, ruleset = STUDIO_VALIDATOR_RULESET): string[] {
+  return checksFor(stage, ruleset).filter((c) => c.required).map((c) => c.id)
 }
 
 export const RUNTIME_CHECK_IDS = checksFor('runtime').map((c) => c.id) as RuntimeCheckId[]

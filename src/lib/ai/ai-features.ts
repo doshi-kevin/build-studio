@@ -69,6 +69,12 @@ export const AI_FEATURES = [
     label: 'Studio Tool Checks',
     description: 'AI help deciding whether a Studio tool is for teaching, before students can see it',
   },
+  {
+    // Its own group: switching it off stops every build before its next model call.
+    key: 'studio-builder',
+    label: 'Studio Tool Builder',
+    description: 'Athena building and changing Studio tools from a professor’s description',
+  },
 ] as const
 
 export type AiFeatureKey = (typeof AI_FEATURES)[number]['key']

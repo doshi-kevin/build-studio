@@ -32,6 +32,16 @@ function originOf(value: string | undefined): URL | null {
   }
 }
 
+/**
+ * The host the browser asked for. Not `request.nextUrl.host`: a production Next server
+ * (`next start`, the standalone build) builds that URL from its own listen address
+ * (`next-server.js`, initURL), so it is never the runtime origin's host there. The Host
+ * header is what the browser targeted and what Cloud Run routes on.
+ */
+export function requestHost(request: { headers: { get(name: string): string | null }; nextUrl: { host: string } }): string {
+  return request.headers.get('host') || request.nextUrl.host
+}
+
 /** Both origins, or null when the runtime is off or misconfigured. Fails closed. */
 export function studioOrigins(env: Env = process.env): StudioOrigins | null {
   const runtime = originOf(env.STUDIO_RUNTIME_ORIGIN)

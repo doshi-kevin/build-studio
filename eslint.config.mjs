@@ -37,6 +37,7 @@ const eslintConfig = defineConfig([
       "src/lib/pinecone/embed.ts",
       "src/lib/pinecone/decompose.ts",
       "src/lib/studio/validator/purpose-ai.ts",
+      "src/lib/studio/builder/model.ts",
     ],
     rules: {
       "no-restricted-imports": [

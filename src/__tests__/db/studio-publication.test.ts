@@ -18,6 +18,7 @@ import { randomBytes } from 'node:crypto'
 import { Client } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import exitTicket from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
+import { STUDIO_VALIDATOR_RULESET } from '@/lib/studio/validator/ruleset'
 import { dbEnv } from './env'
 import { FIXTURE } from './fixture'
 import { grantStudio } from './studio-entitlement'
@@ -126,10 +127,10 @@ async function clearedByValidator(versionId: string) {
     const [{ id }] = await sql<{ id: string }>(
       `insert into public.studio_plugin_validations
          (version_id, institution_id, stage, status, artifact_sha256, validator_version, ruleset_version, runtime_version, trigger)
-       select v.id, v.institution_id, $2, 'running', v.artifact_sha256, 'test', 1, 'v1', 'test'
+       select v.id, v.institution_id, $2, 'running', v.artifact_sha256, 'test', $3, 'v1', 'test'
        from public.studio_plugin_versions v where v.id = $1
        returning id`,
-      [versionId, stage],
+      [versionId, stage, STUDIO_VALIDATOR_RULESET],
     )
     await sql(`update public.studio_plugin_validations set status = 'passed', finished_at = now() where id = $1`, [id])
   }

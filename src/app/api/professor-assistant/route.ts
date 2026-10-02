@@ -337,7 +337,9 @@ export async function POST(req: Request) {
     // Smooth jagged token bursts into a steady word-paced stream so live
     // markdown renders smoothly as it arrives.
     experimental_transform: smoothStream({ chunking: 'word' }),
-    onFinish: async ({ usage, providerMetadata, steps }) => {
+    // totalUsage, not usage: `usage` is the final step alone, so a turn that
+    // called tools would leave every earlier step off the ledger.
+    onFinish: async ({ totalUsage: usage, providerMetadata, steps }) => {
       // Grounded search queries are billed per-query, separately from tokens.
       // The shared dual-shape reader also counts the server-tool shape this
       // route's old inline read missed (a QA-proven under-count on the
@@ -370,7 +372,7 @@ export async function POST(req: Request) {
             inputTokens: usage?.inputTokens,
             cachedInputTokens: usage?.cachedInputTokens,
             outputTokens: usage?.outputTokens,
-            // Thinking tokens bill at the output rate — omitting them under-counts.
+            // The thinking share of outputTokens, kept for the ledger split.
             reasoningTokens: usage?.reasoningTokens,
           },
         })

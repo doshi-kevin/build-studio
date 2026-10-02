@@ -10,7 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
-import { getPipeline } from './registry'
+import { getPipeline, listPipelines } from './registry'
 import { notifyJobComplete } from './notify'
 import type { BackgroundJobRow, JobStatus, ProgressEntry } from './types'
 import { checkAiFeature } from '@/lib/ai/kill-switch'
@@ -31,6 +31,8 @@ export interface WorkerOptions {
   claimTtlSeconds?: number
   /** Restrict this worker to certain job types (default: any type). */
   types?: string[]
+  /** When the drain stops claiming (unix ms); passed to the pipeline as ctx.deadline. */
+  deadline?: number
 }
 
 export interface RunResult {
@@ -90,9 +92,12 @@ async function writeCompletion(
   jobId: string,
   status: JobStatus,
   patch: { result?: unknown; summary?: string; error?: string | null },
+  /** The claim this worker holds. A worker whose lease expired and was re-claimed by
+   * another must not mark the other worker's job finished. */
+  workerId?: string,
 ): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (admin as any)
+  let q = (admin as any)
     .from('background_jobs')
     .update({
       status,
@@ -102,6 +107,8 @@ async function writeCompletion(
       ...(patch.error !== undefined ? { error: patch.error } : {}),
     })
     .eq('id', jobId)
+  if (workerId) q = q.eq('claimed_by', workerId)
+  await q
 }
 
 /**
@@ -120,7 +127,7 @@ export async function runOneJob(opts: WorkerOptions = {}): Promise<RunResult> {
   if (!pipeline) {
     const message = `No pipeline registered for type '${job.type}'`
     logger.error('jobs.worker.runOneJob: unknown job type', undefined, { jobId: job.id, type: job.type })
-    await writeCompletion(admin, job.id, 'failed', { error: message })
+    await writeCompletion(admin, job.id, 'failed', { error: message }, workerId)
     await notifyJobComplete({ id: job.id, type: job.type, status: 'failed', section_id: job.section_id })
     return { claimed: true, jobId: job.id, type: job.type, finalStatus: 'failed', error: message }
   }
@@ -135,7 +142,7 @@ export async function runOneJob(opts: WorkerOptions = {}): Promise<RunResult> {
     if (!verdict.allowed) {
       const message = 'Skipped: AI features are disabled for this institution.'
       logger.info('jobs.worker.runOneJob: skipped by AI kill switch', { jobId: job.id, type: job.type })
-      await writeCompletion(admin, job.id, 'failed', { error: message })
+      await writeCompletion(admin, job.id, 'failed', { error: message }, workerId)
       await notifyJobComplete({ id: job.id, type: job.type, status: 'failed', section_id: job.section_id })
       return { claimed: true, jobId: job.id, type: job.type, finalStatus: 'failed', error: message }
     }
@@ -147,18 +154,31 @@ export async function runOneJob(opts: WorkerOptions = {}): Promise<RunResult> {
       adminDb: admin,
       job,
       signal: controller.signal,
+      deadline: opts.deadline,
       reportProgress: makeReportProgress(admin, job.id),
     })
-    await writeCompletion(admin, job.id, 'done', { result, summary })
+    await writeCompletion(admin, job.id, 'done', { result, summary }, workerId)
     await notifyJobComplete({ id: job.id, type: job.type, status: 'done', section_id: job.section_id })
     return { claimed: true, jobId: job.id, type: job.type, finalStatus: 'done' }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown pipeline error'
     logger.error('jobs.worker.runOneJob: pipeline threw', err, { jobId: job.id, type: job.type })
-    await writeCompletion(admin, job.id, 'failed', { error: message })
+    await writeCompletion(admin, job.id, 'failed', { error: message }, workerId)
     await notifyJobComplete({ id: job.id, type: job.type, status: 'failed', section_id: job.section_id })
     return { claimed: true, jobId: job.id, type: job.type, finalStatus: 'failed', error: message }
   }
+}
+
+/**
+ * The types this drain may claim with `remainingMs` left. Unchanged (any type, or the
+ * caller's list) unless some pipeline needs more time than remains; then every other
+ * registered type, so a builder slice is never started with seconds to spare.
+ */
+export function claimableTypes(remainingMs: number, requested?: string[]): string[] | undefined {
+  const pipelines = listPipelines()
+  const tooBig = new Set(pipelines.filter((p) => (p.minBudgetMs ?? 0) > remainingMs).map((p) => p.type))
+  if (tooBig.size === 0) return requested
+  return (requested ?? pipelines.map((p) => p.type)).filter((t) => !tooBig.has(t))
 }
 
 /**
@@ -172,7 +192,7 @@ export async function runUntilDrained(
   let jobsRun = 0
   let lastResult: RunResult | null = null
   while (Date.now() < deadline) {
-    const result = await runOneJob(opts)
+    const result = await runOneJob({ ...opts, deadline, types: claimableTypes(deadline - Date.now(), opts.types) })
     if (!result.claimed) return { jobsRun, lastResult }
     jobsRun += 1
     lastResult = result

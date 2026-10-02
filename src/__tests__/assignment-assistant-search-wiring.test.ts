@@ -343,3 +343,23 @@ describe('assignment-assistant route — grounded-query billing counter', () => 
     expect(mockRecordExternalUsage).not.toHaveBeenCalled()
   })
 })
+
+describe('assignment-assistant route — token ledger', () => {
+  it('records the whole tool loop (totalUsage), not just the final step', async () => {
+    await POST(request())
+    await captured.onFinish({
+      usage: { inputTokens: 106, outputTokens: 12, reasoningTokens: 0, cachedInputTokens: 0 },
+      totalUsage: { inputTokens: 178, outputTokens: 28, reasoningTokens: 9, cachedInputTokens: 40 },
+      providerMetadata: undefined,
+      steps: [],
+    })
+
+    expect(mockRecordAiUsage).toHaveBeenCalledTimes(1)
+    expect(mockRecordAiUsage.mock.calls[0][0].usage).toEqual({
+      inputTokens: 178,
+      cachedInputTokens: 40,
+      outputTokens: 28,
+      reasoningTokens: 9,
+    })
+  })
+})

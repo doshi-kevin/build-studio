@@ -6,7 +6,7 @@
 
 ## The numbers
 
-One ledger row = one user message (the recorded usage covers Athena's entire multi-step tool loop for that turn, so these are true per-query costs).
+One ledger row = one user message. From the deploy of the fix written 2026-10-02, the recorded usage covers Athena's whole multi-step tool loop for that turn (`totalUsage`). Rows before that deploy hold only the turn's final step (`onFinish`'s `usage`), so a turn that called a tool under-reports the steps before the last one. No column or metadata key marks which kind a row is; split by deploy time. The data window below predates the fix; its numbers carry that under-count, which the stored rows can't recover.
 
 | Surface | Model | Queries | Avg / query | Median | P90 | Max |
 |---|---|---:|---:|---:|---:|---:|
@@ -77,13 +77,15 @@ number in this section.
 
 Costs come from the `ai_usage_events` ledger in prod (every LLM call site writes to it via `recordAiUsage` in `src/lib/ai/usage.ts`; pricing per model lives in `src/lib/ai/cost.ts`). Reproduce with:
 
-Until the double-count fix lands (see caveats), quote TRUE cost, not stored cost — the
-`true_cost` expression below subtracts the double-counted thinking share:
+Quote TRUE cost, not stored cost. Thinking rows written before the double-count fix (see
+caveats) store the reasoning twice; the `true_cost` expression below subtracts it from those rows
+only. Rows written after the fix carry `metadata.reasoning_in_output` and are left as stored:
 
 ```sql
 with t as (
-  select *, cost_usd - coalesce((metadata->>'reasoning_tokens')::numeric, 0)
-    * case model when 'gemini-3.1-pro-preview' then 12.0 else 3.0 end / 1000000 as true_cost
+  select *, cost_usd - case when metadata ? 'reasoning_in_output' then 0
+    else coalesce((metadata->>'reasoning_tokens')::numeric, 0)
+      * case model when 'gemini-3.1-pro-preview' then 12.0 else 3.0 end / 1000000 end as true_cost
   from ai_usage_events
 )
 select feature, model, count(*) as queries,
@@ -95,7 +97,7 @@ select feature, model, count(*) as queries,
 from t
 where feature in ('professor_assistant', 'assignment_assistant', 'quiz_assistant',
                  'athena_frontier', 'about_assistant', 'project_assistant',
-                 'ai_tutor', 'conversation_title')  -- add new Athena feature labels here
+                 'ai_tutor', 'conversation_title', 'studio_builder')  -- add new Athena feature labels here
 group by feature, model order by feature, queries desc;
 ```
 
@@ -115,7 +117,7 @@ group by provider, feature, unit;
 
 - **All traffic to date is Scholera Dev (internal testing).** No real institution has generated Athena queries yet. Token-per-query shape is representative of the workload; the Flash/Pro *mix* reflects our testing habits, not professor behavior — another reason to plan at the Pro rate.
 - **Google Search grounding IS in these numbers now** (it wasn't on 2026-07-20). Google bills grounded queries per-1,000-queries rather than by tokens, so they sit in `external_usage_events`, not the token ledger — priced since 2026-07-30 at $14/1k, wired on both Athena routes, and reconciling exactly against the `groundingQueries` count in `events`. Two live gaps remain: the 103 grounded queries from **before** 2026-07-30 are counted but unpriced (~$1.44), and the student tutor route never counts grounding at all (it doesn't ground today — if it ever does, `countGroundingQueries` + `recordExternalUsage` have to be added there too).
-- **The raw ledger double-counts thinking tokens (found 2026-08-18, live-call-verified; code fix pending).** Under `ai` v6 the SDK's `usage.outputTokens` for Gemini **already includes** reasoning tokens (`outputTokenDetails.reasoningTokens` is the split) — proven with a single live Flash call whose response carried both the SDK usage and Google's raw `usageMetadata`: prompt 35 / candidates 5 / thoughts 249, SDK `outputTokens` 254. `recordAiUsage` then adds `reasoningTokens` on top, so every thinking-enabled row since reasoning persistence began (2026-07-22, 600 rows) stores output and cost inflated by exactly `reasoning_tokens × output rate` — **$3.56 platform-wide, of which $1.16 on titling and $0.28 on Athena surfaces**. The signature is unambiguous: all 150 thinking title rows have `output_tokens − 2×reasoning ≈ 5` (a title is ~5 text tokens). Rows before 2026-07-22 are correct (they never passed `reasoningTokens`). The error is conservative — the real bill comes in LOWER than the ledger — and every number in this doc is corrected: `true cost = cost_usd − reasoning_tokens × output_rate / 1e6`. The super-admin Cost Analysis dashboard still shows the inflated stored values until the code fix + row repair land.
+- **The raw ledger double-counted thinking tokens (found 2026-08-18, live-call-verified; code fixed 2026-10-02).** Under `ai` v6 the SDK's `usage.outputTokens` for Gemini **already includes** reasoning tokens (`outputTokenDetails.reasoningTokens` is the split) — proven with a single live Flash call whose response carried both the SDK usage and Google's raw `usageMetadata`: prompt 35 / candidates 5 / thoughts 249, SDK `outputTokens` 254. `recordAiUsage` then adds `reasoningTokens` on top, so every thinking-enabled row since reasoning persistence began (2026-07-22, 600 rows) stores output and cost inflated by exactly `reasoning_tokens × output rate` — **$3.56 platform-wide, of which $1.16 on titling and $0.28 on Athena surfaces**. The signature is unambiguous: all 150 thinking title rows have `output_tokens − 2×reasoning ≈ 5` (a title is ~5 text tokens). Rows before 2026-07-22 are correct (they never passed `reasoningTokens`). The error is conservative — the real bill comes in LOWER than the ledger — and every number in this doc is corrected: `true cost = cost_usd − reasoning_tokens × output_rate / 1e6`. The fix: `TokenUsage.outputTokens` in `cost.ts` is now all billed output with reasoning inside it, and `computeCostUsd` / `recordAiUsage` no longer add `reasoningTokens` on top (re-measured 2026-10-02 on `ai` 6.0.208: Pro at low thinking, prompt 33 / candidates 11 / thoughts 222, SDK `outputTokens` 233; true cost $0.002862, the old ledger wrote $0.005526, 93% over). Stored rows were not repaired: the super-admin Cost Analysis dashboard sums stored `cost_usd`, so it still shows the inflated values for thinking rows written before the fix. Rows written after it carry `metadata.reasoning_in_output: true`; the query above uses that to correct only the old ones.
 - **The search policy is a prompt-tax line item.** Its `<web_search>` block sits in the assignment/quiz route's cacheable `CONTRACT` prefix, so it inflates the input side of *every* query on that route whether search fires or not — a few hundred input tokens, fractions of a cent at Flash rates and softened by caching. Noted because framework step 3 exists precisely to keep these visible as they accumulate.
 - **The $0.81 max is real.** One Pro query with huge context/output cost 25× the average. Tail risk exists; the P90 is the honest "expensive query" number.
 - Stored `cost_usd` is internally exact: a full-ledger audit (2026-08-18, all 3,146 rows, every model) recomputes every row from its stored token columns to within $0.000001, and the rate table in `cost.ts` was re-verified against Google's live pricing page the same day (all rates current; thinking billed at output rate confirmed; no Pro prompt has ever exceeded the 200k tier boundary). Internal consistency is what that proves — the thinking double-count above is about the stored *tokens* being wrong, not the arithmetic on them. The `external_usage_events` ledger recomputes exactly too (quantity × rate, 0 mismatches).

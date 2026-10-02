@@ -60,14 +60,14 @@ describe('computeExternalCostUsd', () => {
 })
 
 describe('computeCostUsd — reasoning tokens', () => {
-  it('bills reasoning (thinking) tokens at the output rate', () => {
-    // Flash: $3.00/MTok output. 1M output + 1M reasoning = $6.00.
+  it('bills reasoning (thinking) tokens once, as part of outputTokens', () => {
+    // Flash: $3.00/MTok output. 1.5M output, 1M of it reasoning = $4.50, not $7.50.
     const cost = computeCostUsd('gemini-3-flash-preview', {
       inputTokens: 0,
-      outputTokens: 1_000_000,
+      outputTokens: 1_500_000,
       reasoningTokens: 1_000_000,
     })
-    expect(cost).toBeCloseTo(6.0, 6)
+    expect(cost).toBeCloseTo(4.5, 6)
   })
 
   it('is unchanged for calls without reasoning tokens', () => {

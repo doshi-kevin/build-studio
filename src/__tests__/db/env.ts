@@ -33,17 +33,25 @@ export function dbEnv(): DbEnv {
   if (cached) return cached
 
   let vars: Record<string, string> = {}
-  try {
-    const out = execFileSync('supabase', ['status', '-o', 'env'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    for (const line of out.split('\n')) {
-      const m = /^([A-Z_]+)="?(.*?)"?$/.exec(line.trim())
-      if (m) vars[m[1]] = m[2]
+  // With all four set in the environment the CLI isn't needed (a stack started without it).
+  const fromEnv =
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    process.env.SUPABASE_DB_URL
+  if (!fromEnv) {
+    try {
+      const out = execFileSync('supabase', ['status', '-o', 'env'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      for (const line of out.split('\n')) {
+        const m = /^([A-Z_]+)="?(.*?)"?$/.exec(line.trim())
+        if (m) vars[m[1]] = m[2]
+      }
+    } catch {
+      abort('could not run `supabase status` — is the local stack running?')
     }
-  } catch {
-    abort('could not run `supabase status` — is the local stack running?')
   }
 
   // Environment wins when set, so CI or a custom stack can point this elsewhere (still local).

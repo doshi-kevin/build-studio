@@ -74,14 +74,25 @@ export function isPricedModel(model: string): boolean {
   return model in MODEL_RATES_USD
 }
 
+/**
+ * One call's usage, in the AI SDK v6 `LanguageModelUsage` shape, so a call's
+ * `usage` / `totalUsage` passes straight through. Totals contain their parts:
+ * cached input is part of inputTokens, reasoning is part of outputTokens.
+ */
 export interface TokenUsage {
+  /** The whole prompt, cached tokens included (Google promptTokenCount). */
   inputTokens?: number
+  /** The cached share of inputTokens, billed at the cached rate. */
   cachedInputTokens?: number
+  /**
+   * All billed output, thinking included: Google candidatesTokenCount +
+   * thoughtsTokenCount, which is what the SDK's `outputTokens` already is.
+   * A caller holding visible output and thinking separately passes their sum.
+   */
   outputTokens?: number
   /**
-   * Thinking tokens (AI SDK reports them separately from outputTokens for
-   * Gemini). Google BILLS them at the output rate — omitting them under-counts
-   * every thinking-enabled call.
+   * The thinking share of outputTokens. Informational (stored as
+   * metadata.reasoning_tokens); never added to outputTokens again.
    */
   reasoningTokens?: number
   /**
@@ -98,6 +109,18 @@ export interface TokenUsage {
   requests?: number
 }
 
+/**
+ * The output tokens a call is billed for. Reasoning is part of outputTokens,
+ * so it only acts as a floor (reasoning > output is malformed usage, the same
+ * clamp as cached vs input). A caller passing visible output alone is
+ * malformed too and still under-bills by its text share; it must pass the sum.
+ * Adding the two double-counted every thinking call until 2026-10
+ * (docs/reference/athena-cost-analysis.md).
+ */
+export function billedOutputTokens(usage: TokenUsage): number {
+  return Math.max(usage.outputTokens ?? 0, usage.reasoningTokens ?? 0)
+}
+
 /** Compute USD cost for a single call, rounded to 6 dp (matches numeric(12,6)). */
 export function computeCostUsd(model: string, usage: TokenUsage): number {
   const rate = MODEL_RATES_USD[model] ?? FALLBACK_RATE
@@ -107,8 +130,7 @@ export function computeCostUsd(model: string, usage: TokenUsage): number {
   // remainder at the full input rate. Charging both would double-count.
   const input = usage.inputTokens ?? 0
   const cached = Math.min(usage.cachedInputTokens ?? 0, input)
-  // Reasoning (thinking) tokens bill at the output rate.
-  const output = (usage.outputTokens ?? 0) + (usage.reasoningTokens ?? 0)
+  const output = billedOutputTokens(usage)
   // Image tokens bill at the model's image rate (0 for text-only models —
   // a caller passing imageTokens for one is a bug, not a hidden charge).
   const image = usage.imageTokens ?? 0

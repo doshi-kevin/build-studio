@@ -20,6 +20,9 @@ const VALIDATION_CHECKS = 'studio_plugin_validation_checks'
 const VALIDATION_REVIEWS = 'studio_plugin_validation_reviews'
 const VALIDATOR_SETTINGS = 'studio_validator_settings'
 const SKILL_BINDINGS = 'studio_plugin_skill_bindings'
+const SNAPSHOTS = 'studio_plugin_snapshots'
+const RUNS = 'studio_plugin_builder_runs'
+const STEPS = 'studio_plugin_builder_steps'
 
 /** `duplicate` names which uniqueness rule refused a write, so callers can explain it
  * without knowing constraint names. `full` says which storage allowance refused it: the
@@ -28,7 +31,7 @@ const SKILL_BINDINGS = 'studio_plugin_skill_bindings'
 export type DbError = {
   code: string | null
   message: string
-  duplicate?: 'project' | 'installation'
+  duplicate?: 'project' | 'installation' | 'snapshot_saved'
   full?: 'installation' | 'student'
 }
 export type DbWrite<T> = { ok: true; value: T } | { ok: false; error: DbError }
@@ -36,6 +39,7 @@ export type DbWrite<T> = { ok: true; value: T } | { ok: false; error: DbError }
 const DUPLICATES: [string, NonNullable<DbError['duplicate']>][] = [
   ['studio_plugin_projects_institution_id_owner_id_slug_key', 'project'],
   ['uq_studio_installation_active', 'installation'],
+  ['uq_studio_versions_source_snapshot', 'snapshot_saved'],
 ]
 
 const QUOTA_REACHED = '54000'
@@ -48,7 +52,9 @@ function failed(source: string, error: { code?: string; message: string; hint?: 
     logger.warn(`studio/db.${source}: storage quota reached`, { full })
     return { ok: false, error: { code: QUOTA_REACHED, message: error.message, full } }
   }
-  logger.error(`studio/db.${source}`, error)
+  // Code and message only. A CHECK violation's `details` is the whole failing row, which
+  // for Studio tables can be a professor's request, plugin source or record content.
+  logger.error(`studio/db.${source}`, { code: error.code, message: error.message })
   const duplicate = error.code === '23505' ? DUPLICATES.find(([name]) => error.message.includes(name))?.[1] : undefined
   return { ok: false, error: { code: error.code ?? null, message: error.message, duplicate } }
 }
@@ -322,6 +328,8 @@ export async function insertVersion(row: {
   bundleSha256: string
   artifactSha256: string
   publishedBy: string
+  /** The draft snapshot this version was saved from, when it came from the builder. */
+  sourceSnapshotHash?: string | null
 }): Promise<DbWrite<string>> {
   const { data, error } = await createAdminClient()
     .from(VERSIONS)
@@ -337,6 +345,7 @@ export async function insertVersion(row: {
       bundle_sha256: row.bundleSha256,
       artifact_sha256: row.artifactSha256,
       published_by: row.publishedBy,
+      source_snapshot_hash: row.sourceSnapshotHash ?? null,
     })
     .select('id')
     .single()
@@ -933,4 +942,524 @@ export async function upsertSkillBinding(row: {
       { onConflict: 'installation_id,slot_key' },
     )
   return error ? failed('upsertSkillBinding', error) : { ok: true, value: null }
+}
+
+// ── The builder: snapshots, runs and their trajectory ───────────────
+// Every write is one security definer function (supabase/migrations/
+// 20261002160000_studio_builder.sql). The functions re-check the claim token, the run's
+// status, Stop, the working copy's revision and the caps under the run's row lock, so
+// nothing here decides; it calls and reports.
+
+export type BuilderRunStatus =
+  | 'queued' | 'running' | 'waiting_for_approval' | 'waiting_for_professor'
+  | 'preview_ready' | 'completed' | 'blocked' | 'cancelled' | 'budget_exhausted' | 'failed'
+
+export interface BuilderRunRow {
+  id: string
+  projectId: string
+  institutionId: string
+  ownerId: string
+  sectionId: string | null
+  request: string | null
+  status: BuilderRunStatus
+  phase: string | null
+  errorCode: string | null
+  plan: Record<string, unknown> | null
+  work: Record<string, unknown> | null
+  pendingApproval: Record<string, unknown> | null
+  questions: { id: string; question: string; answer: string | null; askedAt: string }[]
+  waitingUntil: string | null
+  result: Record<string, unknown> | null
+  baseHash: string | null
+  baseRev: number
+  resultHash: string | null
+  counters: {
+    modelTurns: number
+    toolCalls: number
+    writes: number
+    bytesWritten: number
+    repairRounds: number
+    checkRuns: number
+    consecutiveErrors: number
+    inputTokens: number
+    cachedTokens: number
+    outputTokens: number
+    costUsd: number
+    activeMs: number
+  }
+  sliceNo: number
+  resumeCount: number
+  cancelRequested: boolean
+  createdAt: string
+  endedAt: string | null
+}
+
+const RUN_FIELDS =
+  'id, project_id, institution_id, owner_id, section_id, request, status, phase, error_code, plan, work, pending_approval, questions, waiting_until, result, base_hash, base_rev, result_hash, model_turns, tool_calls, writes, bytes_written, repair_rounds, check_runs, consecutive_errors, input_tokens, cached_tokens, output_tokens, cost_usd, active_ms, slice_no, resume_count, cancel_requested_at, created_at, ended_at'
+
+const safeError = (error: { code?: string; message: string }) => ({ code: error.code, message: error.message })
+
+function toRunRow(r: Record<string, unknown>): BuilderRunRow {
+  const n = (k: string) => Number(r[k] ?? 0)
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    institutionId: r.institution_id as string,
+    ownerId: r.owner_id as string,
+    sectionId: (r.section_id as string | null) ?? null,
+    request: (r.request as string | null) ?? null,
+    status: r.status as BuilderRunStatus,
+    phase: (r.phase as string | null) ?? null,
+    errorCode: (r.error_code as string | null) ?? null,
+    plan: (r.plan as Record<string, unknown> | null) ?? null,
+    work: (r.work as Record<string, unknown> | null) ?? null,
+    pendingApproval: (r.pending_approval as Record<string, unknown> | null) ?? null,
+    questions: Array.isArray(r.questions) ? (r.questions as BuilderRunRow['questions']) : [],
+    waitingUntil: (r.waiting_until as string | null) ?? null,
+    result: (r.result as Record<string, unknown> | null) ?? null,
+    baseHash: (r.base_hash as string | null) ?? null,
+    baseRev: n('base_rev'),
+    resultHash: (r.result_hash as string | null) ?? null,
+    counters: {
+      modelTurns: n('model_turns'),
+      toolCalls: n('tool_calls'),
+      writes: n('writes'),
+      bytesWritten: n('bytes_written'),
+      repairRounds: n('repair_rounds'),
+      checkRuns: n('check_runs'),
+      consecutiveErrors: n('consecutive_errors'),
+      inputTokens: n('input_tokens'),
+      cachedTokens: n('cached_tokens'),
+      outputTokens: n('output_tokens'),
+      costUsd: n('cost_usd'),
+      activeMs: n('active_ms'),
+    },
+    sliceNo: n('slice_no'),
+    resumeCount: n('resume_count'),
+    cancelRequested: r.cancel_requested_at !== null && r.cancel_requested_at !== undefined,
+    createdAt: r.created_at as string,
+    endedAt: (r.ended_at as string | null) ?? null,
+  }
+}
+
+export async function loadBuilderRun(id: string): Promise<BuilderRunRow | null> {
+  const { data, error } = await createAdminClient().from(RUNS).select(RUN_FIELDS).eq('id', id).maybeSingle()
+  if (error) logger.error('studio/db.loadBuilderRun', safeError(error), { id })
+  return data ? toRunRow(data as Record<string, unknown>) : null
+}
+
+export interface BuilderStepRow {
+  seq: number
+  kind: 'model_turn' | 'tool' | 'check' | 'approval' | 'answer' | 'system'
+  tool: string | null
+  toolCallId: string
+  status: 'done' | 'refused' | 'error' | 'interrupted'
+  label: string
+  argsSummary: Record<string, unknown>
+  resultSummary: Record<string, unknown>
+  ms: number
+}
+
+/** A run's steps after `afterSeq`, in order. Bounded. */
+export async function listBuilderSteps(runId: string, afterSeq = 0, limit = 200): Promise<BuilderStepRow[] | null> {
+  const { data, error } = await createAdminClient()
+    .from(STEPS)
+    .select('seq, kind, tool, tool_call_id, status, label, args_summary, result_summary, ms')
+    .eq('run_id', runId)
+    .gt('seq', afterSeq)
+    .order('seq', { ascending: true })
+    .limit(limit)
+  if (error) {
+    logger.error('studio/db.listBuilderSteps', safeError(error), { runId })
+    return null
+  }
+  return (data ?? []).map((r) => ({
+    seq: Number(r.seq),
+    kind: r.kind,
+    tool: r.tool,
+    toolCallId: r.tool_call_id,
+    status: r.status,
+    label: r.label,
+    argsSummary: r.args_summary ?? {},
+    resultSummary: r.result_summary ?? {},
+    ms: Number(r.ms ?? 0),
+  }))
+}
+
+/** A project's most recent runs, newest first: the conversation. */
+export async function listProjectRuns(projectId: string, limit: number): Promise<BuilderRunRow[] | null> {
+  const { data, error } = await createAdminClient()
+    .from(RUNS)
+    .select(RUN_FIELDS)
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) {
+    logger.error('studio/db.listProjectRuns', safeError(error), { projectId })
+    return null
+  }
+  return (data ?? []).map((r) => toRunRow(r as Record<string, unknown>))
+}
+
+export interface BuilderProjectRow {
+  id: string
+  institutionId: string
+  ownerId: string
+  slug: string
+  name: string
+  status: 'active' | 'archived'
+  draftHeadHash: string | null
+  draftRev: number
+  /** The head before the last successful build: what Undo goes back to. */
+  draftUndoHash: string | null
+  updatedAt: string
+}
+
+const PROJECT_FIELDS = 'id, institution_id, owner_id, slug, name, status, draft_head_hash, draft_rev, draft_undo_hash, updated_at'
+const toBuilderProject = (r: Record<string, unknown>): BuilderProjectRow => ({
+  id: r.id as string,
+  institutionId: r.institution_id as string,
+  ownerId: r.owner_id as string,
+  slug: r.slug as string,
+  name: r.name as string,
+  status: r.status as 'active' | 'archived',
+  draftHeadHash: (r.draft_head_hash as string | null) ?? null,
+  draftRev: Number(r.draft_rev ?? 0),
+  draftUndoHash: (r.draft_undo_hash as string | null) ?? null,
+  updatedAt: r.updated_at as string,
+})
+
+export async function loadBuilderProject(id: string): Promise<BuilderProjectRow | null> {
+  const { data, error } = await createAdminClient().from(PROJECTS).select(PROJECT_FIELDS).eq('id', id).maybeSingle()
+  if (error) logger.error('studio/db.loadBuilderProject', safeError(error), { id })
+  return data ? toBuilderProject(data as Record<string, unknown>) : null
+}
+
+/** The owner's own active projects, most recently changed first. */
+export async function listOwnedProjects(ownerId: string, institutionId: string, limit: number): Promise<BuilderProjectRow[] | null> {
+  const { data, error } = await createAdminClient()
+    .from(PROJECTS)
+    .select(PROJECT_FIELDS)
+    .eq('owner_id', ownerId)
+    .eq('institution_id', institutionId)
+    .eq('status', 'active')
+    .order('updated_at', { ascending: false })
+    .limit(limit)
+  if (error) {
+    logger.error('studio/db.listOwnedProjects', safeError(error))
+    return null
+  }
+  return (data ?? []).map((r) => toBuilderProject(r as Record<string, unknown>))
+}
+
+/** The newest run of each listed project, for the drafts list. One query. */
+export async function listLatestRuns(projectIds: string[]): Promise<Map<string, BuilderRunRow>> {
+  const latest = new Map<string, BuilderRunRow>()
+  if (projectIds.length === 0) return latest
+  const { data, error } = await createAdminClient()
+    .from(RUNS)
+    .select(RUN_FIELDS)
+    .in('project_id', projectIds)
+    .order('created_at', { ascending: false })
+    .limit(projectIds.length * 5)
+  if (error) {
+    logger.error('studio/db.listLatestRuns', safeError(error))
+    return latest
+  }
+  for (const r of data ?? []) {
+    const row = toRunRow(r as Record<string, unknown>)
+    if (!latest.has(row.projectId)) latest.set(row.projectId, row)
+  }
+  return latest
+}
+
+/** For the drafts list: each head snapshot's tool name, and the version it was saved as.
+ * Two queries for the whole list. */
+export async function loadDraftHeads(heads: { projectId: string; hash: string }[]): Promise<Map<string, { name: string | null; savedVersion: string | null }>> {
+  const out = new Map<string, { name: string | null; savedVersion: string | null }>()
+  if (heads.length === 0) return out
+  const hashes = heads.map((h) => h.hash)
+  const admin = createAdminClient()
+  const [snaps, versions] = await Promise.all([
+    admin.from(SNAPSHOTS).select('project_id, hash, name:manifest->>name').in('hash', hashes).limit(heads.length * 2),
+    admin.from(VERSIONS).select('project_id, version, source_snapshot_hash').in('source_snapshot_hash', hashes).limit(heads.length * 2),
+  ])
+  if (snaps.error) logger.error('studio/db.loadDraftHeads', safeError(snaps.error))
+  if (versions.error) logger.error('studio/db.loadDraftHeads: versions', safeError(versions.error))
+  for (const h of heads) {
+    const snap = (snaps.data ?? []).find((r) => r.project_id === h.projectId && r.hash === h.hash) as { name?: unknown } | undefined
+    const saved = (versions.data ?? []).find((r) => r.project_id === h.projectId && r.source_snapshot_hash === h.hash)
+    out.set(h.projectId, { name: typeof snap?.name === 'string' ? snap.name : null, savedVersion: saved?.version ?? null })
+  }
+  return out
+}
+
+export interface SnapshotRow {
+  projectId: string
+  hash: string
+  compiler: string
+  manifest: unknown
+  files: Record<string, string>
+  studentBundle: string
+  professorBundle: string
+  checkSummary: Record<string, unknown>
+}
+
+export async function loadSnapshot(projectId: string, hash: string): Promise<SnapshotRow | null> {
+  const { data, error } = await createAdminClient()
+    .from(SNAPSHOTS)
+    .select('project_id, hash, compiler, manifest, files, student_bundle, professor_bundle, check_summary')
+    .eq('project_id', projectId)
+    .eq('hash', hash)
+    .maybeSingle()
+  if (error) logger.error('studio/db.loadSnapshot', safeError(error), { projectId })
+  if (!data) return null
+  return {
+    projectId: data.project_id,
+    hash: data.hash,
+    compiler: data.compiler,
+    manifest: data.manifest,
+    files: data.files ?? {},
+    studentBundle: data.student_bundle,
+    professorBundle: data.professor_bundle,
+    checkSummary: data.check_summary ?? {},
+  }
+}
+
+/** One view's bundle of a snapshot, for the draft frame. Pinned to the project. */
+export async function loadSnapshotBundle(projectId: string, hash: string, view: 'student' | 'professor'): Promise<{ code: string; name: string } | null> {
+  const column = view === 'student' ? 'student_bundle' : 'professor_bundle'
+  const { data, error } = await createAdminClient().from(SNAPSHOTS).select(`${column}, manifest`).eq('project_id', projectId).eq('hash', hash).maybeSingle()
+  if (error) logger.error('studio/db.loadSnapshotBundle', safeError(error), { projectId, view })
+  const row = data as Record<string, unknown> | null
+  const code = row?.[column]
+  if (typeof code !== 'string') return null
+  const manifest = row?.manifest as { name?: unknown } | undefined
+  return { code, name: typeof manifest?.name === 'string' ? manifest.name : 'Draft' }
+}
+
+/** The project's newest published version's manifest: its collections are frozen. */
+export async function loadLatestProjectManifest(projectId: string): Promise<{ version: string; manifest: unknown } | null> {
+  const { data, error } = await createAdminClient()
+    .from(VERSIONS)
+    .select('version, manifest')
+    .eq('project_id', projectId)
+    .order('published_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) logger.error('studio/db.loadLatestProjectManifest', safeError(error), { projectId })
+  return data ? { version: data.version, manifest: data.manifest } : null
+}
+
+export interface DraftHistoryRow {
+  runId: string
+  request: string | null
+  hash: string
+  snapshotCreatedAt: string | null
+  savedVersion: string | null
+}
+
+/** The project's draft history, newest first: one row per snapshot, from the newest run
+ * that produced it. Three queries for the whole list. Never selects source, bundles,
+ * manifest, plan or any model-written text. */
+export async function listDraftHistory(projectId: string, limit: number): Promise<DraftHistoryRow[] | null> {
+  const admin = createAdminClient()
+  const runs = await admin
+    .from(RUNS)
+    .select('id, request, result_hash')
+    .eq('project_id', projectId)
+    .eq('status', 'preview_ready')
+    .not('result_hash', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit * 2)
+  if (runs.error) {
+    logger.error('studio/db.listDraftHistory', safeError(runs.error), { projectId })
+    return null
+  }
+  const newest = new Map<string, { runId: string; request: string | null }>()
+  for (const r of runs.data ?? []) {
+    if (!newest.has(r.result_hash)) newest.set(r.result_hash, { runId: r.id, request: r.request ?? null })
+  }
+  const hashes = [...newest.keys()].slice(0, limit)
+  if (hashes.length === 0) return []
+  const [snaps, versions] = await Promise.all([
+    admin.from(SNAPSHOTS).select('hash, created_at').eq('project_id', projectId).in('hash', hashes).limit(hashes.length),
+    admin.from(VERSIONS).select('version, source_snapshot_hash').eq('project_id', projectId).in('source_snapshot_hash', hashes).limit(hashes.length),
+  ])
+  const failure = snaps.error ?? versions.error
+  if (failure) {
+    logger.error('studio/db.listDraftHistory: snapshots', safeError(failure), { projectId })
+    return null
+  }
+  const created = new Map((snaps.data ?? []).map((s) => [s.hash as string, s.created_at as string]))
+  const saved = new Map((versions.data ?? []).map((v) => [v.source_snapshot_hash as string, v.version as string]))
+  return [...newest].slice(0, limit).map(([hash, run]) => ({
+    ...run,
+    hash,
+    snapshotCreatedAt: created.get(hash) ?? null,
+    savedVersion: saved.get(hash) ?? null,
+  }))
+}
+
+/** The version a snapshot was already saved as, if any. */
+export async function loadVersionForSnapshot(projectId: string, hash: string): Promise<{ id: string; version: string } | null> {
+  const { data, error } = await createAdminClient()
+    .from(VERSIONS)
+    .select('id, version')
+    .eq('project_id', projectId)
+    .eq('source_snapshot_hash', hash)
+    .maybeSingle()
+  if (error) logger.error('studio/db.loadVersionForSnapshot', safeError(error), { projectId })
+  return data ?? null
+}
+
+const ROSTER_SECTIONS_MAX = 200
+const ROSTER_MAX = 5000
+
+/** Full names ("First Last") of students in every section the owner teaches or staffs,
+ * for the builder's student-name check. Null when any read fails or a list is larger than
+ * checked: the check then fails closed rather than passing on a partial roster. */
+export async function loadOwnerRosterFullNames(ownerId: string): Promise<string[] | null> {
+  try {
+    return await readOwnerRosterFullNames(ownerId)
+  } catch (error) {
+    logger.error('studio/db.loadOwnerRosterFullNames', { name: error instanceof Error ? error.name : 'unknown', message: 'roster read threw' })
+    return null
+  }
+}
+
+async function readOwnerRosterFullNames(ownerId: string): Promise<string[] | null> {
+  const admin = createAdminClient()
+  const [owned, staffed] = await Promise.all([
+    admin.from('course_sections').select('id').eq('professor_id', ownerId).limit(ROSTER_SECTIONS_MAX),
+    admin.from('section_staff').select('section_id').eq('staff_id', ownerId).eq('status', 'active').limit(ROSTER_SECTIONS_MAX),
+  ])
+  if (owned.error || staffed.error || !Array.isArray(owned.data) || !Array.isArray(staffed.data)) return null
+  if (owned.data.length >= ROSTER_SECTIONS_MAX || staffed.data.length >= ROSTER_SECTIONS_MAX) return null
+  const sections = [...new Set([...owned.data.map((r) => r.id as string), ...staffed.data.map((r) => r.section_id as string)])]
+  if (sections.length === 0) return []
+  const { data, error } = await admin.from('enrollments').select('student:profiles(first_name, last_name)').in('section_id', sections).limit(ROSTER_MAX)
+  if (error || !Array.isArray(data) || data.length >= ROSTER_MAX) return null
+  const names: string[] = []
+  for (const row of data as Record<string, unknown>[]) {
+    const p = (Array.isArray(row.student) ? row.student[0] : row.student) as { first_name?: string | null; last_name?: string | null } | null
+    // A missing profile means the roster read is not the roster that exists.
+    if (!p) return null
+    const full = `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()
+    if (full.includes(' ')) names.push(full)
+  }
+  return names
+}
+
+// RPC calls. Each returns the function's jsonb outcome, or null when the call failed.
+async function builderRpc(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  const { data, error } = await createAdminClient().rpc(name, args)
+  if (error) {
+    logger.error(`studio/db.${name}`, safeError(error))
+    return null
+  }
+  return (data as Record<string, unknown> | null) ?? {}
+}
+
+export interface StartBuildArgs {
+  ownerId: string
+  institutionId: string
+  sectionId: string
+  projectId: string | null
+  newSlug: string
+  newName: string
+  request: string
+  clientRequestId: string
+  replaceRunId: string | null
+  maxDailyRuns: number
+  maxLiveRuns: number
+  maxDailyCost: number
+}
+
+export interface ApplyArgs {
+  runId: string
+  token: string
+  step: Record<string, unknown>
+  expectedWorkRev: number
+  work: Record<string, unknown> | null
+  plan: Record<string, unknown> | null
+  phase: string | null
+  delta: Record<string, unknown>
+  caps: Record<string, number>
+  activeMs: number
+}
+
+export interface PauseArgs {
+  runId: string
+  token: string
+  step: Record<string, unknown>
+  interrupted: Record<string, unknown>[]
+  pending: Record<string, unknown> | null
+  question: Record<string, unknown> | null
+  delta: Record<string, unknown>
+  caps: Record<string, number>
+  waitingMs: number
+  activeMs: number
+}
+
+export interface EndArgs {
+  runId: string
+  token: string
+  status: BuilderRunStatus
+  errorCode: string | null
+  result: Record<string, unknown>
+  snapshot: Record<string, unknown> | null
+  activeMs: number
+}
+
+/** The institution's builder spend over the last 24 hours, or null if it can't be read. */
+export async function loadInstitutionBuilderSpend(institutionId: string): Promise<number | null> {
+  const { data, error } = await createAdminClient().rpc('studio_builder_spend', { p_institution: institutionId })
+  if (error) {
+    logger.error('studio/db.loadInstitutionBuilderSpend', safeError(error))
+    return null
+  }
+  return Number(data ?? 0)
+}
+
+export const builderRpcs = {
+  start: (a: StartBuildArgs) =>
+    builderRpc('studio_builder_start', {
+      p_owner: a.ownerId, p_institution: a.institutionId, p_section: a.sectionId, p_project: a.projectId,
+      p_new_slug: a.newSlug, p_new_name: a.newName, p_request: a.request, p_client_request_id: a.clientRequestId,
+      p_replace_run: a.replaceRunId, p_max_daily_runs: a.maxDailyRuns, p_max_live_runs: a.maxLiveRuns, p_max_daily_cost: a.maxDailyCost,
+    }),
+  claim: (runId: string, jobId: string, sliceNo: number, staleMs: number, maxResumes: number) =>
+    builderRpc('studio_builder_claim', { p_run: runId, p_job: jobId, p_slice: sliceNo, p_stale_ms: staleMs, p_max_resumes: maxResumes }),
+  heartbeat: (runId: string, token: string) => builderRpc('studio_builder_heartbeat', { p_run: runId, p_token: token }),
+  addCost: (runId: string, u: { input: number; cached: number; output: number; costUsd: number }) =>
+    builderRpc('studio_builder_add_cost', { p_run: runId, p_input: u.input, p_cached: u.cached, p_output: u.output, p_cost: u.costUsd }),
+  recordTurn: (runId: string, token: string, step: Record<string, unknown>, activeMs: number, refused: boolean) =>
+    builderRpc('studio_builder_record_turn', { p_run: runId, p_token: token, p_step: step, p_active_ms: activeMs, p_refused: refused }),
+  apply: (a: ApplyArgs) =>
+    builderRpc('studio_builder_apply', {
+      p_run: a.runId, p_token: a.token, p_step: a.step, p_expected_work_rev: a.expectedWorkRev, p_work: a.work,
+      p_plan: a.plan, p_phase: a.phase, p_delta: a.delta, p_caps: a.caps, p_active_ms: a.activeMs,
+    }),
+  pause: (a: PauseArgs) =>
+    builderRpc('studio_builder_pause', {
+      p_run: a.runId, p_token: a.token, p_step: a.step, p_interrupted: a.interrupted, p_pending: a.pending,
+      p_question: a.question, p_delta: a.delta, p_caps: a.caps, p_waiting_ms: a.waitingMs, p_active_ms: a.activeMs,
+    }),
+  decide: (runId: string, ownerId: string, proposalId: string, deltaHash: string, approve: boolean, maxLiveRuns: number) =>
+    builderRpc('studio_builder_decide', { p_run: runId, p_owner: ownerId, p_proposal_id: proposalId, p_delta_hash: deltaHash, p_approve: approve, p_max_live_runs: maxLiveRuns }),
+  answer: (runId: string, ownerId: string, questionId: string, answer: string, maxLiveRuns: number) =>
+    builderRpc('studio_builder_answer', { p_run: runId, p_owner: ownerId, p_question_id: questionId, p_answer: answer, p_max_live_runs: maxLiveRuns }),
+  handoff: (runId: string, token: string, maxSlices: number, activeMs: number) =>
+    builderRpc('studio_builder_handoff', { p_run: runId, p_token: token, p_max_slices: maxSlices, p_active_ms: activeMs }),
+  end: (a: EndArgs) =>
+    builderRpc('studio_builder_end', {
+      p_run: a.runId, p_token: a.token, p_status: a.status, p_error_code: a.errorCode, p_result: a.result,
+      p_snapshot: a.snapshot, p_active_ms: a.activeMs,
+    }),
+  stop: (runId: string, ownerId: string, staleMs: number) => builderRpc('studio_builder_stop', { p_run: runId, p_owner: ownerId, p_stale_ms: staleMs }),
+  tend: (runId: string, ownerId: string, staleMs: number, maxResumes: number) =>
+    builderRpc('studio_builder_tend', { p_run: runId, p_owner: ownerId, p_stale_ms: staleMs, p_max_resumes: maxResumes }),
+  undo: (projectId: string, actorId: string, expectedHead: string, expectedRev: number) =>
+    builderRpc('studio_builder_undo', { p_project: projectId, p_actor: actorId, p_expected_head: expectedHead, p_expected_rev: expectedRev }),
 }

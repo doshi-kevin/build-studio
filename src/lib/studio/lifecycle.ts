@@ -25,9 +25,14 @@ import { STUDIO_PAUSED, studioAccess } from './access'
 import { requireProfessor, type StudioProfessor } from './context'
 import * as db from './db'
 import { STUDIO_BUNDLE_MAX_BYTES, STUDIO_SOURCE_FILE_MAX_BYTES, STUDIO_SOURCE_MAX_BYTES, STUDIO_SOURCE_MAX_FILES } from './limits'
-import { parseManifest } from './manifest'
+import { parseManifest, type StudioManifest } from './manifest'
+import { runDraftChecks } from './builder/checks'
+import { runWorkerCheck } from './builder/check-worker'
+import { COMPILER_ID } from './builder/compile'
+import type { PluginPath } from './builder/paths'
+import { snapshotHash } from './builder/snapshot'
 import { skillBindingIssues } from './skill-bindings'
-import { artifactHash } from './validator/artifact'
+import { artifactHash, canonicalJson } from './validator/artifact'
 import { currentVerdict, validateAfterPublish } from './validator/service'
 
 export const LIFECYCLE_NOT_AVAILABLE = 'This isn’t available.'
@@ -49,6 +54,7 @@ const EXPLANATIONS: [RegExp, string][] = [
 function explain(error: db.DbError): string {
   if (error.duplicate === 'project') return 'You already have a plugin with that name.'
   if (error.duplicate === 'installation') return 'This plugin is already installed in this course.'
+  if (error.duplicate === 'snapshot_saved') return 'This draft is already saved as a version.'
   for (const [pattern, message] of EXPLANATIONS) if (pattern.test(error.message)) return message
   // A missing or unapproved version, or one from another project.
   if (error.code === '23503') return 'That version can’t be used here.'
@@ -131,26 +137,102 @@ export async function publishVersion(input: z.input<typeof publishInput>): Promi
   const manifest = parseManifest(parsed.data.manifest)
   if (!manifest.ok) return { ok: false, error: 'This plugin’s manifest isn’t valid.', issues: manifest.issues }
 
-  const { studentBundle, professorBundle } = parsed.data
+  return insertAndValidate(professor, project, manifest.manifest, parsed.data.source, parsed.data.studentBundle, parsed.data.professorBundle, null)
+}
+
+/** The one publish path: insert the immutable version (the database runs its publish
+ * checks), audit, then Stage 1 of the pre-publish validator. */
+async function insertAndValidate(
+  professor: StudioProfessor,
+  project: { id: string; institutionId: string },
+  manifest: StudioManifest,
+  source: Record<string, string>,
+  studentBundle: string,
+  professorBundle: string,
+  sourceSnapshotHash: string | null,
+): Promise<LifecycleResult<string>> {
   const published = await db.insertVersion({
     // The verdict binds to exactly this content (validator/artifact.ts).
-    artifactSha256: artifactHash({ manifest: manifest.manifest, source: parsed.data.source, studentBundle, professorBundle }),
+    artifactSha256: artifactHash({ manifest, source, studentBundle, professorBundle }),
     projectId: project.id,
     institutionId: project.institutionId,
-    version: manifest.manifest.version,
-    manifest: manifest.manifest,
-    bridgeVersion: manifest.manifest.bridgeVersion,
-    source: parsed.data.source,
+    version: manifest.version,
+    manifest,
+    bridgeVersion: manifest.bridgeVersion,
+    source,
     studentBundle,
     professorBundle,
     bundleSha256: createHash('sha256').update(studentBundle).update('\0').update(professorBundle).digest('hex'),
     publishedBy: professor.userId,
+    sourceSnapshotHash,
   })
   if (!published.ok) return { ok: false, error: explain(published.error) }
   audit(professor, 'studio.version.published', { projectId: project.id, versionId: published.value })
   // Stage 1 of the pre-publish validator, right away: it reads the code, never runs it.
   await validateAfterPublish(published.value, professor.userId)
   return { ok: true, value: published.value }
+}
+
+/** The next version number: a minor bump of the newest published one, or 1.0.0. */
+export function nextVersion(latest: string | null): string {
+  if (!latest) return '1.0.0'
+  const [major, minor] = latest.split('.').map(Number)
+  return `${major}.${minor + 1}.0`
+}
+
+const publishDraftInput = z.strictObject({
+  sectionId: z.uuid(),
+  projectId: z.uuid(),
+  snapshotHash: z.string().regex(/^[0-9a-f]{64}$/),
+})
+/**
+ * Save the builder's current draft as a new immutable version (the professor's "Save as
+ * version"). Human-only: no builder code calls this. The exact snapshot must still be
+ * the project's draft, and it is checked again here, under the rules in force now: the
+ * trusted compiler rebuilds both bundles and the whole draft gate re-runs. The version
+ * is not installed, activated or shown to anyone.
+ */
+export async function publishDraft(input: z.input<typeof publishDraftInput>): Promise<LifecycleResult<{ versionId: string; version: string }>> {
+  const parsed = publishDraftInput.safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const project = await db.loadBuilderProject(parsed.data.projectId)
+  if (!project || project.ownerId !== professor.userId || project.institutionId !== professor.institutionId) return denied()
+  const refused = await newWorkRefused(professor)
+  if (refused) return refused
+  if (project.draftHeadHash !== parsed.data.snapshotHash) {
+    return { ok: false, error: 'This draft changed since you opened it. Preview the latest draft, then save it.' }
+  }
+  const already = await db.loadVersionForSnapshot(project.id, parsed.data.snapshotHash)
+  if (already) return { ok: false, error: `This draft is already saved as version ${already.version}.` }
+
+  const snapshot = await db.loadSnapshot(project.id, parsed.data.snapshotHash)
+  const stamped = snapshot ? parseManifest(snapshot.manifest) : null
+  if (!snapshot || !stamped?.ok || stamped.manifest.manifestVersion !== 2) return denied()
+  const files = snapshot.files as Record<PluginPath, string>
+  if (snapshot.compiler !== COMPILER_ID || snapshotHash(snapshot.compiler, stamped.manifest, files) !== snapshot.hash) {
+    return { ok: false, error: 'Studio was updated since this draft was built. Ask Athena to rebuild it, then save.' }
+  }
+
+  const latest = await db.loadLatestProjectManifest(project.id)
+  const published = latest ? parseManifest(latest.manifest) : null
+  const gate = await runDraftChecks(
+    { manifest: stamped.manifest, files },
+    { workerCheck: runWorkerCheck, rosterFullNames: await db.loadOwnerRosterFullNames(professor.userId), published: published?.ok ? published.manifest : null },
+  ).catch(() => null)
+  if (!gate) return { ok: false, error: 'The checks couldn’t run right now. Try again in a moment.' }
+  if (!gate.passed || !gate.bundles) {
+    return { ok: false, error: 'This draft doesn’t pass Studio’s checks any more. Ask Athena to fix it, then save.' }
+  }
+
+  const version = nextVersion(latest?.version ?? null)
+  const manifest = { ...stamped.manifest, version }
+  const source = { ...files, 'plugin.manifest.json': canonicalJson(manifest) }
+  const saved = await insertAndValidate(professor, project, manifest, source, gate.bundles.student, gate.bundles.professor, snapshot.hash)
+  if (!saved.ok) return saved
+  audit(professor, 'studio.draft.saved', { projectId: project.id, versionId: saved.value })
+  return { ok: true, value: { versionId: saved.value, version } }
 }
 
 const installInput = z.strictObject({ sectionId: z.uuid(), versionId: z.uuid() })

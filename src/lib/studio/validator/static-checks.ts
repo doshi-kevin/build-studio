@@ -169,7 +169,7 @@ export async function runStaticChecks(input: StaticInput): Promise<StaticReport>
   if (scanned) {
     const moduleSyntax = all(['module_syntax', 'jsx'])
     outcomes['artifact.syntax'] = moduleSyntax.length > 0
-      ? fail('Bundles must be compiled, plain scripts: no imports, exports, require or JSX.', listed(moduleSyntax))
+      ? fail('Bundles must be compiled, plain scripts: no imports, exports, import.meta, top-level await, require or JSX.', listed(moduleSyntax))
       : pass('Both bundles are plain scripts within the parse limits.')
   }
 

@@ -10,7 +10,7 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
-import { computeCostUsd, isPricedModel, type TokenUsage } from './cost'
+import { billedOutputTokens, computeCostUsd, isPricedModel, type TokenUsage } from './cost'
 
 /**
  * Where to attribute a model call's cost. Passed (optionally) into the shared
@@ -56,7 +56,7 @@ export async function recordAiUsage(params: RecordAiUsageParams): Promise<void> 
       return
     }
     const costUsd = computeCostUsd(params.model, params.usage)
-    // output_tokens folds reasoning tokens in (billing-consistent), which hides
+    // output_tokens includes reasoning tokens (billing-consistent), which hides
     // the split — persist it here so the ledger can answer "how much of this
     // call was thinking?" (the dominant quiz-generation cost, design §10).
     const reasoning = params.usage.reasoningTokens ?? 0
@@ -70,7 +70,10 @@ export async function recordAiUsage(params: RecordAiUsageParams): Promise<void> 
     const requests = params.usage.requests ?? 0
     const metadata = {
       ...(params.metadata ?? {}),
-      ...(reasoning > 0 ? { reasoning_tokens: reasoning } : {}),
+      // reasoning_in_output marks rows written after the 2026-10 fix, whose
+      // output_tokens holds the reasoning once; older thinking rows hold it
+      // twice (docs/reference/athena-cost-analysis.md corrects them by this).
+      ...(reasoning > 0 ? { reasoning_tokens: reasoning, reasoning_in_output: true } : {}),
       ...(requests > 0 ? { requests } : {}),
       ...(image > 0 ? { image_tokens: image } : {}),
       ...(isPricedModel(params.model) ? {} : { unpriced_model: true }),
@@ -83,9 +86,9 @@ export async function recordAiUsage(params: RecordAiUsageParams): Promise<void> 
       model: params.model,
       input_tokens: params.usage.inputTokens ?? 0,
       cached_input_tokens: params.usage.cachedInputTokens ?? 0,
-      // Reasoning tokens are output-rate-billed — fold them in so ledger
-      // token counts stay consistent with the stored cost.
-      output_tokens: (params.usage.outputTokens ?? 0) + (params.usage.reasoningTokens ?? 0),
+      // The same output count the cost was computed from, so a row's cost_usd
+      // recomputes from its own columns.
+      output_tokens: billedOutputTokens(params.usage),
       cost_usd: costUsd,
       metadata,
     })

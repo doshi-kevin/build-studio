@@ -60,16 +60,17 @@ export function streamAthenaAnswer(opts: AthenaAnswerOptions) {
     maxOutputTokens: opts.maxOutputTokens,
     onFinish: async (event) => {
       // Cost ledger first — every call is metered, even when the client didn't
-      // open a persisted conversation.
+      // open a persisted conversation. totalUsage, not usage: `usage` is the
+      // final step alone, which drops every tool-calling step before it.
       void recordStudentUsage({
         model: opts.model,
         sectionId: opts.meter.sectionId,
         userId: opts.meter.userId,
         usage: {
-          inputTokens: event.usage?.inputTokens,
-          cachedInputTokens: event.usage?.cachedInputTokens,
-          outputTokens: event.usage?.outputTokens,
-          reasoningTokens: event.usage?.reasoningTokens,
+          inputTokens: event.totalUsage?.inputTokens,
+          cachedInputTokens: event.totalUsage?.cachedInputTokens,
+          outputTokens: event.totalUsage?.outputTokens,
+          reasoningTokens: event.totalUsage?.reasoningTokens,
         },
       })
       if (!persist.conversationId || !event.text) return

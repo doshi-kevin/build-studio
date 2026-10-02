@@ -80,6 +80,9 @@ describe('AI tool loops must be capped (#651)', () => {
       'app/api/assignment-assistant/route.ts', // in-builder dock: assignments, quizzes, studios
       'app/api/professor-assistant/route.ts', // professor console
       'lib/ai/athena-core/turn.ts', // student tutor, via app/api/chat/route.ts
+      // Studio builder: one step per call, no execute; the harness drives the loop with its
+      // own turn budget and ends every run with a fixed-copy outcome, so it never stalls silently.
+      'lib/studio/builder/model.ts',
     ])
   })
 })

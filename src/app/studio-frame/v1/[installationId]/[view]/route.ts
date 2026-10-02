@@ -3,6 +3,7 @@
 // All checks live in frameResponse.
 import type { NextRequest } from 'next/server'
 import { frameResponse } from '@/lib/studio/runtime/frame'
+import { requestHost } from '@/lib/studio/runtime/origin'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,5 +12,5 @@ export async function GET(
   { params }: { params: Promise<{ installationId: string; view: string }> },
 ) {
   const { installationId, view } = await params
-  return frameResponse(request.nextUrl.host, installationId, view, request.nextUrl.searchParams.get('t'))
+  return frameResponse(requestHost(request), installationId, view, request.nextUrl.searchParams.get('t'))
 }

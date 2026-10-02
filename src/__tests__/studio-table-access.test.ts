@@ -46,6 +46,8 @@ describe('Studio storage tables', () => {
     expect(importers.sort()).toEqual([
       'src/lib/studio/bridge/context-get.ts',
       'src/lib/studio/bridge/registry.ts',
+      'src/lib/studio/builder/harness.ts',
+      'src/lib/studio/builder/service.ts',
       'src/lib/studio/context.ts',
       'src/lib/studio/lifecycle.ts',
       'src/lib/studio/navigation.ts',
@@ -64,6 +66,7 @@ describe('Studio service modules', () => {
     'bridge/registry', 'bridge/dispatch', 'bridge/context-get', 'bridge/rate-limit',
     'access', 'navigation', 'prepublish', 'student-visibility', 'skill-bindings',
     'validator/service', 'validator/purpose-ai', 'validator/runtime-runner',
+    'builder/harness', 'builder/service', 'builder/model', 'builder/check-worker',
   ].map(
     (m) => `src/lib/studio/${m}.ts`,
   )

@@ -119,6 +119,7 @@ const MODEL_DEF = { id: 'gemini-pro', provider: 'google', model: MODEL, thinking
 // One realistic turn's tokens. Held constant across both cases so any cost
 // difference can only come from grounding.
 const USAGE = { inputTokens: 12_000, cachedInputTokens: 8_000, outputTokens: 900, reasoningTokens: 400 }
+const LAST_STEP = { inputTokens: 7_000, cachedInputTokens: 4_000, outputTokens: 300, reasoningTokens: 100 }
 
 let POST: (req: Request) => Promise<Response>
 
@@ -182,7 +183,8 @@ async function recordedCostFor(finishArgs: Record<string, unknown>): Promise<Rec
   const res = await POST(request())
   expect(res.status).toBe(200)
 
-  await captured.onFinish({ usage: USAGE, providerMetadata: undefined, steps: [], ...finishArgs })
+  // `usage` is the final step alone; the ledger must read the whole turn (totalUsage).
+  await captured.onFinish({ usage: LAST_STEP, totalUsage: USAGE, providerMetadata: undefined, steps: [], ...finishArgs })
 
   expect(mockRecordAiUsage).toHaveBeenCalledTimes(1)
   const aiArgs = mockRecordAiUsage.mock.calls[0][0]

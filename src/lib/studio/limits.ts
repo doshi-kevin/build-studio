@@ -103,3 +103,88 @@ export const STUDIO_VALIDATOR_CHECK_METADATA_MAX_BYTES = 3500
 export const STUDIO_PURPOSE_TEXT_MAX_BYTES = 8 * 1024
 /** The classifier's lowest confidence that can pass the purpose check. */
 export const STUDIO_PURPOSE_CONFIDENCE_MIN = 0.85
+
+// ── The builder agent (docs/reference/studio-agent-harness.md) ──
+// Policy defaults approved for Step 7B. The database functions take the caps they enforce
+// as arguments from here; its CHECK constraints are backstops at or above these.
+
+/** Per run. A typical first build is about 15 turns; the rest covers repair rounds. */
+export const STUDIO_BUILDER_MAX_MODEL_TURNS = 24
+export const STUDIO_BUILDER_MAX_TOOL_CALLS = 48
+/** Calls one model turn may propose. The rest are refused as one error. */
+export const STUDIO_BUILDER_MAX_TOOL_CALLS_PER_TURN = 8
+/** Applied file writes and edits, plus manifest proposals that apply or pause. */
+export const STUDIO_BUILDER_MAX_WRITES = 30
+export const STUDIO_BUILDER_MAX_BYTES_WRITTEN = 256 * 1024
+/** Model time inside slices only; queue and approval waits don't count. */
+export const STUDIO_BUILDER_RUN_MAX_ACTIVE_MS = 20 * 60_000
+/** Checked before every model call against the run's spend plus a worst-case next call. */
+export const STUDIO_BUILDER_RUN_MAX_COST_USD = 2.5
+/** Questions one run may ask the professor. */
+export const STUDIO_BUILDER_MAX_QUESTIONS = 2
+
+/** Per professor, rolling 24 hours. */
+export const STUDIO_BUILDER_DAILY_RUNS_PER_PROFESSOR = 15
+/** Per institution: runs queued or running at once, and rolling 24-hour spend. */
+export const STUDIO_BUILDER_MAX_LIVE_RUNS_PER_INSTITUTION = 3
+export const STUDIO_BUILDER_INSTITUTION_DAILY_COST_USD = 100
+
+/** Repair (approved decision 1.9). */
+export const STUDIO_BUILDER_MAX_REPAIR_ROUNDS = 3
+export const STUDIO_BUILDER_MAX_CHECK_RUNS = 6
+/** A blocking finding (check and file) still present after this many repair rounds ends the run. */
+export const STUDIO_BUILDER_SAME_FINDING_LIMIT = 2
+export const STUDIO_BUILDER_MAX_CONSECUTIVE_ERRORS = 3
+
+/** The draft. A full rewrite of a 32 KiB view fits the output cap. */
+export const STUDIO_BUILDER_FILE_MAX_BYTES = 32 * 1024
+export const STUDIO_BUILDER_EDIT_OLD_TEXT_MAX_BYTES = 8 * 1024
+export const STUDIO_BUILDER_MANIFEST_MAX_BYTES = 32 * 1024
+export const STUDIO_BUILDER_PLAN_MAX_BYTES = 8 * 1024
+
+/** The check worker: one compile and typecheck of both views. */
+export const STUDIO_BUILDER_CHECK_TIMEOUT_MS = 10_000
+export const STUDIO_BUILDER_CHECK_WORKER_MAX_MB = 512
+/** Findings the model sees from one check, and per check id. */
+export const STUDIO_BUILDER_FINDINGS_MAX = 40
+export const STUDIO_BUILDER_DIAGNOSTICS_MAX = 20
+/** Characters of one compiler or typecheck message. */
+export const STUDIO_BUILDER_MESSAGE_MAX_CHARS = 200
+
+/** Context and prose. */
+export const STUDIO_BUILDER_CONTEXT_MAX_TOKENS = 64_000
+export const STUDIO_BUILDER_MAX_OUTPUT_TOKENS = 24_000
+export const STUDIO_BUILDER_TOOL_RESULT_MAX_BYTES = 8 * 1024
+export const STUDIO_BUILDER_REQUEST_MAX_CHARS = 4000
+export const STUDIO_BUILDER_ANSWER_MAX_CHARS = 4000
+export const STUDIO_BUILDER_SUMMARY_MAX_CHARS = 1000
+export const STUDIO_BUILDER_QUESTION_MAX_CHARS = 1000
+export const STUDIO_BUILDER_OPEN_QUESTIONS_MAX = 5
+/** Earlier builds of the project shown to the model, and how much of each request. */
+export const STUDIO_BUILDER_HISTORY_RUNS = 3
+export const STUDIO_BUILDER_HISTORY_REQUEST_MAX_CHARS = 600
+export const STUDIO_BUILDER_SKILLS_IN_CONTEXT = 100
+/** The professor's draft history list, and how much of each request it shows. */
+export const STUDIO_BUILDER_DRAFT_HISTORY_MAX = 20
+export const STUDIO_BUILDER_DRAFT_HISTORY_REQUEST_MAX_CHARS = 120
+
+/** Time. A slice ends before the job worker's lease and inside the 600 s the Cloud
+ * Scheduler sweep holds its request open (docs/reference/studio-agent-harness.md, "Where
+ * a build runs"). */
+export const STUDIO_BUILDER_SLICE_MAX_MS = 480_000
+/** Time a slice keeps in hand for one more turn: a model call, a check and its writes. */
+export const STUDIO_BUILDER_SLICE_CUSHION_MS = 270_000
+/** A drain with less time left than this doesn't start a builder slice. */
+export const STUDIO_BUILDER_SLICE_MIN_BUDGET_MS = 300_000
+export const STUDIO_BUILDER_MAX_SLICES = 32
+export const STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS = 240_000
+/** How quickly Stop reaches a model call in flight. */
+export const STUDIO_BUILDER_HEARTBEAT_MS = 5_000
+/** A slice silent this long is presumed dead and its run may be re-claimed. */
+export const STUDIO_BUILDER_HEARTBEAT_STALE_MS = 60_000
+export const STUDIO_BUILDER_MAX_RESUMES = 2
+/** How long an approval card or a question waits for the professor. */
+export const STUDIO_BUILDER_WAITING_TTL_MS = 72 * 3600_000
+/** Progress polling, and the most trajectory rows one poll returns. */
+export const STUDIO_BUILDER_PROGRESS_POLL_MS = 1_500
+export const STUDIO_BUILDER_PROGRESS_EVENTS_MAX = 50

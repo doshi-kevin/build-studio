@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ValidationCheckRow, ValidationRunRow } from '@/lib/studio/db'
 import type { PurposeClassifier } from '@/lib/studio/validator/purpose'
+import { STUDIO_VALIDATOR_RULESET } from '@/lib/studio/validator/ruleset'
 
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 vi.mock('@/lib/studio/context', () => ({ requireProfessor: vi.fn() }))
@@ -216,7 +217,7 @@ describe('the verdict reads the stored content, not the stored hash alone', () =
 
   it('a minimum ruleset above the one a version was checked under withdraws its verdict', async () => {
     await service.runStaticValidation(VERSION, 'publish', PROFESSOR.userId)
-    vi.mocked(db.loadMinAcceptedRuleset).mockResolvedValue(2)
+    vi.mocked(db.loadMinAcceptedRuleset).mockResolvedValue(STUDIO_VALIDATOR_RULESET + 1)
     expect(await verdict()).toEqual({ status: 'unavailable', reason: 'below_minimum_ruleset' })
   })
 

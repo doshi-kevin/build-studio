@@ -3,6 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 import { verifySectionAccess } from '@/lib/auth/section-access'
 import { verifyEntitled } from '@/lib/entitlements/check'
 import { sectionToolCount } from '@/lib/studio/navigation'
+import { STUDIO_PAUSED, studioKillSwitchEngaged } from '@/lib/studio/access'
+import { listDrafts } from '@/lib/studio/builder/service'
+import { Blocks } from 'lucide-react'
+import { EmptyState } from '@/components/ui/empty-state'
 import { StudioLanding } from '@/components/studio/StudioLanding'
 import { StudioWorkspace } from '@/components/studio/builder/StudioWorkspace'
 
@@ -25,6 +29,15 @@ export default async function StudioPage({ params }: StudioPageProps) {
   await verifyEntitled(access.adminDb, sectionId, 'studio')
 
   // Only the professor builds (plugin rule 8.1); course assistants see the landing.
-  if (access.role === 'professor') return <StudioWorkspace />
+  if (access.role === 'professor') {
+    if (await studioKillSwitchEngaged()) {
+      return (
+        <div className="mx-auto max-w-4xl">
+          <EmptyState variant="teaching" icon={Blocks} title="Studio is paused" description={STUDIO_PAUSED} />
+        </div>
+      )
+    }
+    return <StudioWorkspace sectionId={sectionId} drafts={(await listDrafts({ sectionId })) ?? []} />
+  }
   return <StudioLanding toolCount={await sectionToolCount(sectionId)} />
 }

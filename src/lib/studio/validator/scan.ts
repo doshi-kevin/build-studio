@@ -162,6 +162,30 @@ function isLiteral(node: ts.Expression): boolean {
   return false
 }
 
+function isAsync(node: ts.Node): boolean {
+  return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false)
+}
+
+/** TypeScript-only syntax (types, enums, interfaces, `declare`, access modifiers): the
+ * parser accepts it in a .js file without a diagnostic, and the browser refuses it. Only
+ * a program reports it. The program holds this one file, with no lib and no resolution,
+ * and nothing is type-checked. */
+function typeScriptOnly(sf: ts.SourceFile): readonly ts.Diagnostic[] {
+  const host: ts.CompilerHost = {
+    getSourceFile: (name) => (name === sf.fileName ? sf : undefined),
+    fileExists: (name) => name === sf.fileName,
+    readFile: () => undefined,
+    writeFile: () => {},
+    getDefaultLibFileName: () => 'lib.d.ts',
+    getCurrentDirectory: () => '/',
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => '\n',
+  }
+  const program = ts.createProgram({ rootNames: [sf.fileName], options: { allowJs: true, noLib: true, noResolve: true, types: [] }, host })
+  return program.getSyntacticDiagnostics(sf)
+}
+
 /** Parse and walk one bundle. `deadline` is an absolute Date.now() value. */
 export function scanCode(code: string, deadline: number): ScanResult {
   const nesting = maxNesting(code)
@@ -179,35 +203,61 @@ export function scanCode(code: string, deadline: number): ScanResult {
   // than treating every bundle as valid.
   const diagnostics = (sf as unknown as { parseDiagnostics?: unknown }).parseDiagnostics
   if (!Array.isArray(diagnostics)) return { ok: false, reason: 'syntax', detail: 'parser diagnostics unavailable' }
-  if (diagnostics.length > 0) {
-    const first = diagnostics[0] as ts.Diagnostic
+  const syntaxError = (first: ts.Diagnostic): ScanResult => {
     const line = first.start !== undefined ? sf.getLineAndCharacterOfPosition(first.start).line + 1 : 0
     return { ok: false, reason: 'syntax', detail: `line ${line}` }
   }
+  if (diagnostics.length > 0) return syntaxError(diagnostics[0] as ts.Diagnostic)
 
   const findings: Finding[] = []
   const kitNames = new Set<string>()
   const add = (kind: FindingKind, node: ts.Node, detail: string) =>
     findings.push({ kind, line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, detail: quote(detail) })
 
-  const stack: ts.Node[] = [sf]
+  // Each node carries whether it sits in an async function's own body, for `await`.
+  const stack: { node: ts.Node; inAsync: boolean }[] = [{ node: sf, inAsync: false }]
   let visited = 0
   while (stack.length > 0) {
-    const node = stack.pop()!
+    const { node, inAsync } = stack.pop()!
     visited += 1
     if (visited > STUDIO_VALIDATOR_MAX_NODES) return { ok: false, reason: 'too_many_nodes', detail: `${visited} nodes` }
     if (visited % 2048 === 0 && Date.now() > deadline) return { ok: false, reason: 'timeout', detail: `${visited} nodes` }
-    inspect(node)
+    inspect(node, inAsync)
+    // A class field or static block allows no `await`, even inside an async function.
+    const childAsync = ts.isFunctionLike(node) ? isAsync(node) : ts.isPropertyDeclaration(node) || ts.isClassStaticBlockDeclaration(node) ? false : inAsync
     node.forEachChild((child) => {
-      stack.push(child)
+      // A computed key runs in the enclosing scope. Parameters never allow `await`.
+      stack.push({ node: child, inAsync: ts.isComputedPropertyName(child) ? inAsync : ts.isParameter(child) ? false : childAsync })
     })
   }
+
+  // Last, once the walk has bounded the tree: TypeScript-only syntax.
+  let typeScript: readonly ts.Diagnostic[]
+  try {
+    typeScript = typeScriptOnly(sf)
+  } catch (error) {
+    return { ok: false, reason: 'syntax', detail: quote(error instanceof Error ? error.name : 'parse failure') }
+  }
+  if (typeScript.length > 0) return syntaxError(typeScript[0])
   return { ok: true, findings, kitNames }
 
-  function inspect(node: ts.Node) {
-    // Module syntax and JSX: a bundle is one compiled classic script.
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isExportAssignment(node)) {
+  function inspect(node: ts.Node, inAsync: boolean) {
+    // Module syntax and JSX: a bundle is one compiled classic script, which refuses all of
+    // these at any depth. `export const x` is an export modifier on the declaration, not an
+    // export declaration, so the modifier itself is what's matched.
+    if (
+      ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || ts.isExportDeclaration(node) ||
+      ts.isExportAssignment(node) || ts.isNamespaceExportDeclaration(node)
+    ) {
       return add('module_syntax', node, 'import or export')
+    }
+    if (node.kind === ts.SyntaxKind.ExportKeyword) return add('module_syntax', node, 'export')
+    if (ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword) return add('module_syntax', node, 'import.meta')
+    // A classic script has no top-level await. `await using` is a declaration list flag,
+    // not an AwaitExpression.
+    const awaitUsing = ts.isVariableDeclarationList(node) && (node.flags & ts.NodeFlags.BlockScoped) === ts.NodeFlags.AwaitUsing
+    if (!inAsync && (ts.isAwaitExpression(node) || (ts.isForOfStatement(node) && node.awaitModifier) || awaitUsing)) {
+      add('module_syntax', node, 'await outside an async function')
     }
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) return add('jsx', node, 'JSX')
     if (node.kind === ts.SyntaxKind.WithStatement) return add('global_indirection', node, 'with')

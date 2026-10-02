@@ -721,14 +721,37 @@ export function assertStorableProfessorPreferenceWithRoster(
      positives. So the caller's job is to bring a roster that covers everywhere
      the row can be read, and there is nothing to fall back TO. */
 
-  for (const full of otherSectionFullNames) {
-    const parts = fold(full).split(/\s+/).filter((v) => v.length > 1)
-    if (parts.length < 2) continue
-    const pattern = parts.map(escapeForRegex).join('\\s+')
-    if (new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, 'iu').test(lower)) return refusal(full)
-  }
+  const full = findRosterFullName(text, otherSectionFullNames)
+  if (full !== null) return refusal(full)
 
   return { ok: true }
+}
+
+/** Accents and format characters folded away, lowercased: how roster names compare. */
+function foldName(v: string): string {
+  return v
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\p{Cf}/gu, '')
+    .toLowerCase()
+}
+
+/**
+ * The first roster full name ("First Last") that appears in the text as a whole, or null.
+ * Matched on both parts together, never on either alone, which keeps ordinary words
+ * that happen to be someone's first name ("Grace", "Page") out of it. Used for memory
+ * preferences across a professor's other sections, and by the Studio builder to keep
+ * student names out of generated tools.
+ */
+export function findRosterFullName(text: string, fullNames: readonly string[]): string | null {
+  const lower = foldName(text)
+  for (const full of fullNames) {
+    const parts = foldName(full).split(/\s+/).filter((v) => v.length > 1)
+    if (parts.length < 2) continue
+    const pattern = parts.map(escapeForRegex).join('\\s+')
+    if (new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, 'iu').test(lower)) return full
+  }
+  return null
 }
 
 export interface PreferenceCheck {

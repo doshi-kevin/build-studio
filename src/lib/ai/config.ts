@@ -65,6 +65,13 @@ export const NODE_CHECK_MODEL = 'gemini-3.1-flash-lite-preview'
  */
 export const STUDIO_PURPOSE_MODEL = 'gemini-3-flash-preview'
 
+/**
+ * The Studio builder's model (docs/reference/studio-agent-harness.md): a coding-capable
+ * Pro model at low thinking, reached only through the AgentModel interface in
+ * src/lib/studio/builder/model.ts. Changing it needs a fresh builder eval run.
+ */
+export const STUDIO_BUILDER_MODEL = 'gemini-3.1-pro-preview'
+
 /** Questions generated per item, then dealt 5 at a time, fixed per student (§14.2). */
 export const NODE_CHECK_POOL_SIZE = 15
 export const NODE_CHECK_DEAL = 5

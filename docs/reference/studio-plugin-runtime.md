@@ -42,7 +42,7 @@ sequenceDiagram
 | Serves | The whole app. `/studio-frame/*` is a 404 here | Only `/studio-frame/v1/*` and `/studio-runtime/v1/*`. Everything else is a 404 |
 | Cookies | The session cookie, host-only (no `Domain`, `src/lib/supabase/cookie-options.ts`) | None. The browser never sends the app's cookies to another host |
 
-Both are served by the same Next.js server; the request's host decides which role it plays. `middleware.ts` applies that before anything else, so on the runtime origin no app page renders and no session code runs.
+Both are served by the same Next.js server; the request's host decides which role it plays. `middleware.ts` applies that before anything else, so on the runtime origin no app page renders and no session code runs. The host is the request's `Host` header (`requestHost` in `origin.ts`), not `request.nextUrl.host`: a production Next server builds `nextUrl` from its own listen address, so before Step 7C every frame 404ed in a production build and the runtime origin was never recognised. `next dev` hid it.
 
 **Fails closed.** `studioOrigins()` turns the runtime off if `STUDIO_RUNTIME_ORIGIN` is unset, isn't a bare `http(s)` origin, equals the app's host, is a subdomain or parent of it, or (in production) isn't `https`. A different **registrable domain** is required in production. That isn't checkable without a public-suffix list, so it's a deployment requirement (below).
 

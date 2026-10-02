@@ -16,7 +16,7 @@ import { createServerClient } from '@supabase/ssr'
 import { AUTH_COOKIE_OPTIONS } from '@/lib/supabase/cookie-options'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logger } from '@/lib/logger'
-import { classifyRuntimeRequest, studioOrigins } from '@/lib/studio/runtime/origin'
+import { classifyRuntimeRequest, requestHost, studioOrigins } from '@/lib/studio/runtime/origin'
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
@@ -24,7 +24,7 @@ export async function middleware(request: NextRequest) {
   // Studio's plugin runtime origin serves only plugin frames and runtime files, and
   // never runs the app or touches session cookies. The frame path doesn't exist on the
   // app origin. (src/lib/studio/runtime/origin.ts)
-  const runtimeRequest = classifyRuntimeRequest(request.nextUrl.host, pathname, studioOrigins())
+  const runtimeRequest = classifyRuntimeRequest(requestHost(request), pathname, studioOrigins())
   if (runtimeRequest === 'not-found') return new NextResponse('Not found', { status: 404 })
   if (runtimeRequest === 'serve-runtime') return NextResponse.next()
 
