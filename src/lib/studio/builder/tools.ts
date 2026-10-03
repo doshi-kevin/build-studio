@@ -201,9 +201,10 @@ const prose = (max: number) => z.string().min(1).max(max)
 // and the kit's component and hook names. Word-bounded, so ordinary words that merely contain one pass.
 // Only names that can't be an ordinary word: "Select a date" is fine, "StatCard" and "useRecords" aren't.
 const KIT_WORDS = KIT_IMPORTS['@scholera/plugin-kit'].filter((n) => /^[A-Z][a-z]+[A-Z]|^use[A-Z]/.test(n))
-const CODE_IN_NOTE = new RegExp(
-  `\x60|\\b(?:perStudent|staffPerStudent|staffOnly|collections?|components?|manifest|Bridge|records?\\.\\w+|useState|useMemo|useEffect|${KIT_WORDS.join('|')})\\b`,
-)
+const NOTE_WORDS = ['perStudent', 'staffPerStudent', 'staffOnly', 'collections?', 'components?', 'manifest', 'Bridge', 'records?\\.\\w+', 'useState', 'useMemo', 'useEffect', ...KIT_WORDS]
+// Built from plain strings: a backtick escaped inside a template literal can come out of the
+// production minifier as a bare backtick and end the template early.
+const CODE_IN_NOTE = new RegExp('`|\\b(?:' + NOTE_WORDS.join('|') + ')\\b')
 
 const refused = (code: RefusalCode, args: Summary, issues?: string[]): ToolOutcome => ({ kind: 'refused', code, args, issues: issues?.slice(0, 5).map((i) => i.slice(0, 160)) })
 
