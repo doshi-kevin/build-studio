@@ -102,7 +102,8 @@ export function PluginHost({
       view,
       readOnly: preview ? false : readOnly,
       allowedMethods,
-      className: 'block h-40 w-full border-0',
+      // Tall enough to use a tool that never asks for ui.resize (the frame scrolls inside); one that asks gets its own height.
+      className: 'block h-128 w-full border-0',
       handleRequest: (method, args) => bridge.handleRequest(method, args),
       // Rendered as text by the toast library, and labelled with the plugin's name so it
       // can't pass for a message from Scholera itself.

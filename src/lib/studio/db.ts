@@ -1013,12 +1013,13 @@ export interface BuilderRunRow {
   sliceNo: number
   resumeCount: number
   cancelRequested: boolean
+  jobId?: string | null
   createdAt: string
   endedAt: string | null
 }
 
 const RUN_FIELDS =
-  'id, project_id, institution_id, owner_id, section_id, request, status, phase, error_code, plan, work, pending_approval, questions, waiting_until, result, base_hash, base_rev, result_hash, model_turns, tool_calls, writes, bytes_written, repair_rounds, check_runs, consecutive_errors, input_tokens, cached_tokens, output_tokens, cost_usd, active_ms, slice_no, resume_count, cancel_requested_at, created_at, ended_at'
+  'id, project_id, institution_id, owner_id, section_id, request, status, phase, error_code, plan, work, pending_approval, questions, waiting_until, result, base_hash, base_rev, result_hash, model_turns, tool_calls, writes, bytes_written, repair_rounds, check_runs, consecutive_errors, input_tokens, cached_tokens, output_tokens, cost_usd, active_ms, slice_no, resume_count, cancel_requested_at, job_id, created_at, ended_at'
 
 const safeError = (error: { code?: string; message: string }) => ({ code: error.code, message: error.message })
 
@@ -1060,6 +1061,7 @@ function toRunRow(r: Record<string, unknown>): BuilderRunRow {
     sliceNo: n('slice_no'),
     resumeCount: n('resume_count'),
     cancelRequested: r.cancel_requested_at !== null && r.cancel_requested_at !== undefined,
+    jobId: (r.job_id as string | null) ?? null,
     createdAt: r.created_at as string,
     endedAt: (r.ended_at as string | null) ?? null,
   }
@@ -1770,11 +1772,11 @@ export async function courseSources(institutionId: string, sectionId: string, ke
 export async function loadSectionFocus(
   institutionId: string,
   sectionId: string,
-): Promise<{ startDate: string | null; modules: { id: string; weekNumber: number | null; unlockDate: string | null; isPublished: boolean }[] } | null> {
+): Promise<{ startDate: string | null; modules: { id: string; title: string; weekNumber: number | null; unlockDate: string | null; isPublished: boolean }[] } | null> {
   const admin = createAdminClient()
   const [section, modules] = await Promise.all([
     admin.from('course_sections').select('start_date').eq('id', sectionId).eq('institution_id', institutionId).maybeSingle(),
-    admin.from('modules').select('id, week_number, unlock_date, is_published').eq('section_id', sectionId).is('system_kind', null).limit(400),
+    admin.from('modules').select('id, title, week_number, unlock_date, is_published').eq('section_id', sectionId).is('system_kind', null).limit(400),
   ])
   if (section.error || modules.error || !section.data) {
     logger.warn('studio/db.loadSectionFocus', { code: section.error?.code ?? modules.error?.code ?? null })
@@ -1782,8 +1784,9 @@ export async function loadSectionFocus(
   }
   return {
     startDate: (section.data as { start_date: string | null }).start_date ?? null,
-    modules: ((modules.data ?? []) as { id: string; week_number: number | null; unlock_date: string | null; is_published: boolean | null }[]).map((m) => ({
+    modules: ((modules.data ?? []) as { id: string; title: string | null; week_number: number | null; unlock_date: string | null; is_published: boolean | null }[]).map((m) => ({
       id: m.id,
+      title: m.title ?? '',
       weekNumber: m.week_number,
       unlockDate: m.unlock_date,
       isPublished: m.is_published === true,

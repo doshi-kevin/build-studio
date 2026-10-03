@@ -197,6 +197,10 @@ export const STUDIO_BUILDER_HEARTBEAT_MS = 5_000
 /** A slice silent this long is presumed dead and its run may be re-claimed. */
 export const STUDIO_BUILDER_HEARTBEAT_STALE_MS = 60_000
 export const STUDIO_BUILDER_MAX_RESUMES = 2
+/** A queued run still unclaimed this long after it was created gets its worker kicked again on each progress read. */
+export const STUDIO_BUILDER_REKICK_AFTER_MS = 8_000
+/** A queued run this old shows the professor that it hasn't started, with Stop to hand back control. */
+export const STUDIO_BUILDER_QUEUE_NOTICE_MS = 20_000
 /** Runs the job worker's sweep tends per kick, oldest first; the rest wait for the next kick. */
 export const STUDIO_BUILDER_SWEEP_LIMIT = 50
 /** How long an approval card or a question waits for the professor. */

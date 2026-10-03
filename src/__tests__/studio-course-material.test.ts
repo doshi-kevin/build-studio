@@ -12,6 +12,7 @@ import {
   disclosureNote,
   excerptEntry,
   fitSearches,
+  focusQuery,
   labelFor,
   provenanceEntries,
   resolveFocus,
@@ -59,6 +60,23 @@ describe('the search words', () => {
     expect(cleanQuery("this week's lecture on transformers")).toBe('on transformers')
     expect(cleanQuery('Next week lectures: attention')).toBe(': attention')
     expect(cleanQuery('this week')).toBe('')
+  })
+})
+
+describe('focusQuery: search words from the focused weeks’ titles', () => {
+  const mod = (id: string, title: string, isPublished = true): FocusModule => ({ id, title, weekNumber: null, unlockDate: null, isPublished })
+
+  it('takes the topic from each focused module title, without week numbers or time words', () => {
+    expect(focusQuery([mod('a', 'Week 6: Cellular respiration'), mod('b', 'Week 5: Photosynthesis')], ['a', 'b'])).toBe('Cellular respiration Photosynthesis')
+  })
+
+  it('never uses a module outside the focus or one students can’t see yet', () => {
+    expect(focusQuery([mod('a', 'Week 6: Cellular respiration'), mod('b', 'Week 7: Genetics', false), mod('c', 'Week 8: Evolution')], ['a', 'b'])).toBe('Cellular respiration')
+    expect(focusQuery([mod('b', 'Week 7: Genetics', false)], ['b'])).toBe('')
+  })
+
+  it('redacts a student’s name in a title before it becomes search words sent to the model', () => {
+    expect(focusQuery([mod('a', 'Week 9: Presentations by Alice Smith')], ['a'], ['Alice Smith'])).not.toMatch(/Alice|Smith/)
   })
 })
 

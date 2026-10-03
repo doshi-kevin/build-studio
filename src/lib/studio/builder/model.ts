@@ -17,6 +17,7 @@ import { generateText, stepCountIs, tool, type ToolSet } from 'ai'
 import { google } from '@ai-sdk/google'
 import type { z } from 'zod'
 import { STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
+import { logger } from '@/lib/logger'
 
 export interface ModelToolDecl {
   name: string
@@ -138,6 +139,14 @@ export function createGeminiModel(modelId = STUDIO_BUILDER_MODEL): AgentModel {
         if (timeout.aborted || isTimeout(error)) {
           return { toolCalls: [], textLength: 0, finishReason: 'timeout', timedOut: true, usage: ZERO, latencyMs: Date.now() - started, modelId }
         }
+        // Name and HTTP status only: a provider message can quote the request.
+        const e = error as { name?: unknown; statusCode?: unknown; cause?: { name?: unknown } }
+        logger.warn('studio.builder.model.unavailable', {
+          name: typeof e?.name === 'string' ? e.name : 'unknown',
+          status: typeof e?.statusCode === 'number' ? e.statusCode : null,
+          cause: typeof e?.cause?.name === 'string' ? e.cause.name : null,
+          ms: Date.now() - started,
+        })
         throw new ModelUnavailable()
       }
     },

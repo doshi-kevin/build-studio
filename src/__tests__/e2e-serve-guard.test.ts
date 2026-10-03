@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { childEnv, envFilesIn, isLoopbackUrl, productionTraces, refuseValue } from '../../e2e/serve-guard.mjs'
+import { OPTIONAL_SERVER_VARS, childEnv, envFilesIn, isLoopbackUrl, productionTraces, refuseValue } from '../../e2e/serve-guard.mjs'
 
 const PROD = 'abcdefghijklmnopqrst'
 const dirs: string[] = []
@@ -53,6 +53,14 @@ describe('what a child process may receive', () => {
     expect(childEnv({ E2E_A_URL: 'http://localhost:3000', E2E_STUDIO_RUNTIME_ORIGIN: 'https://plugins.example.com' }, ['A_URL'], PROD, {}, ['STUDIO_RUNTIME_ORIGIN']).problems).toEqual([
       expect.stringMatching(/STUDIO_RUNTIME_ORIGIN is not a loopback URL/),
     ])
+  })
+
+  it('the Gemini key reaches the server only when passed as E2E_GOOGLE_GENERATIVE_AI_API_KEY, and nothing else from the caller does', () => {
+    const source = { GOOGLE_GENERATIVE_AI_API_KEY: 'ambient', OPENAI_API_KEY: 'openai', E2E_A_URL: 'http://localhost:3000' }
+    expect(childEnv(source, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env).not.toHaveProperty('GOOGLE_GENERATIVE_AI_API_KEY')
+    const passed: Record<string, string> = childEnv({ ...source, E2E_GOOGLE_GENERATIVE_AI_API_KEY: 'explicit' }, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env
+    expect(passed.GOOGLE_GENERATIVE_AI_API_KEY).toBe('explicit')
+    expect(passed).not.toHaveProperty('OPENAI_API_KEY')
   })
 
   it('loopback means 127.0.0.1, localhost or ::1 only', () => {

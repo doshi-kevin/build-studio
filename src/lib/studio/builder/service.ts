@@ -35,6 +35,8 @@ import {
   STUDIO_BUILDER_DRAFT_HISTORY_MAX,
   STUDIO_BUILDER_DRAFT_HISTORY_REQUEST_MAX_CHARS,
   STUDIO_BUILDER_HEARTBEAT_STALE_MS,
+  STUDIO_BUILDER_PROGRESS_POLL_MS,
+  STUDIO_BUILDER_REKICK_AFTER_MS,
   STUDIO_BUILDER_INSTITUTION_DAILY_COST_USD,
   STUDIO_BUILDER_MAX_LIVE_RUNS_PER_INSTITUTION,
   STUDIO_BUILDER_MAX_MODEL_TURNS,
@@ -108,6 +110,7 @@ export function endingCopy(status: db.BuilderRunStatus, reason: string | null, h
         ? 'Your school has used today’s budget for Athena’s tool builder, so I stopped without saving. Try again tomorrow.'
         : 'I reached the limit for one build, so I stopped without saving. Ask me again, in smaller steps if you can.'
     case 'failed':
+      if (reason === 'model_unavailable') return 'I couldn’t reach the AI service, so I stopped without saving. Your tool is unchanged.'
       return reason === 'interrupted' ? 'The build was interrupted too many times. Your tool is unchanged.' : 'Something went wrong on our side. Your tool is unchanged.'
     case 'blocked':
       if (reason === 'repair_rounds' || reason === 'same_finding' || reason === 'check_runs') return 'I couldn’t get every check to pass, so I didn’t save anything. Try describing the change differently.'
@@ -288,6 +291,8 @@ export interface ProgressRead {
   pluginProjectId: string
   status: db.BuilderRunStatus
   phase: string | null
+  /** How long a queued run has waited for a worker to pick it up; null once it has started. */
+  queuedMs?: number | null
   turns: { used: number; max: number }
   checks: number
   repairRounds: number
@@ -357,6 +362,10 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
     const tended = await db.builderRpcs.tend(run.id, userId, STUDIO_BUILDER_HEARTBEAT_STALE_MS, STUDIO_BUILDER_MAX_RESUMES)
     if (tended?.outcome === 'requeued' && typeof tended.job_id === 'string') await kickWorker(tended.job_id)
     if (tended && tended.outcome !== 'none') run = (await db.loadBuilderRun(runId)) ?? run
+    // A lost kick leaves a queued run waiting for the next sweep: nudge the worker again, once
+    // per STUDIO_BUILDER_REKICK_AFTER_MS (the poll that lands first in each window), not on every poll.
+    const age = Date.now() - Date.parse(run.createdAt)
+    if (run.status === 'queued' && run.jobId && age >= STUDIO_BUILDER_REKICK_AFTER_MS && age % STUDIO_BUILDER_REKICK_AFTER_MS < STUDIO_BUILDER_PROGRESS_POLL_MS) await kickWorker(run.jobId)
   }
 
   const steps = (await db.listBuilderSteps(run.id, Math.max(0, afterSeq), STUDIO_BUILDER_PROGRESS_EVENTS_MAX)) ?? []
@@ -384,6 +393,7 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
     pluginProjectId: run.projectId,
     status: run.status,
     phase: run.phase,
+    queuedMs: run.status === 'queued' ? Math.max(0, Date.now() - Date.parse(run.createdAt)) : null,
     turns: { used: run.counters.modelTurns, max: STUDIO_BUILDER_MAX_MODEL_TURNS },
     checks: run.counters.checkRuns,
     repairRounds: run.counters.repairRounds,

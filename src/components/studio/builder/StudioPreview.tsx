@@ -42,7 +42,7 @@ function DraftFrame({ sectionId, pluginProjectId, snapshotHash, view }: { sectio
       live = false
     }
   }, [sectionId, pluginProjectId, snapshotHash, view, attempt])
-  if (!frame) return <Skeleton className="h-40 w-full rounded-xl" />
+  if (!frame) return <Skeleton className="h-128 w-full rounded-xl" />
   if ('error' in frame) {
     return (
       <div className="space-y-2">

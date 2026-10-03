@@ -45,6 +45,7 @@ const db = await import('@/lib/studio/db')
 const { requireProfessor, sessionUserId } = await import('@/lib/studio/context')
 const { studioAccess, studioKillSwitchEngaged } = await import('@/lib/studio/access')
 const { checkAiFeature } = await import('@/lib/ai/kill-switch')
+const { kickWorker } = await import('@/lib/jobs/enqueue')
 const service = await import('@/lib/studio/builder/service')
 const { publishDraft } = await import('@/lib/studio/lifecycle')
 const { realHarnessDeps } = await import('@/lib/studio/builder/harness')
@@ -114,6 +115,35 @@ describe('who may call the builder', () => {
     const p = await service.readProgress(RUN, 0)
     expect(p!.events.map((e) => e.label)).toEqual(['Understanding your request', 'Editing the student view', 'That step didn’t work, so I’m trying another way'])
     expect(JSON.stringify(p)).not.toMatch(/edit_file|invalid_args|views\/student\.tsx|gemini/)
+  })
+})
+
+describe('a run no worker has picked up', () => {
+  const JOB = crypto.randomUUID()
+  const queued = (ageMs: number) => run({ status: 'queued', phase: null, jobId: JOB, createdAt: new Date(Date.now() - ageMs).toISOString() })
+
+  it('kicks its job again once it has waited past the re-kick delay, and says how long it has waited', async () => {
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(queued(32_500) as never)
+    const p = await service.readProgress(RUN, 0)
+    expect(kickWorker).toHaveBeenCalledWith(JOB)
+    expect(p!.queuedMs).toBeGreaterThanOrEqual(30_000)
+  })
+
+  it('kicks at most once per re-kick window, not on every poll', async () => {
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(queued(30_000) as never)
+    await service.readProgress(RUN, 0)
+    expect(kickWorker).not.toHaveBeenCalled()
+  })
+
+  it('leaves a just-queued run to its first kick', async () => {
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(queued(1_000) as never)
+    await service.readProgress(RUN, 0)
+    expect(kickWorker).not.toHaveBeenCalled()
+  })
+
+  it('reports no wait once the run has started', async () => {
+    expect((await service.readProgress(RUN, 0))!.queuedMs).toBeNull()
+    expect(kickWorker).not.toHaveBeenCalled()
   })
 })
 

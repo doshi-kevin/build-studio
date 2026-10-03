@@ -5,8 +5,9 @@ import { basename, join } from 'node:path'
 
 /** Variables the server must receive, each read only from E2E_<NAME> in the caller's env. */
 export const SERVER_VARS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SITE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
-/** Variables it may receive when the caller sets them, checked the same way. */
-export const OPTIONAL_SERVER_VARS = ['BACKGROUND_JOBS_SECRET', 'STUDIO_FRAME_TICKET_SECRET', 'STUDIO_RUNTIME_ORIGIN', 'STUDIO_STUDENT_ACCESS']
+/** Variables it may receive when the caller sets them, checked the same way. The Gemini key is the one
+ * outside credential a walkthrough may pass on purpose, so Studio's builder can call a model. */
+export const OPTIONAL_SERVER_VARS = ['BACKGROUND_JOBS_SECRET', 'STUDIO_FRAME_TICKET_SECRET', 'STUDIO_RUNTIME_ORIGIN', 'STUDIO_STUDENT_ACCESS', 'GOOGLE_GENERATIVE_AI_API_KEY']
 /** The subset baked into the client bundle at build time. */
 export const BUILD_VARS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SITE_URL']
 /** Enough of the OS environment to find node and a temp directory; nothing else. */

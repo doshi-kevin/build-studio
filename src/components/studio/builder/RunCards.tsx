@@ -4,12 +4,39 @@ import { useEffect, useId, useRef, useState, useTransition } from 'react'
 import { Bookmark, CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
+import { STUDIO_BUILDER_QUEUE_NOTICE_MS } from '@/lib/studio/limits'
 import type { ProgressRead } from './types'
 
+/** What Athena is doing right now, from the run's own phase. Fixed copy, never model text. */
+const PHASE_COPY: Record<string, string> = {
+  understanding: 'Understanding your request…',
+  planning: 'Planning the tool…',
+  editing: 'Building your tool…',
+  checking: 'Running checks…',
+  repairing: 'Fixing what the checks found…',
+}
+
+/** A queued run no worker has picked up for this long gets a hint under the lines. */
+export const queuedTooLong = (queuedMs: number | null | undefined) => queuedMs != null && queuedMs > STUDIO_BUILDER_QUEUE_NOTICE_MS
+
+/**
+ * The line with the spinner. A run no worker has picked up says so, rather than "Working…" for
+ * minutes. The phase only moves when a tool sets it, so a line that would repeat the step just
+ * finished ("Checks passed", then "Running checks…") says what comes next instead.
+ */
+export function workingCopy(phase: string | null | undefined, queuedMs: number | null | undefined, lastLabel?: string): string {
+  if (queuedMs != null) return queuedTooLong(queuedMs) ? 'Still waiting to start…' : 'Starting…'
+  if (lastLabel === 'Checks passed') return 'Finishing up…'
+  const copy = PHASE_COPY[phase ?? 'understanding'] ?? 'Working…'
+  return lastLabel && copy.startsWith(lastLabel) ? 'Working on the next step…' : copy
+}
+
 /** Fixed-copy progress lines, consecutive repeats collapsed. Never model reasoning. */
-export function ProgressLines({ events, working, loaded, unreachable, onStop, stopping }: {
+export function ProgressLines({ events, working, phase, queuedMs, loaded, unreachable, onStop, stopping }: {
   events: ProgressRead['events']
   working: boolean
+  phase?: string | null
+  queuedMs?: number | null
   /** False until the first progress read answers: show nothing that might be wrong. */
   loaded: boolean
   unreachable: boolean
@@ -42,10 +69,11 @@ export function ProgressLines({ events, working, loaded, unreachable, onStop, st
         {working && (
           <li className="flex items-center gap-2 font-medium">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-            Working…
+            {workingCopy(phase, queuedMs, lines.at(-1)?.label)}
           </li>
         )}
       </ul>
+      {working && queuedTooLong(queuedMs) && <p className="text-sm text-muted-foreground">This is taking longer than usual. You can stop and try again.</p>}
       {offline}
       {working && (
         <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={onStop} disabled={stopping}>

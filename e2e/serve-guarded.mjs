@@ -98,6 +98,16 @@ const findServer = (d) => {
 const app = findServer(serve)
 if (!app) refuse('the standalone output has no server.js')
 cpSync(join(src, '.next', 'static'), join(app, '.next', 'static'), { recursive: true })
+// Next's file trace copies sharp's .node binary but not the DLLs it loads beside it on Windows, so every
+// route that imports sharp (the job worker among them) failed to load. Copy each missing one over.
+for (const dir of [serve, app]) {
+  const imgDir = join(dir, 'node_modules', '@img')
+  if (!existsSync(imgDir)) continue
+  for (const pkg of readdirSync(imgDir)) {
+    const from = join(repo, 'node_modules', '@img', pkg, 'lib')
+    if (existsSync(from)) cpSync(from, join(imgDir, pkg, 'lib'), { recursive: true, force: false })
+  }
+}
 if (existsSync(join(src, 'public'))) cpSync(join(src, 'public'), join(app, 'public'), { recursive: true })
 const strayServe = envFilesIn(serve)
 if (strayServe.length) refuse(`the server copy holds ${strayServe.length} .env file(s)`)

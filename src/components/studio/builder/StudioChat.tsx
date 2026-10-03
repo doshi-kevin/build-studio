@@ -150,7 +150,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
         {current && (
           <Athena>
             {(!progress || active) && (
-              <ProgressLines events={current.events} loaded={!!progress} unreachable={current.unreachable} working={working} stopping={stopping} onStop={stop} />
+              <ProgressLines events={current.events} loaded={!!progress} unreachable={current.unreachable} working={working} phase={progress?.phase ?? null} queuedMs={progress?.queuedMs ?? null} stopping={stopping} onStop={stop} />
             )}
             {progress?.approval && <ApprovalCard approval={progress.approval} onDecide={onDecide} />}
             {progress?.question && <QuestionCard question={progress.question} />}

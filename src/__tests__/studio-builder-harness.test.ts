@@ -694,6 +694,14 @@ describe('course material (Step 9)', () => {
     expect(h.model.prompts.at(-1)!.prompt).toContain('nothing students can or will see matched; 2 hidden or unpublished items also matched (not shown)')
   })
 
+  it('a search the retriever ran on the week’s titles is saved with those words, so later turns re-read the same excerpts', async () => {
+    const shown = [excerpt(K6, 'Glycolysis splits glucose.')]
+    const searchMaterial = vi.fn(async (): Promise<SearchOutcome> => ({ ok: true, shown, keys: [K6], scheduled: [], withheld: 0, query: 'Cellular respiration' }))
+    const h = harness([{ calls: [search('flashcards', 'this_week')] }, { calls: [call('ask_professor', { question: 'Multiple choice or flashcards?' })] }], { base: base(), searchMaterial })
+    await h.slice()
+    expect((h.mem.state.run.work as unknown as Work).material.searches).toEqual([{ query: 'Cellular respiration', focus: 'this_week', keys: [K6] }])
+  })
+
   it('a run gets three searches; the fourth is refused with its fixed hint', async () => {
     const c = course([excerpt(K6, 'a')])
     const h = harness([{ calls: [search('a'), search('b'), search('c'), search('d')] }, { calls: [finish('blocked', 'x')] }], {

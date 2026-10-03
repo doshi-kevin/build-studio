@@ -531,7 +531,7 @@ const TOOL_LIST: ToolSpec[] = [
           ...state.work,
           // A passing check cached before these sources were seen no longer proves the copy guard.
           last_check: sourcesChanged ? null : state.work.last_check,
-          material: { ...material, attempts: material.attempts + 1, searches: [...material.searches, { query, focus, keys: outcome.keys }], sources },
+          material: { ...material, attempts: material.attempts + 1, searches: [...material.searches, { query: outcome.query ?? query, focus, keys: outcome.keys }], sources },
         },
         delta: {},
       }

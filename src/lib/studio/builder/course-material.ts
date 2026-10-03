@@ -19,6 +19,7 @@ import {
   STUDIO_COURSE_BLOCK_MAX_BYTES,
   STUDIO_COURSE_EXCERPT_MAX_BYTES,
   STUDIO_COURSE_LABEL_MAX_CHARS,
+  STUDIO_COURSE_QUERY_MAX_BYTES,
   STUDIO_COURSE_RESULTS_MAX,
 } from '../limits'
 import { utf8Bytes } from './paths'
@@ -82,6 +83,7 @@ export interface ShownExcerpt {
 
 export interface FocusModule {
   id: string
+  title?: string
   weekNumber: number | null
   unlockDate: string | null
   isPublished: boolean
@@ -131,6 +133,20 @@ export function resolveFocus(focus: MaterialFocus | null, modules: readonly Focu
   const current = Math.floor((now - start) / WEEK_MS) + 1
   const week = focus === 'this_week' ? current : current + 1
   return modules.filter((m) => m.weekNumber === week).map((m) => m.id)
+}
+
+/**
+ * Search words from the focused modules' own titles ("Week 6: Cellular respiration" gives
+ * "Cellular respiration"), for a focused search whose words found nothing. Published modules
+ * only, so no title the course hasn't released reaches the prompt. Empty when none is left.
+ */
+export function focusQuery(modules: readonly FocusModule[], focusIds: readonly string[], roster: readonly string[] = []): string {
+  const words = modules
+    .filter((m) => m.isPublished && m.title && focusIds.includes(m.id))
+    .map((m) => cleanQuery(redactRosterNames(cleanText(m.title!), roster).replace(/[0-9]+|[:\-–—|]/g, ' ')))
+    .filter(Boolean)
+    .join(' ')
+  return capBytes(words, STUDIO_COURSE_QUERY_MAX_BYTES).replace(/…$/, '').trim()
 }
 
 const ITEM_TYPE_WORDS: Record<string, string> = { lecture: 'lecture', reference: 'reading', note: 'note', link: 'link' }

@@ -14,6 +14,7 @@ import * as db from '../db'
 import { STUDIO_COURSE_RESULTS_MAX } from '../limits'
 import {
   capSearch,
+  focusQuery,
   labelFor,
   resolveFocus,
   toShown,
@@ -41,7 +42,8 @@ export function retrievalScope(run: { institutionId: string; sectionId: string |
 }
 
 export type SearchOutcome =
-  | { ok: true; shown: ShownExcerpt[]; keys: string[]; scheduled: string[]; withheld: number }
+  /** `query` is set when the search ran on other words than the model's (the focused modules' titles). */
+  | { ok: true; shown: ShownExcerpt[]; keys: string[]; scheduled: string[]; withheld: number; query?: string }
   | { ok: false }
 
 export interface CourseRetriever {
@@ -60,6 +62,12 @@ export const postgresRetriever: CourseRetriever = {
     const focusIds = weeks ? resolveFocus(focus, weeks.modules, weeks.startDate, Date.now()) : []
     const found = await db.courseSearch(scope.institutionId, scope.sectionId, query, focusIds, STUDIO_COURSE_RESULTS_MAX)
     if (!found) return { ok: false }
+    // "Flashcards for this week" names no topic, so the model's words can miss: the week's own titles name it.
+    const fallback = found.rows.length === 0 && weeks ? focusQuery(weeks.modules, focusIds, roster) : ''
+    if (fallback && fallback !== query) {
+      const again = await db.courseSearch(scope.institutionId, scope.sectionId, fallback, focusIds, STUDIO_COURSE_RESULTS_MAX)
+      if (again && again.rows.length > 0) return { ok: true, ...capSearch(again.rows, roster), withheld: again.withheld, query: fallback }
+    }
     return { ok: true, ...capSearch(found.rows, roster), withheld: found.withheld }
   },
 

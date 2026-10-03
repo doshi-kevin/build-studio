@@ -1,0 +1,34 @@
+import { describe, expect, it } from 'vitest'
+import { workingCopy } from '@/components/studio/builder/RunCards'
+import { endingCopy } from '@/lib/studio/builder/service'
+import { STUDIO_BUILDER_QUEUE_NOTICE_MS } from '@/lib/studio/limits'
+
+describe('the line beside the spinner', () => {
+  it('follows the run’s phase once a worker has it', () => {
+    expect(workingCopy('planning', null)).toBe('Planning the tool…')
+    expect(workingCopy('checking', null)).toBe('Running checks…')
+    expect(workingCopy('repairing', null)).toBe('Fixing what the checks found…')
+    expect(workingCopy(null, null)).toBe('Understanding your request…')
+  })
+
+  it('says so when no worker has picked the run up', () => {
+    expect(workingCopy(null, 1000)).toBe('Starting…')
+    expect(workingCopy(null, STUDIO_BUILDER_QUEUE_NOTICE_MS + 1)).toBe('Still waiting to start…')
+  })
+
+  it('never shows a step as running right after the line that says it finished', () => {
+    expect(workingCopy('checking', null, 'Checks passed')).toBe('Finishing up…')
+    expect(workingCopy('understanding', null, 'Understanding your request')).toBe('Working on the next step…')
+    expect(workingCopy('repairing', null, 'Fixing what the checks found')).toBe('Working on the next step…')
+    expect(workingCopy('checking', null, 'Writing the student view')).toBe('Running checks…')
+  })
+})
+
+describe('a model that could not be reached', () => {
+  it('tells the professor what happened and that nothing was saved', () => {
+    const copy = endingCopy('failed', 'model_unavailable')
+    expect(copy).toMatch(/couldn’t reach the AI service/)
+    expect(copy).toMatch(/Your tool is unchanged/)
+    expect(copy).toMatch(/without saving/)
+  })
+})

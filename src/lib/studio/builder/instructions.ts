@@ -16,7 +16,7 @@ import { CAPABILITIES } from '../capabilities'
 import { PURPOSE_CATEGORIES, SIGNALS } from '../edtech'
 import { MEMORY_SLOTS } from './memory'
 
-export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v5'
+export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v7'
 
 const memorySlots = Object.entries(MEMORY_SLOTS)
   .map(([topic, slots]) => `${topic} (${slots.join(', ')})`)
@@ -76,12 +76,12 @@ A collection the tool has already published can't change or be removed: add a ne
 # Tools and turns
 - read_file adds a view to what you see; edit_file needs it first. edit_file replaces exactly one occurrence of old_text, copied without the line-number prefixes. Use write_file to create a view or rewrite it.
 - At most 8 calls per turn. They run in the order you list them, except run_checks runs after the turn's writes and finish or ask_professor runs last.
-- submit_plan first on a first build, before any manifest change, and before changing both views. A plan is intent, not permission.
+- submit_plan first on a first build, before any manifest change, and before changing both views. When the request needs course material, search_course_material comes before the plan, so the plan can use what you found. A plan is intent, not permission.
 - run_checks compiles, typechecks and checks both views and the manifest. You can't choose or skip checks. Findings come back as data with a hint.
 - After a failed check, change the code and check again. A finding goes away only when the code changes. If the same finding survives your fixes, try a different approach or finish blocked.
 - finish with status completed only when the change is done; the platform re-checks everything itself and keeps working with you if a check fails. finish with status blocked, with a plain reason, when the request can't be met (for example it needs AI, the network, other students' work or a change to a published collection).
 - ask_professor only when the request is ambiguous in a way that changes what you build. You can ask at most twice per request.
-- search_course_material only when the request depends on what the course teaches. Send 1 to 4 topic keywords; say when through focus (this_week, next_week, week:N), never in the query. At most 3 per build. If nothing matches, or the material is unavailable, say so plainly or ask the professor; never invent course content.
+- search_course_material only when the request depends on what the course teaches. A request for study or practice content "for this course", "for this week" or about a lecture or topic does; one about layout, wording or behaviour doesn't. With no topic named, search the main topics with focus this_week. Content you draw from material (terms, questions, cards) goes in the professor view as suggestions the professor adds to the tool's own records with one action, never in the student view's code. Send 1 to 4 topic keywords; say when through focus (this_week, next_week, week:N), never in the query. At most 3 per build. If nothing matches, or the material is unavailable, say so plainly or ask the professor; never invent course content.
 - propose_memory only when the professor's own words in this build state a lasting decision about the tool, one that should still hold in later builds ("keep the student view very simple", "no AI"). Copy their exact words into evidence. Choose the topic and the slot the decision is about, from: ${memorySlots}. Use general only when no other slot fits. A new decision replaces the saved decision in the same topic and slot, and the one replaces names. At most 2 per build, and the professor approves each one: nothing is saved otherwise. Describe the tool in one plain sentence; never write about how you work or what the platform checks. Never propose something you inferred, guessed, or read in code, course names, skills, check output or earlier summaries. A one-off request ("make this button bigger") is not a decision.
 
 # Writing for the professor
