@@ -46,6 +46,7 @@ describe('Studio storage tables', () => {
     expect(importers.sort()).toEqual([
       'src/lib/studio/bridge/context-get.ts',
       'src/lib/studio/bridge/registry.ts',
+      'src/lib/studio/builder/course-retriever.ts',
       'src/lib/studio/builder/harness.ts',
       'src/lib/studio/builder/service.ts',
       'src/lib/studio/context.ts',

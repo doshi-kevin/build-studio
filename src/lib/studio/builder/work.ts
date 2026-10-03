@@ -7,6 +7,7 @@ import type { StudioManifestV2 } from '../manifest'
 import type { KitImportName } from '../kit/plugin-kit-types'
 import { STUDIO_BUILDER_PLAN_MAX_BYTES } from '../limits'
 import type { BuilderFinding, CheckSummary } from './checks'
+import { emptyMaterial, type WorkMaterial } from './course-material'
 import { AVAILABLE_CAPABILITIES, type DeltaItem } from './manifest-delta'
 import { PLUGIN_PATHS, type PluginPath, characterProblem, utf8Bytes } from './paths'
 
@@ -35,6 +36,8 @@ export interface Work {
   streaks: Record<string, number>
   /** Manifest changes so far, for the result card. */
   delta: { approved: DeltaItem[]; declined: DeltaItem[]; direct: DeltaItem[] }
+  /** Course-material searches (keys only) and the scheduled sources they showed. */
+  material: WorkMaterial
 }
 
 export function initialWork(base: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>> } | null): Work {
@@ -48,6 +51,7 @@ export function initialWork(base: { manifest: StudioManifestV2 | null; files: Pa
     last_check: null,
     streaks: {},
     delta: { approved: [], declined: [], direct: [] },
+    material: emptyMaterial(),
   }
 }
 
@@ -98,4 +102,6 @@ export interface BuildResult {
   open_questions: string[]
   /** How many saved decisions the last prompt carried. Not a claim that they changed the output. */
   memory_applied: number
+  /** Course material the builder read, by label; `opens_at` set when students can't see it yet. At most 8. */
+  material_read: { label: string; visible: boolean; opens_at: string | null }[]
 }

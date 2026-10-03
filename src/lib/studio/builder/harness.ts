@@ -58,6 +58,7 @@ import {
   STUDIO_BUILDER_SLICE_MIN_BUDGET_MS,
   STUDIO_BUILDER_SWEEP_LIMIT,
   STUDIO_BUILDER_WAITING_TTL_MS,
+  STUDIO_MATERIAL_SOURCES_MAX,
   STUDIO_MEMORY_EXPIRE_LIMIT,
   STUDIO_MEMORY_MAX_ACTIVE,
   STUDIO_MEMORY_PROPOSAL_TTL_MS,
@@ -67,6 +68,8 @@ import { parseManifest, type StudioManifest, type StudioManifestV2 } from '../ma
 import { runDraftChecks, type DraftCheckResult } from './checks'
 import { runWorkerCheck } from './check-worker'
 import { buildTurnContext, skillsWanted, type HistoryEntry, type StepView } from './context-builder'
+import { emptyMaterial, provenanceEntries, withSources, type MaterialFocus, type MaterialSearch, type MaterialSourceEntry, type RenderedSearch } from './course-material'
+import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome } from './course-retriever'
 import { professorTextsOf, type ProjectMemory } from './memory'
 import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelUsage } from './model'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
@@ -116,6 +119,8 @@ export interface SliceData {
   course: { code: string; title: string } | null
   skills: string[] | null
   history: HistoryEntry[]
+  /** Scheduled course sources earlier builds of the project showed the model (keys only). */
+  materialSources: MaterialSourceEntry[]
 }
 
 type Outcome = Record<string, unknown> | null
@@ -145,6 +150,10 @@ export interface HarnessDeps {
   /** Everything outside the run that can stop it before a model call. */
   gate(run: db.BuilderRunRow): Promise<GateRefusal | null>
   runChecks(run: db.BuilderRunRow, data: SliceData, work: Work): Promise<DraftCheckResult>
+  /** search_course_material, scoped from the run row. { ok: false } when the course can't be read. */
+  searchMaterial(run: db.BuilderRunRow, query: string, focus: MaterialFocus | null): Promise<SearchOutcome>
+  /** The run's searches re-read for this turn. Null when they can't be: the build goes on without them. */
+  rehydrateMaterial(run: db.BuilderRunRow, searches: readonly MaterialSearch[]): Promise<RenderedSearch[] | null>
   recordUsage(run: db.BuilderRunRow, usage: ModelUsage, modelId: string, turn: number): Promise<void>
   /** A milestone for the audit trail: ids and counters only. */
   audit(run: db.BuilderRunRow, event: string, metadata: Record<string, string | number>): void
@@ -174,10 +183,16 @@ const nonce = () => randomBytes(6).toString('hex')
 function parseWork(raw: Record<string, unknown> | null): Work | null {
   if (!raw || typeof raw !== 'object') return null
   const manifest = raw.manifest ? parseManifest(raw.manifest) : null
+  const material = raw.material as Work['material'] | undefined
   return {
     ...initialWork(null),
     ...(raw as unknown as Work),
     manifest: manifest?.ok && manifest.manifest.manifestVersion === 2 ? manifest.manifest : null,
+    // Runs from before Step 9 have no material.
+    material:
+      material && Array.isArray(material.searches) && Array.isArray(material.sources)
+        ? { ...emptyMaterial(), ...material, attempts: Number.isInteger(material.attempts) ? material.attempts : material.searches.length, unavailable: material.unavailable === true }
+        : emptyMaterial(),
   }
 }
 
@@ -193,7 +208,7 @@ function buildResult(
   plan: Plan | null,
   status: TerminalStatus,
   reason: RunErrorCode | null,
-  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number },
+  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number; material?: RenderedSearch[] },
 ): BuildResult {
   const files = PLUGIN_PATHS.map((path) => {
     const before = data?.base?.files[path]
@@ -227,18 +242,44 @@ function buildResult(
     summary: extra.summary ?? null,
     open_questions: extra.openQuestions ?? [],
     memory_applied: extra.memoryApplied ?? 0,
+    material_read: materialRead(extra.material ?? []),
   }
-  // The database refuses a result over 8 KiB; trim the listed items, never the system fields.
-  while (utf8Bytes(JSON.stringify(result)) > 7800) {
+  // The database refuses a result over 8 KiB (jsonb's text form adds a space after each
+  // separator, so the margin is generous); trim the listed items, then the model's prose,
+  // never the system fields.
+  while (utf8Bytes(JSON.stringify(result)) > 7000) {
     const d = result.manifest_delta
     if (d.direct.length > 0) d.direct.pop()
     else if (d.approved.length > 0) d.approved.pop()
     else if (d.declined.length > 0) d.declined.pop()
     else if (result.checks && result.checks.unresolved.length > 0) result.checks.unresolved.pop()
+    else if (result.checks && result.checks.warnings.length > 0) result.checks.warnings.pop()
     else if (result.open_questions.length > 0) result.open_questions.pop()
+    else if (result.material_read.length > 0) result.material_read.pop()
+    else if (result.summary && result.summary.length > 0) result.summary = cutBytes(result.summary, Math.floor(utf8Bytes(result.summary) / 2))
+    else if (result.goal && result.goal.length > 0) result.goal = cutBytes(result.goal, Math.floor(utf8Bytes(result.goal) / 2))
     else break
   }
   return result
+}
+
+/** The ending card's list of what the builder read: one line per source, labels only, what
+ * students can't see yet first, at most 8. */
+function materialRead(searches: readonly RenderedSearch[]): BuildResult['material_read'] {
+  const seen = new Map<string, BuildResult['material_read'][number]>()
+  for (const s of searches) {
+    for (const e of s.shown) {
+      if (!seen.has(e.label)) seen.set(e.label, { label: e.label, visible: e.disclosure === 'released', opens_at: e.disclosure === 'released' ? null : e.opensAt })
+    }
+  }
+  return [...seen.values()].sort((a, b) => Number(a.visible) - Number(b.visible)).slice(0, 8)
+}
+
+/** At most `max` UTF-8 bytes of text, cut between whole characters. */
+function cutBytes(text: string, max: number): string {
+  let chars = Array.from(text)
+  while (chars.length > 0 && utf8Bytes(chars.join('')) > max) chars = chars.slice(0, Math.floor(chars.length * 0.9))
+  return chars.join('')
 }
 
 const step = (
@@ -291,6 +332,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   let memoryAliases: Record<string, { id: string; topic: ProjectMemory['topic']; slot: ProjectMemory['slot'] }> = {}
   let memoryApplied = 0
   let memoryProposals = 0
+  // The latest re-read of this run's course searches, for the prompt and the ending card.
+  let lastMaterial: RenderedSearch[] = []
   let activeSince = deps.now()
   // Time spent since the last write that carried it, for active-time accounting.
   const takeActive = () => {
@@ -310,7 +353,9 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   ): Promise<'stop'> => {
     // Fresh counters for the result: this turn's calls have moved them.
     const latest = (await deps.store.loadRun(runId)) ?? run
-    const result = buildResult(latest, data, work, plan, status, code, { ...extra, memoryApplied })
+    // Course material is listed only from a re-read this slice made after its gate passed: an
+    // ending before that (a lost section, Stop) reads nothing more from the course.
+    const result = buildResult(latest, data, work, plan, status, code, { ...extra, memoryApplied, material: lastMaterial })
     const outcome = await deps.store.end({
       runId, token, status, errorCode: code, result: result as unknown as Record<string, unknown>,
       snapshot: extra.snapshot ?? null, activeMs: takeActive(),
@@ -379,7 +424,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       }
       run = await deps.store.loadRun(runId)
       if (!run || run.status !== 'running' || flags.fenceLost) return 'fence lost'
-      const work = parseWork(run.work) ?? initialWork(data.base)
+      let work = parseWork(run.work) ?? initialWork(data.base)
       const plan = parsePlan(run.plan)
       if (run.cancelRequested || flags.cancel) return await end(run, work, plan, 'cancelled', null)
 
@@ -392,6 +437,38 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
 
       const steps = (await deps.store.loadSteps(runId)) ?? []
       const answers = run.questions.map((q) => ({ question: q.question, answer: q.answer }))
+      // Course searches are re-read every turn, so material hidden mid-run leaves the prompt.
+      // A failed read is never fatal: the build goes on without it.
+      let materialUnavailable = false
+      if (work.material.searches.length > 0) {
+        const fresh = await deps.rehydrateMaterial(run, work.material.searches).catch(() => null)
+        if (fresh) lastMaterial = fresh
+        else materialUnavailable = true
+        // A source shown as visible that students can no longer see (its week moved later, or it
+        // was hidden) joins this run's provenance, so the copy guard and the release review cover
+        // it. The cached check no longer proves the guard.
+        // A key that didn't come back at all was hidden, unpublished or deleted: it counts too
+        // (the prune at commit drops whatever has opened or no longer exists).
+        const returned = new Set((fresh ?? []).flatMap((sr) => sr.shown.map((e) => e.key)))
+        const nowUnopened = fresh
+          ? [
+              ...fresh.flatMap((sr) => sr.shown.filter((e) => e.disclosure !== 'released').map((e) => e.key)),
+              ...work.material.searches.flatMap((sr) => sr.keys).filter((k) => !returned.has(k)),
+            ]
+          : []
+        const added = [...new Set(nowUnopened)].filter((k) => !work.material.sources.includes(k))
+        if (added.length > 0) {
+          const next: Work = { ...work, last_check: null, material: { ...work.material, sources: withSources(work.material.sources, added, STUDIO_MATERIAL_SOURCES_MAX) } }
+          const saved = await deps.store.apply({
+            runId, token, step: step('system', `sys:material:${run.counters.modelTurns}`, 'done', 'material.reclassified', { args: { event: 'material_reclassified' }, result: { added: added.length } }),
+            expectedWorkRev: work.work_rev, work: next as unknown as Record<string, unknown>, plan: null, phase: null, delta: {}, caps: CAPS, activeMs: 0,
+          })
+          if (!saved?.ok) return saved?.reason === 'cancelled' ? await end(run, work, plan, 'cancelled', null) : 'fence lost'
+          work = next
+        }
+      } else {
+        lastMaterial = []
+      }
       const ctx = buildTurnContext({
         nonce: nonce(),
         request: run.request ?? '',
@@ -408,6 +485,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         skills: skillsWanted(run.request ?? '', plan, work) ? data.skills : null,
         history: data.history,
         memories,
+        material: materialUnavailable ? [] : lastMaterial,
+        materialUnavailable,
         steps,
         resumed,
         counters: { ...run.counters },
@@ -643,6 +722,11 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       if (r === 'stop') return 'stop'
       counters.toolCalls += 1
       counters.consecutiveErrors = 0
+      if (outcome.label === 'material.searched' && nextWork) {
+        // Ids, counts and keys only, never the words or the text.
+        const latestSearch = nextWork.material.searches.at(-1)
+        deps.audit(run, 'studio.builder.material_searched', { runId, results: latestSearch?.keys.length ?? 0, keys: (latestSearch?.keys ?? []).join(' ').slice(0, 1000) })
+      }
       counters.writes += outcome.delta.writes ?? 0
       counters.bytesWritten += outcome.delta.bytes_written ?? 0
       counters.checkRuns += outcome.delta.check_runs ?? 0
@@ -667,6 +751,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       counters: { writes: counters.writes, bytesWritten: counters.bytesWritten, checkRuns: counters.checkRuns, repairRounds: counters.repairRounds, questions: run.questions.length },
       memory: { aliases: memoryAliases, professorTexts: professorTextsOf(run), proposals: memoryProposals },
       runChecks: (w) => deps.runChecks(run, data!, w),
+      searchMaterial: (query, focus) => deps.searchMaterial(run, query, focus),
     }
   }
 
@@ -831,6 +916,7 @@ async function loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null> {
       : null,
     course,
     skills: skills ? skills.map((s) => s.name) : null,
+    materialSources: project.materialSources,
     history: (history ?? [])
       .filter((r) => r.id !== run.id && r.endedAt !== null)
       .slice(0, STUDIO_BUILDER_HISTORY_RUNS)
@@ -874,8 +960,21 @@ export function realHarnessDeps(model: AgentModel = createGeminiModel()): Harnes
     loadSliceData,
     loadMemories,
     gate,
-    runChecks: async (run, data, work) =>
-      runDraftChecks(work, { workerCheck: runWorkerCheck, rosterFullNames: await db.loadOwnerRosterFullNames(run.ownerId), published: data.published }),
+    runChecks: async (run, data, work) => {
+      const roster = await db.loadOwnerRosterFullNames(run.ownerId)
+      // The guard covers every scheduled source the project's builds read, this run's included.
+      const entries = provenanceEntries(data.materialSources, work.material.sources, run.sectionId)
+      const disclosureSources = roster === null ? null : await loadGuardSources(run.institutionId, entries, roster, run.ownerId)
+      return runDraftChecks(work, { workerCheck: runWorkerCheck, rosterFullNames: roster, published: data.published, disclosureSources })
+    },
+    searchMaterial: async (run, query, focus) => {
+      const scope = retrievalScope(run)
+      return scope ? postgresRetriever.search(scope, query, focus) : { ok: false }
+    },
+    rehydrateMaterial: async (run, searches) => {
+      const scope = retrievalScope(run)
+      return scope ? postgresRetriever.rehydrate(scope, searches) : null
+    },
     recordUsage: (run, usage, modelId, turn) =>
       recordAiUsage({
         feature: BUILDER_LEDGER_FEATURE,

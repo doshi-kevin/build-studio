@@ -30,7 +30,7 @@ const proposal = (over: Partial<ProgressRead['memory']['proposals'][number]> = {
 const progress = (memory: ProgressRead['memory']): ProgressRead => ({
   runId: 'r1', pluginProjectId: 'p1', status: 'preview_ready', phase: 'finishing', turns: { used: 3, max: 24 }, checks: 1, repairRounds: 0,
   approval: null, question: null, ending: 'Preview ready.', endingReason: null,
-  result: { summary: 'Built it.', openQuestions: [], previewHash: 'a'.repeat(64), passed: true, unresolved: [], filesChanged: [] },
+  result: { summary: 'Built it.', openQuestions: [], previewHash: 'a'.repeat(64), passed: true, unresolved: [], filesChanged: [], materialRead: [] },
   memory, events: [], lastSeq: 0,
 })
 const item = (over: Partial<MemoryItem> = {}): MemoryItem => ({

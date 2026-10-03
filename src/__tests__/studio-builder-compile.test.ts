@@ -23,7 +23,7 @@ const manifest = (m: unknown = FLASHCARDS_MANIFEST): StudioManifestV2 => {
 }
 const views = { 'views/student.tsx': STUDENT_VIEW, 'views/professor.tsx': PROFESSOR_VIEW }
 const gate = (files: Record<string, string> = views, opts: { roster?: string[] | null; m?: StudioManifestV2 | null } = {}) =>
-  runDraftChecks({ manifest: opts.m === undefined ? manifest() : opts.m, files }, { workerCheck: inProcessWorkerCheck, rosterFullNames: opts.roster === undefined ? ['Maria Lopez'] : opts.roster, published: null })
+  runDraftChecks({ manifest: opts.m === undefined ? manifest() : opts.m, files }, { workerCheck: inProcessWorkerCheck, rosterFullNames: opts.roster === undefined ? ['Maria Lopez'] : opts.roster, published: null, disclosureSources: [] })
 
 describe('the compiler', () => {
   it('produces the canonical classic-script bundle the runtime runs', () => {

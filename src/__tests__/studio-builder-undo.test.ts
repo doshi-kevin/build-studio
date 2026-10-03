@@ -61,7 +61,7 @@ beforeEach(() => {
   vi.mocked(studioAccess).mockResolvedValue('full')
   vi.mocked(db.loadBuilderProject).mockImplementation(async () => ({
     id: PROJECT, institutionId: PROFESSOR.institutionId, ownerId: owner, slug: 'tool-abc12345', name: 'Cards', status: 'active',
-    draftHeadHash: shared.project.draftHeadHash, draftRev: shared.project.draftRev, draftUndoHash: shared.project.draftUndoHash, updatedAt: '',
+    draftHeadHash: shared.project.draftHeadHash, draftRev: shared.project.draftRev, draftUndoHash: shared.project.draftUndoHash, updatedAt: '', materialSources: [], materialIncomplete: false,
   }))
   vi.mocked(db.builderRpcs.undo).mockImplementation(async (_p, _a, head, rev) => latest!.professor.undo(head, rev))
 })

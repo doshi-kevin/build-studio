@@ -46,12 +46,15 @@ function harness(script: ScriptedTurn[], setup: Setup = {}) {
       course: setup.course ?? { code: 'BIO 101', title: 'Introductory Biology' },
       skills: setup.skills ?? ['Cell structure'],
       history: setup.history ?? [],
+      materialSources: [],
     }),
     loadMemories,
     gate: async () => null,
     runChecks: async () => {
       throw new Error('no checks in these cases')
     },
+    searchMaterial: async () => ({ ok: false as const }),
+    rehydrateMaterial: async () => [],
     recordUsage: vi.fn(async () => {}),
     audit: vi.fn(),
     kick: vi.fn(),

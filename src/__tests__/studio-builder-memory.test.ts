@@ -237,6 +237,8 @@ describe('the prompt carries them as data, below the request', () => {
     skills: null,
     history: [{ status: 'preview_ready', reason: null, request: 'Build flashcards', summary: 'Built them.', filesChanged: ['views/student.tsx'] }],
     memories: [],
+    material: [],
+    materialUnavailable: false,
     steps: [],
     resumed: false,
     counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
@@ -363,7 +365,7 @@ describe('propose_memory', () => {
     },
     runChecks: async () => {
       throw new Error('not in this test')
-    },
+    },    searchMaterial: async () => ({ ok: false }),
   })
   const args = (over: Record<string, unknown> = {}) => ({
     topic: 'student_ui',
@@ -551,7 +553,7 @@ describe('propose_memory with slots', () => {
     },
     runChecks: async () => {
       throw new Error('not in this test')
-    },
+    },    searchMaterial: async () => ({ ok: false }),
   })
   const ai = (over: Record<string, unknown> = {}) => ({ topic: 'content_policy', slot: 'ai_usage', kind: 'constraint', statement: 'AI-generated hints are allowed.', evidence: 'Add AI-generated hints', ...over })
   const run = (a: Record<string, unknown>) => TOOLS.propose_memory.execute(state(), a as never) as { kind: string; code?: string; proposal?: Record<string, unknown>; issues?: string[] }
@@ -593,7 +595,7 @@ describe('worst-case memory in a full prompt (Step 8D)', () => {
       plan: null, phase: 'editing', firstBuild: false, baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null,
       course: { code: 'BIO 101', title: 'Biology' }, skills: null,
       history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r'.repeat(600), summary: 's'.repeat(1000), filesChanged: [] })),
-      memories: all, steps: [], resumed: false,
+      memories: all, material: [], materialUnavailable: false, steps: [], resumed: false,
       counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 }, tokenRatio: 1,
     }
     const out = buildTurnContext(input)
@@ -615,7 +617,7 @@ describe('worst-case memory in a full prompt (Step 8D)', () => {
       plan: null, phase: 'editing', firstBuild: false, baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null,
       course: { code: 'BIO 101', title: 'Biology' }, skills: null,
       history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r', summary: 's'.repeat(1000), filesChanged: [] })),
-      memories: all, steps: [], resumed: false,
+      memories: all, material: [], materialUnavailable: false, steps: [], resumed: false,
       counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 }, tokenRatio: 1,
     }
     const free = buildTurnContext(base)
@@ -680,7 +682,7 @@ describe('review fixes (Step 8C)', () => {
       baseHash: null, baseWorkHash: null, publishedVersions: [], frozen: null, course: { code: 'BIO 101', title: 'Biology' },
       skills: Array.from({ length: 100 }, (_, i) => `Skill ${i}`),
       history: Array.from({ length: 3 }, () => ({ status: 'completed', reason: null, request: 'r', summary: 's'.repeat(1000), filesChanged: [] })),
-      memories, steps, resumed: false,
+      memories, material: [], materialUnavailable: false, steps, resumed: false,
       counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
       tokenRatio: 1000,
     })

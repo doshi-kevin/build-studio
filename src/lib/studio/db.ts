@@ -7,8 +7,9 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
+import type { CourseUnitRow, MaterialSourceEntry } from './builder/course-material'
 import type { MemoryKind, MemorySlot, MemoryTopic } from './builder/memory'
-import { STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
+import { STUDIO_COURSE_TIMEOUT_MS, STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
 
 const PROJECTS = 'studio_plugin_projects'
 const VERSIONS = 'studio_plugin_versions'
@@ -332,6 +333,10 @@ export async function insertVersion(row: {
   publishedBy: string
   /** The draft snapshot this version was saved from, when it came from the builder. */
   sourceSnapshotHash?: string | null
+  /** Course sources the project's builds read (keys and build section only), copied at Save. */
+  materialSources?: MaterialSourceEntry[]
+  /** The project dropped unopened sources for its cap: the release review says its list is incomplete. */
+  materialIncomplete?: boolean
 }): Promise<DbWrite<string>> {
   const { data, error } = await createAdminClient()
     .from(VERSIONS)
@@ -348,6 +353,8 @@ export async function insertVersion(row: {
       artifact_sha256: row.artifactSha256,
       published_by: row.publishedBy,
       source_snapshot_hash: row.sourceSnapshotHash ?? null,
+      material_sources: row.materialSources ?? [],
+      material_incomplete: row.materialIncomplete ?? false,
     })
     .select('id')
     .single()
@@ -1115,9 +1122,13 @@ export interface BuilderProjectRow {
   /** The head before the last successful build: what Undo goes back to. */
   draftUndoHash: string | null
   updatedAt: string
+  /** Scheduled course sources any build of the project showed the model (keys only). */
+  materialSources: MaterialSourceEntry[]
+  /** Unopened sources were dropped for the provenance cap. */
+  materialIncomplete: boolean
 }
 
-const PROJECT_FIELDS = 'id, institution_id, owner_id, slug, name, status, draft_head_hash, draft_rev, draft_undo_hash, updated_at'
+const PROJECT_FIELDS = 'id, institution_id, owner_id, slug, name, status, draft_head_hash, draft_rev, draft_undo_hash, updated_at, material_sources, material_incomplete'
 const toBuilderProject = (r: Record<string, unknown>): BuilderProjectRow => ({
   id: r.id as string,
   institutionId: r.institution_id as string,
@@ -1129,7 +1140,19 @@ const toBuilderProject = (r: Record<string, unknown>): BuilderProjectRow => ({
   draftRev: Number(r.draft_rev ?? 0),
   draftUndoHash: (r.draft_undo_hash as string | null) ?? null,
   updatedAt: r.updated_at as string,
+  materialSources: toMaterialSources(r.material_sources),
+  materialIncomplete: r.material_incomplete === true,
 })
+
+/** Provenance entries as stored: {k, s} objects with the unit-key and uuid shapes. Anything else is dropped. */
+export function toMaterialSources(raw: unknown): MaterialSourceEntry[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((e) => {
+    const k = (e as { k?: unknown } | null)?.k
+    const sec = (e as { s?: unknown } | null)?.s
+    return typeof k === 'string' && typeof sec === 'string' && UNIT_KEY.test(k) && UUID.test(sec) ? [{ k, s: sec }] : []
+  })
+}
 
 export async function loadBuilderProject(id: string): Promise<BuilderProjectRow | null> {
   const { data, error } = await createAdminClient().from(PROJECTS).select(PROJECT_FIELDS).eq('id', id).maybeSingle()
@@ -1611,4 +1634,145 @@ export const memoryRpcs = {
     }
     return Number(data ?? 0)
   },
+}
+
+// ── Course material (Step 9). Not Studio tables: the eligibility functions read the
+// professor's existing course content. Every call is pinned to an institution and section
+// that came from a gated run or installation, never from a caller's input, and the SQL
+// filters both again. ──
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const UNIT_KEY = /^(p:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{1,4}|[ma]:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|s:[0-9]{1,2}:[0-9]{1,2})$/
+
+const asUnitRow = (r: Record<string, unknown>): CourseUnitRow => ({
+  unitKey: r.unit_key as string,
+  sourceKind: r.source_kind as CourseUnitRow['sourceKind'],
+  moduleTitle: (r.module_title as string | null) ?? null,
+  weekNumber: typeof r.week_number === 'number' ? r.week_number : null,
+  itemType: (r.item_type as string | null) ?? null,
+  page: typeof r.page === 'number' ? r.page : null,
+  title: (r.title as string | null) ?? null,
+  heading: (r.heading as string | null) ?? null,
+  disclosure: r.disclosure as CourseUnitRow['disclosure'],
+  opensAt: (r.opens_at as string | null) ?? null,
+  excerpt: (r.excerpt as string | null) ?? '',
+})
+
+/** Ranked search. Null on any failure, including the client-side timeout. */
+export async function courseSearch(
+  institutionId: string,
+  sectionId: string,
+  query: string,
+  focusModuleIds: string[],
+  limit: number,
+): Promise<{ rows: CourseUnitRow[]; withheld: number } | null> {
+  try {
+    const { data, error } = await createAdminClient()
+      .rpc('studio_course_search', {
+        p_institution: institutionId,
+        p_section: sectionId,
+        p_now: new Date().toISOString(),
+        p_query: query,
+        p_focus: focusModuleIds.filter((id) => UUID.test(id)),
+        p_limit: limit,
+      })
+      .abortSignal(AbortSignal.timeout(STUDIO_COURSE_TIMEOUT_MS))
+    if (error || !Array.isArray(data)) {
+      logger.warn('studio/db.courseSearch', { code: error?.code ?? null })
+      return null
+    }
+    const rows = data as Record<string, unknown>[]
+    const withheld = Number(rows.find((r) => r.unit_key === null)?.withheld_matches ?? 0)
+    return { rows: rows.filter((r) => typeof r.unit_key === 'string').map(asUnitRow), withheld }
+  } catch (error) {
+    logger.warn('studio/db.courseSearch', { name: error instanceof Error ? error.name : 'unknown' })
+    return null
+  }
+}
+
+/** The per-turn re-read of one search's keys, still released or scheduled. Null on failure. */
+export async function courseExcerpts(institutionId: string, sectionId: string, query: string, keys: string[]): Promise<CourseUnitRow[] | null> {
+  const wanted = keys.filter((k) => UNIT_KEY.test(k))
+  if (wanted.length === 0) return []
+  try {
+    const { data, error } = await createAdminClient()
+      .rpc('studio_course_excerpts', { p_institution: institutionId, p_section: sectionId, p_now: new Date().toISOString(), p_query: query, p_keys: wanted })
+      .abortSignal(AbortSignal.timeout(STUDIO_COURSE_TIMEOUT_MS))
+    if (error || !Array.isArray(data)) {
+      logger.warn('studio/db.courseExcerpts', { code: error?.code ?? null })
+      return null
+    }
+    return (data as Record<string, unknown>[]).map(asUnitRow)
+  } catch (error) {
+    logger.warn('studio/db.courseExcerpts', { name: error instanceof Error ? error.name : 'unknown' })
+    return null
+  }
+}
+
+export interface CourseSourceRow {
+  unitKey: string
+  sourceKind: CourseUnitRow['sourceKind']
+  moduleTitle: string | null
+  weekNumber: number | null
+  itemType: string | null
+  page: number | null
+  title: string | null
+  disclosure: 'released' | 'scheduled' | 'withheld'
+  opensAt: string | null
+  body: string
+}
+
+/** The given keys in every disclosure class, with their text: the copy guard's and the release review's read. Null on failure. */
+export async function courseSources(institutionId: string, sectionId: string, keys: string[]): Promise<CourseSourceRow[] | null> {
+  const wanted = keys.filter((k) => UNIT_KEY.test(k))
+  if (wanted.length === 0) return []
+  try {
+    const { data, error } = await createAdminClient()
+      .rpc('studio_course_sources', { p_institution: institutionId, p_section: sectionId, p_now: new Date().toISOString(), p_keys: wanted })
+      .abortSignal(AbortSignal.timeout(STUDIO_COURSE_TIMEOUT_MS))
+    if (error || !Array.isArray(data)) {
+      logger.warn('studio/db.courseSources', { code: error?.code ?? null })
+      return null
+    }
+    return (data as Record<string, unknown>[]).map((r) => ({
+      unitKey: r.unit_key as string,
+      sourceKind: r.source_kind as CourseUnitRow['sourceKind'],
+      moduleTitle: (r.module_title as string | null) ?? null,
+      weekNumber: typeof r.week_number === 'number' ? r.week_number : null,
+      itemType: (r.item_type as string | null) ?? null,
+      page: typeof r.page === 'number' ? r.page : null,
+      title: (r.title as string | null) ?? null,
+      disclosure: r.disclosure as CourseSourceRow['disclosure'],
+      opensAt: (r.opens_at as string | null) ?? null,
+      body: (r.body as string | null) ?? '',
+    }))
+  } catch (error) {
+    logger.warn('studio/db.courseSources', { name: error instanceof Error ? error.name : 'unknown' })
+    return null
+  }
+}
+
+/** The section's modules (no system modules) and start date, for resolving a week focus. Null on failure. */
+export async function loadSectionFocus(
+  institutionId: string,
+  sectionId: string,
+): Promise<{ startDate: string | null; modules: { id: string; weekNumber: number | null; unlockDate: string | null; isPublished: boolean }[] } | null> {
+  const admin = createAdminClient()
+  const [section, modules] = await Promise.all([
+    admin.from('course_sections').select('start_date').eq('id', sectionId).eq('institution_id', institutionId).maybeSingle(),
+    admin.from('modules').select('id, week_number, unlock_date, is_published').eq('section_id', sectionId).is('system_kind', null).limit(400),
+  ])
+  if (section.error || modules.error || !section.data) {
+    logger.warn('studio/db.loadSectionFocus', { code: section.error?.code ?? modules.error?.code ?? null })
+    return null
+  }
+  return {
+    startDate: (section.data as { start_date: string | null }).start_date ?? null,
+    modules: ((modules.data ?? []) as { id: string; week_number: number | null; unlock_date: string | null; is_published: boolean | null }[]).map((m) => ({
+      id: m.id,
+      weekNumber: m.week_number,
+      unlockDate: m.unlock_date,
+      isPublished: m.is_published === true,
+    })),
+  }
 }

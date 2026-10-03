@@ -37,7 +37,7 @@ vi.mock('@/components/studio/builder/StudioPreview', () => ({
 const built: ProgressRead = {
   runId: 'r2', pluginProjectId: 'p1', status: 'preview_ready', phase: 'finishing', turns: { used: 3, max: 24 }, checks: 1, repairRounds: 0,
   approval: null, question: null, endingReason: null, ending: 'Preview ready. Your saved tool hasn’t changed until you save this draft as a version.',
-  result: { summary: null, openQuestions: [], previewHash: B, passed: true, unresolved: [], filesChanged: [] }, memory: { applied: 0, proposals: [] }, events: [], lastSeq: 0,
+  result: { summary: null, openQuestions: [], previewHash: B, passed: true, unresolved: [], filesChanged: [], materialRead: [] }, memory: { applied: 0, proposals: [] }, events: [], lastSeq: 0,
 }
 vi.mock('@/components/studio/builder/use-build-run', () => ({
   useBuildRun: () => ({ progress: built, events: [], unreachable: false, refresh: vi.fn() }),

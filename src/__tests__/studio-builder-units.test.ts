@@ -4,7 +4,7 @@
  * context builder, usage mapping and budgets.
  */
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fenceBlock } from '@/lib/ai/prompt-fence'
 import { METHOD_CATALOG } from '@/lib/studio/bridge/catalog'
 import { BRIDGE_METHOD_NAMES, KIT_IMPORTABLE_NAMES, KIT_IMPORTS } from '@/lib/studio/kit/plugin-kit-types'
@@ -14,7 +14,7 @@ import { snapshotHash, workHash } from '@/lib/studio/builder/snapshot'
 import { buildTurnContext, skillsWanted, type TurnInput } from '@/lib/studio/builder/context-builder'
 import { mapUsage } from '@/lib/studio/builder/model'
 import { budgetStop, WORST_CASE_CALL_USD } from '@/lib/studio/builder/harness'
-import { orderCalls, planGate, TOOL_NAMES, TOOLS, toolDeclarations, type ToolState } from '@/lib/studio/builder/tools'
+import { checkStep, orderCalls, planGate, TOOL_NAMES, TOOLS, toolDeclarations, type ToolState } from '@/lib/studio/builder/tools'
 import { initialWork } from '@/lib/studio/builder/work'
 import { STUDIO_BUILDER_CONTEXT_MAX_TOKENS, STUDIO_BUILDER_FILE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
 import { FLASHCARDS_MANIFEST, PROFESSOR_VIEW, STUDENT_VIEW } from './helpers/builder-fixtures'
@@ -82,8 +82,22 @@ function baseState(): ToolState {
     runChecks: async () => {
       throw new Error('not in this test')
     },
+    searchMaterial: async () => ({ ok: false }),
   }
 }
+
+describe('the check cache', () => {
+  it('never reuses a result whose roster or course-material check couldn’t run', async () => {
+    const runChecks = vi.fn(async () => { throw new Error('ran again') })
+    const work = initialWork(null)
+    const hash = workHash(work.manifest, work.files)
+    const summary = { roster: 'passed', disclosure: 'unavailable' } as never
+    const state = { ...baseState(), runChecks, work: { ...work, last_check: { work_hash: hash, passed: false, findings: [], total: 0, summary } } }
+    await expect(checkStep(state, {})).rejects.toThrow('ran again')
+    const ok = { ...state, work: { ...state.work, last_check: { ...state.work.last_check, summary: { roster: 'passed', disclosure: 'passed' } as never } } }
+    expect((await checkStep(ok, {})).kind).toBe('done')
+  })
+})
 
 describe('the manifest pipeline', () => {
   it('stamps the fields Scholera owns and reports the ones the model tried to set', () => {
@@ -145,8 +159,8 @@ describe('the manifest pipeline', () => {
 })
 
 describe('the tool registry', () => {
-  it('has exactly the nine approved tools', () => {
-    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'finish'])
+  it('has exactly the eleven approved tools', () => {
+    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'finish'])
     expect(Object.keys(TOOLS).sort()).toEqual([...TOOL_NAMES].sort())
     expect(toolDeclarations().map((d) => d.name)).toEqual([...TOOL_NAMES])
   })
@@ -245,6 +259,8 @@ describe('the context builder', () => {
     skills: null,
     history: [],
     memories: [],
+    material: [],
+    materialUnavailable: false,
     steps: [],
     resumed: false,
     counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
@@ -254,6 +270,19 @@ describe('the context builder', () => {
   it('loads course skills only when the request is about skills', () => {
     expect(skillsWanted('Make the submit button bigger', null, initialWork(null))).toBe(false)
     expect(skillsWanted('Track mastery of each skill', null, initialWork(null))).toBe(true)
+  })
+  it('course material is fenced as data, and under pressure keeps only the latest search, second after memory preferences', () => {
+    const excerpt = (n: number) => ({ key: `m:${n}`, label: `Week ${n}: Topic`, disclosure: 'released' as const, opensAt: null, text: 'w '.repeat(500) })
+    const material = [1, 2, 3].map((n) => ({ query: `search ${n}`, focus: null, shown: [excerpt(n), excerpt(n + 10)] }))
+    const roomy = buildTurnContext(input({ material }))
+    expect(roomy.prompt).toMatch(/<data_n0nce123 kind="course-material" provenance="course-material" search="1" query="search 1" focus="none">/)
+    expect(roomy.trims).toEqual([])
+    const tight = buildTurnContext(input({ material, tokenRatio: 30 }))
+    expect(tight.trims[0]).toBe('course_material')
+    expect(tight.prompt).toContain('query="search 3"')
+    expect(tight.prompt).not.toContain('query="search 1"')
+    const unavailable = buildTurnContext(input({ materialUnavailable: true }))
+    expect(unavailable.prompt).toContain('couldn’t be read again this turn')
   })
   it('shows the whole current manifest, fenced, in the shape propose_manifest_change takes', () => {
     const proposal = proposed()

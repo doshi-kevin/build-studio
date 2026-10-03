@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useId, useRef, useState, useTransition } from 'react'
 import { Bookmark, CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
@@ -247,6 +247,7 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
 }) {
   const [saving, start] = useTransition()
   const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null)
+  const materialListId = useId()
   const result = progress.result
   const success = progress.status === 'preview_ready' || progress.status === 'completed'
   const stopped = progress.status === 'cancelled'
@@ -317,6 +318,26 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
       {onDecideMemory && <MemoryProposals proposals={progress.memory.proposals} onDecide={onDecideMemory} />}
       {progress.memory.applied > 0 && (
         <p className="text-xs text-muted-foreground">Applied {progress.memory.applied} saved decision{progress.memory.applied === 1 ? '' : 's'}.</p>
+      )}
+      {result && result.materialRead.length > 0 && (
+        <div className="text-xs text-muted-foreground">
+          <p id={materialListId}>Athena read these from your course:</p>
+          <ul aria-labelledby={materialListId} className="mt-1 list-disc space-y-0.5 break-words pl-4">
+            {result.materialRead.map((m) => (
+              <li key={m.label}>
+                {m.label}
+                {!m.visible && (
+                  <span className="text-foreground">
+                    {m.opensAt ? ` (students can’t see this until ${new Date(m.opensAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})` : ' (students can’t see this)'}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {result.materialRead.some((m) => !m.visible) && (
+            <p className="mt-1">Athena uses material students can’t see yet only to shape the tool, never its wording.</p>
+          )}
+        </div>
       )}
     </section>
   )

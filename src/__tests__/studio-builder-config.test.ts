@@ -78,12 +78,14 @@ function slice(model: Parameters<typeof runBuilderSlice>[2]['model'], gate: Para
     runBuilderSlice({ runId: run.id, sliceNo: mem.state.run.sliceNo }, { id: mem.currentJob().id, deadline: Date.now() + 15 * 60_000 }, {
       store: mem.store,
       model,
-      loadSliceData: async () => ({ slug: 'tool-abc12345', published: null, publishedVersions: [], base: null, course: null, skills: null, history: [] }),
+      loadSliceData: async () => ({ slug: 'tool-abc12345', published: null, publishedVersions: [], base: null, course: null, skills: null, history: [], materialSources: [] }),
       loadMemories: async () => [],
       gate,
       runChecks: async () => {
         throw new Error('no checks in these cases')
       },
+      searchMaterial: async () => ({ ok: false as const }),
+      rehydrateMaterial: async () => [],
       recordUsage,
       audit: vi.fn(),
       kick: vi.fn(),

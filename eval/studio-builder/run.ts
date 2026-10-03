@@ -22,12 +22,16 @@
  * Memory cases (M1 to M5) seed saved decisions, may run an earlier build first, and
  * read the first prompt's saved-decision lines in memory to compute named booleans. The
  * prompt is never written anywhere; the baseline keeps the check names and booleans.
+ *
+ * Course-material cases (R1 to R3) search a small fixed course in memory instead of a
+ * database; the real copy guard checks the pages each build saw. They record named
+ * booleans only, in the same field.
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { buildBaseline, compareBaseline, formatComparison, parseBaseline, toBaselineEntry, type BaselineEntry } from './baseline'
 import { randomUUID } from 'node:crypto'
-import { CASES, MEMORY_CASES, BASE_FILES, BASE_MANIFEST, type BuilderEvalCase } from './cases'
+import { CASES, MATERIAL_CASES, MEMORY_CASES, BASE_FILES, BASE_MANIFEST, type BuilderEvalCase, type MaterialPage } from './cases'
 import { leakedSecrets } from './guard'
 import type { MemoryRecord } from '../../src/__tests__/helpers/builder-memory-store'
 
@@ -63,6 +67,7 @@ async function main() {
   const { BUILDER_INSTRUCTIONS_VERSION } = await import('../../src/lib/studio/builder/instructions')
   const { COMPILER_ID } = await import('../../src/lib/studio/builder/compile')
   const { VALIDATOR_VERSION, STUDIO_VALIDATOR_RULESET } = await import('../../src/lib/studio/validator/ruleset')
+  const { findCopies } = await import('../../src/lib/studio/builder/disclosure')
 
   const stamped = (m: Record<string, unknown>) => {
     const r = proposeManifest(JSON.stringify(m), { slug: 'tool-eval0001', current: null, published: null })
@@ -76,10 +81,11 @@ async function main() {
   const modelIds = new Set<string>()
   let spent = 0
   let invariantFailures = 0
-  const selected = [...CASES, ...MEMORY_CASES].filter((c) => !c.deterministicOnly && (!args.case || c.id === args.case))
+  const selected = [...CASES, ...MEMORY_CASES, ...MATERIAL_CASES].filter((c) => !c.deterministicOnly && (!args.case || c.id === args.case))
 
-  // Memory cases run first: they are the newest behaviour, and the spend cap may not reach every case.
-  selected.sort((a, b) => Number(!!b.memory) - Number(!!a.memory))
+  // The newest behaviour runs first, course material then memory, since the spend cap may not reach every case.
+  const rank = (c: BuilderEvalCase) => (c.material ? 2 : c.memory ? 1 : 0)
+  selected.sort((a, b) => rank(b) - rank(a))
 
   for (const c of selected) {
     if (spent + WORST_CASE_CALL_USD > MAX_USD) {
@@ -102,6 +108,20 @@ async function main() {
     const seeded = new Set(memories.map((m) => m.id))
     const remembered = new Set<string>()
     let cappedByEval = false
+    // Course material: the pages any build of the case was shown.
+    const corpus = c.material?.corpus ?? []
+    const seenKeys = new Set<string>()
+    const pageExcerpt = (p: MaterialPage) => ({ key: p.key, label: p.label, disclosure: p.disclosure, opensAt: p.opensAt, text: p.text })
+    const searchCourse = async (_run: unknown, query: string) => {
+      const terms = query.toLowerCase().split(/\W+/).filter((t) => t.length > 2)
+      const hits = corpus.filter((p) => terms.some((t) => `${p.label} ${p.text}`.toLowerCase().includes(t))).slice(0, 6)
+      for (const p of hits) seenKeys.add(p.key)
+      return { ok: true as const, shown: hits.map(pageExcerpt), keys: hits.map((p) => p.key), scheduled: hits.filter((p) => p.disclosure === 'scheduled').map((p) => p.key), withheld: 0 }
+    }
+    const rehydrateCourse = async (_run: unknown, searches: readonly { query: string; focus: unknown; keys: string[] }[]) =>
+      searches.map((sr) => ({ query: sr.query, focus: sr.focus as null, shown: sr.keys.flatMap((k) => corpus.filter((p) => p.key === k).map(pageExcerpt)) }))
+    // The real guard, over every scheduled page a build of this case saw.
+    const guardSources = () => corpus.filter((p) => p.disclosure === 'scheduled' && seenKeys.has(p.key)).map((p) => ({ key: p.key, label: p.label, disclosure: p.disclosure, opensAt: p.opensAt, text: p.text }))
 
     /** One build of the case's tool, driven to its end by the scripted professor. */
     const build = async (request: string) => {
@@ -137,14 +157,16 @@ async function main() {
       const deps = {
         store: mem.store,
         model,
-        loadSliceData: async () => ({ slug: 'tool-eval0001', published: null, publishedVersions: [], base: startedFrom, course: c.course ?? { code: 'BIO 101', title: 'Introductory Biology' }, skills: c.skills ?? ['Cell structure', 'Photosynthesis'], history: [] }),
+        loadSliceData: async () => ({ slug: 'tool-eval0001', published: null, publishedVersions: [], base: startedFrom, course: c.course ?? { code: 'BIO 101', title: 'Introductory Biology' }, skills: c.skills ?? ['Cell structure', 'Photosynthesis'], history: [], materialSources: [] }),
         loadMemories: async (r: { projectId: string }) => activeMemoriesOf(memories, r.projectId),
         gate: async () => {
           if (spent + mem.state.run.counters.costUsd + WORST_CASE_CALL_USD <= MAX_USD) return null
           cappedByEval = true
           return 'limit_cost' as const
         },
-        runChecks: async (_r: unknown, _d: unknown, work: Parameters<typeof runDraftChecks>[0]) => runDraftChecks(work, { workerCheck: runWorkerCheck, rosterFullNames: ['Maria Lopez'], published: null }),
+        runChecks: async (_r: unknown, _d: unknown, work: Parameters<typeof runDraftChecks>[0]) => runDraftChecks(work, { workerCheck: runWorkerCheck, rosterFullNames: ['Maria Lopez'], published: null, disclosureSources: guardSources() }),
+        searchMaterial: c.material ? searchCourse : async () => ({ ok: false as const }),
+        rehydrateMaterial: c.material ? rehydrateCourse : async () => [],
         recordUsage: async () => {},
         audit: () => {},
         kick: () => {},
@@ -208,6 +230,15 @@ async function main() {
       const checks = c.memory.checks({ priorProposals, carried, proposals, activeBefore, activeAfter, studentGrowth })
       memoryFacts = { proposals: raised.length, checks }
     }
+    if (c.material) {
+      const own = s.resultHash ? (shared.snapshots.get(s.resultHash) as { manifest?: unknown; files?: Record<string, string> } | undefined) : undefined
+      const searches = mem.state.steps.filter((st) => st.tool === 'search_course_material' && st.status === 'done' && st.label === 'material.searched').length
+      const disclosureRefusals = mem.state.steps.filter((st) => st.tool === 'run_checks' && Object.keys((st.resultSummary.failing as Record<string, number> | undefined) ?? {}).some((k) => k.startsWith('builder.disclosure'))).length
+      const copiesScheduled = own?.files ? findCopies({ manifest: own.manifest as never, files: own.files }, guardSources()).copies.length > 0 : false
+      const raised = memories.filter((m) => m.sourceRunId === run.id)
+      const checks = c.material.checks({ request: c.request, searches, disclosureRefusals, studentView: own?.files?.['views/student.tsx'] ?? null, copiesScheduled, proposalEvidence: raised.map((m) => m.evidence ?? '') })
+      memoryFacts = { proposals: raised.length, checks }
+    }
 
     const snapshot = [...mem.state.snapshots.values()].at(-1) as { manifest?: { views?: Record<string, { capabilities: string[] }> }; files?: Record<string, string> } | undefined
     const caps = snapshot ? Object.values(snapshot.manifest?.views ?? {}).flatMap((v) => v.capabilities) : []
@@ -261,7 +292,7 @@ async function main() {
     succeeded: ran.filter((r) => r.success).length,
     invariantFailures,
     totalCostUsd: Math.round(spent * 10_000) / 10_000,
-    deterministicOnly: [...CASES, ...MEMORY_CASES].filter((c) => c.deterministicOnly).map((c: BuilderEvalCase) => `${c.id}: ${c.deterministicOnly}`),
+    deterministicOnly: [...CASES, ...MEMORY_CASES, ...MATERIAL_CASES].filter((c) => c.deterministicOnly).map((c: BuilderEvalCase) => `${c.id}: ${c.deterministicOnly}`),
   }
   console.log(JSON.stringify(summary, null, 2))
   if (args.json) writeFileSync(args.json, JSON.stringify({ summary, results }, null, 2))

@@ -42,7 +42,7 @@ const progress = (over: Partial<ProgressRead> = {}): ProgressRead => ({
   approval: null, question: null, ending: null, endingReason: null, result: null, memory: { applied: 0, proposals: [] }, events: [], lastSeq: 0, ...over,
 })
 const result = (over: Partial<NonNullable<ProgressRead['result']>> = {}): NonNullable<ProgressRead['result']> => ({
-  summary: null, openQuestions: [], previewHash: null, passed: false, unresolved: [], filesChanged: [], ...over,
+  summary: null, openQuestions: [], previewHash: null, passed: false, unresolved: [], filesChanged: [], materialRead: [], ...over,
 })
 const approval = { proposalId: 'prop-1', deltaHash: 'd'.repeat(64), items: ['Store "cards": staff write, everyone in the section reads. Fields: term (text)'], expiresAt: null }
 const SECTION = '11111111-1111-4111-8111-111111111111'
@@ -164,6 +164,18 @@ describe('the ending card', () => {
     status: 'preview_ready',
     ending: 'Preview ready. Your saved tool hasn’t changed until you save this draft as a version.',
     result: result({ summary: 'I built flashcards.', previewHash: 'h'.repeat(64), passed: true, filesChanged: ['views/student.tsx'] }),
+  })
+  it('lists the course material Athena read, marking what students can’t see yet', () => {
+    const withMaterial = { ...ready, result: { ...ready.result!, materialRead: [{ label: 'Week 6: Attention (lecture), page 2', visible: true, opensAt: null }, { label: 'Week 7: Transformers (lecture)', visible: false, opensAt: '2026-10-16T15:00:00Z' }, { label: 'HW3 solutions (reading)', visible: false, opensAt: null }] } }
+    render(<EndingCard progress={withMaterial} canSave onPreview={vi.fn()} onSave={vi.fn()} />)
+    const list = screen.getByRole('list', { name: 'Athena read these from your course:' })
+    const items = [...list.querySelectorAll('li')].map((li) => li.textContent)
+    expect(items).toEqual(['Week 6: Attention (lecture), page 2', 'Week 7: Transformers (lecture) (students can’t see this until Oct 16)', 'HW3 solutions (reading) (students can’t see this)'])
+    expect(screen.getByText('Athena uses material students can’t see yet only to shape the tool, never its wording.')).toBeTruthy()
+  })
+  it('says nothing about course material when none was read', () => {
+    render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={vi.fn()} />)
+    expect(screen.queryByText('Athena read these from your course:')).toBeNull()
   })
   it('shows the system’s outcome first and Athena’s words as a labelled note', () => {
     render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={vi.fn()} />)

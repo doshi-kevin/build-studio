@@ -727,31 +727,116 @@ export function assertStorableProfessorPreferenceWithRoster(
   return { ok: true }
 }
 
-/** Accents and format characters folded away, lowercased: how roster names compare. */
+const MARK_OR_FORMAT = /[\p{M}\p{Cf}]/u
+const APOSTROPHES = /[\u{2018}\u{2019}\u{02BC}\u{0060}\u{00B4}\u{FF07}]/gu
+const DASHES = /[\u{2010}-\u{2015}\u{2212}\u{FE58}\u{FE63}\u{FF0D}]/gu
+
+/** One character folded the way roster names compare: compatibility forms (ligatures, full
+ * width) expanded, accents and format characters removed, curly apostrophes and Unicode
+ * dashes made plain, lowercased. May be empty or several characters. */
+function foldChar(ch: string): string {
+  return ch.normalize('NFKD').replace(/[\p{M}\p{Cf}]/gu, '').replace(APOSTROPHES, "'").replace(DASHES, '-').toLowerCase()
+}
+
+/** How roster names compare: every character folded. */
 function foldName(v: string): string {
-  return v
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\p{Cf}/gu, '')
-    .toLowerCase()
+  let out = ''
+  for (const ch of v.normalize('NFD')) out += foldChar(ch)
+  return out
+}
+
+/** foldName, keeping for each folded character the index (in the NFD form) it came from. */
+function foldWithMap(v: string): { nfd: string; folded: string; map: number[] } {
+  const nfd = v.normalize('NFD')
+  let folded = ''
+  const map: number[] = []
+  for (let i = 0; i < nfd.length; ) {
+    const ch = String.fromCodePoint(nfd.codePointAt(i)!)
+    for (const c of foldChar(ch)) {
+      folded += c
+      map.push(i)
+    }
+    i += ch.length
+  }
+  return { nfd, folded, map }
+}
+
+/** The patterns one roster name is matched by: "First Last" and "Last, First". */
+function namePatterns(full: string): string[] {
+  const parts = foldName(full).split(/\s+/).filter((v) => v.length > 1).map(escapeForRegex)
+  if (parts.length < 2) return []
+  const last = parts[parts.length - 1]
+  // \s* between the parts: a name whose space was lost (a zero-width character removed, or
+  // text run together in an extracted PDF) still matches as a whole.
+  return [parts.join('\\s*'), `${last}\\s*,\\s*${parts.slice(0, -1).join('\\s*')}`]
+}
+
+const WHOLE = (pattern: string) => `(?<![\\p{L}\\p{N}])(?:${pattern})(?![\\p{L}\\p{N}])`
+
+/** Each roster name's two patterns, compiled once per roster array (rosters are loaded once and
+ * reused for every excerpt, label and check). */
+const compiledRosters = new WeakMap<readonly string[], { full: string; patterns: RegExp[] }[]>()
+function compiledRoster(fullNames: readonly string[]): { full: string; patterns: RegExp[] }[] {
+  let compiled = compiledRosters.get(fullNames)
+  if (!compiled) {
+    compiled = fullNames.map((full) => ({ full, patterns: namePatterns(full).map((p) => new RegExp(WHOLE(p), 'giu')) }))
+    compiledRosters.set(fullNames, compiled)
+  }
+  return compiled
 }
 
 /**
- * The first roster full name ("First Last") that appears in the text as a whole, or null.
- * Matched on both parts together, never on either alone, which keeps ordinary words
- * that happen to be someone's first name ("Grace", "Page") out of it. Used for memory
- * preferences across a professor's other sections, and by the Studio builder to keep
- * student names out of generated tools.
+ * The first roster full name that appears in the text as a whole, as "First Last" or
+ * "Last, First", or null. Matched on both parts together, never on either alone, which
+ * keeps ordinary words that happen to be someone's first name ("Grace", "Page") out of
+ * it. Used for memory preferences across a professor's other sections, and by the Studio
+ * builder to keep student names out of generated tools and out of course excerpts.
  */
 export function findRosterFullName(text: string, fullNames: readonly string[]): string | null {
   const lower = foldName(text)
-  for (const full of fullNames) {
-    const parts = foldName(full).split(/\s+/).filter((v) => v.length > 1)
-    if (parts.length < 2) continue
-    const pattern = parts.map(escapeForRegex).join('\\s+')
-    if (new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, 'iu').test(lower)) return full
+  for (const { full, patterns } of compiledRoster(fullNames)) {
+    for (const re of patterns) {
+      re.lastIndex = 0
+      if (re.test(lower)) return full
+    }
   }
   return null
+}
+
+/**
+ * The text with every roster full name ("First Last" or "Last, First") replaced, matched
+ * the way findRosterFullName matches (accents and case folded), and replaced in the
+ * original text so everything else keeps its accents and case.
+ */
+export function redactRosterNames(text: string, fullNames: readonly string[], replacement = '[student]'): string {
+  if (fullNames.length === 0 || text.length === 0) return text
+  const { nfd, folded, map } = foldWithMap(text)
+  const ranges: [number, number][] = []
+  for (const { patterns } of compiledRoster(fullNames)) {
+    for (const re of patterns) {
+      for (const m of folded.matchAll(re)) {
+        const start = map[m.index]
+        const lastStart = map[m.index + m[0].length - 1]
+        let end = lastStart + String.fromCodePoint(nfd.codePointAt(lastStart)!).length
+        // Combining marks and format characters folded away belong to the last letter of the name.
+        while (end < nfd.length && MARK_OR_FORMAT.test(nfd[end])) end++
+        ranges.push([start, end])
+      }
+    }
+  }
+  if (ranges.length === 0) return text
+  ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1])
+  let out = ''
+  let at = 0
+  for (const [start, end] of ranges) {
+    if (start < at) {
+      at = Math.max(at, end)
+      continue
+    }
+    out += nfd.slice(at, start) + replacement
+    at = end
+  }
+  return (out + nfd.slice(at)).normalize('NFC')
 }
 
 export interface PreferenceCheck {

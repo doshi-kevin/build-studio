@@ -31,7 +31,7 @@ export interface BaselineEntry {
   tokens: { input: number; cachedInput: number; output: number; reasoning: number }
   costUsd: number
   finalCheck: { passed: boolean; failing: string[] } | null
-  /** Memory cases only: how many proposals the measured build raised, and each named check. */
+  /** Memory and course-material cases: how many memory proposals the measured build raised, and each named check. */
   memory: { proposals: number; checks: Record<string, boolean> } | null
 }
 

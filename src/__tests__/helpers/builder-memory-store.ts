@@ -19,6 +19,8 @@ export interface MemoryProject {
   draftHeadHash: string | null
   draftRev: number
   draftUndoHash: string | null
+  /** studio_plugin_projects.material_sources: scheduled source keys earlier commits added. */
+  materialSources?: { k: string; s: string }[]
 }
 
 /** One saved-decision row, as studio_plugin_memories holds it. */
@@ -275,6 +277,10 @@ export function createMemoryStore(
         if (state.project.draftHeadHash !== hash) state.project.draftUndoHash = state.project.draftHeadHash
         state.project.draftHeadHash = hash
         state.project.draftRev += 1
+        // As studio_builder_end: the run's scheduled sources join the project's provenance.
+        const added = ((state.run.work as { material?: { sources?: string[] } } | null)?.material?.sources ?? []).map((k) => ({ k, s: state.run.sectionId ?? '' }))
+        const kept = (state.project.materialSources ?? []).filter((e) => !added.some((a) => a.k === e.k && a.s === e.s))
+        state.project.materialSources = [...kept, ...added].slice(-48)
       }
       state.run.status = a.status
       state.run.errorCode = a.errorCode

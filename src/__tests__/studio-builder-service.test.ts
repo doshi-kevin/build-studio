@@ -7,6 +7,10 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
+vi.mock('@/lib/auth/section-access', () => ({
+  verifySectionAccess: vi.fn(async () => ({ ok: true, role: 'professor' })),
+  canWriteAsProfessor: (role: string) => role === 'professor',
+}))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
 vi.mock('@/lib/jobs/enqueue', () => ({ kickWorker: vi.fn(async () => ({ kicked: true })) }))
 vi.mock('@/lib/ai/kill-switch', () => ({ checkAiFeature: vi.fn(async () => ({ allowed: true })) }))
@@ -25,6 +29,7 @@ vi.mock('@/lib/studio/db', () => ({
   loadVersionForSnapshot: vi.fn(async () => null),
   loadLatestProjectManifest: vi.fn(async () => null),
   loadOwnerRosterFullNames: vi.fn(async () => []),
+  courseSources: vi.fn(async () => []),
   insertVersion: vi.fn(async () => ({ ok: true, value: 'version-1' })),
   installPlugin: vi.fn(),
   activateVersion: vi.fn(),
@@ -42,18 +47,20 @@ const { studioAccess, studioKillSwitchEngaged } = await import('@/lib/studio/acc
 const { checkAiFeature } = await import('@/lib/ai/kill-switch')
 const service = await import('@/lib/studio/builder/service')
 const { publishDraft } = await import('@/lib/studio/lifecycle')
+const { realHarnessDeps } = await import('@/lib/studio/builder/harness')
+const { initialWork } = await import('@/lib/studio/builder/work')
 const ticket = await import('@/lib/studio/runtime/frame-ticket')
 const { draftFrameResponse } = await import('@/lib/studio/runtime/frame')
 const { proposeManifest } = await import('@/lib/studio/builder/manifest-delta')
 const { snapshotHash } = await import('@/lib/studio/builder/snapshot')
 const { COMPILER_ID } = await import('@/lib/studio/builder/compile')
-const { FLASHCARDS_MANIFEST, PROFESSOR_VIEW, STUDENT_VIEW } = await import('./helpers/builder-fixtures')
+const { FLASHCARDS_MANIFEST, PROFESSOR_VIEW, STUDENT_VIEW, scriptedModel } = await import('./helpers/builder-fixtures')
 
 const SECTION = crypto.randomUUID()
 const PROFESSOR = { userId: crypto.randomUUID(), sectionId: SECTION, institutionId: crypto.randomUUID() }
 const PROJECT = crypto.randomUUID()
 const RUN = crypto.randomUUID()
-const project = { id: PROJECT, institutionId: PROFESSOR.institutionId, ownerId: PROFESSOR.userId, slug: 'tool-abc12345', name: 'Untitled tool', status: 'active', draftHeadHash: null as string | null, draftRev: 0, updatedAt: '' }
+const project = { id: PROJECT, institutionId: PROFESSOR.institutionId, ownerId: PROFESSOR.userId, slug: 'tool-abc12345', name: 'Untitled tool', status: 'active', draftHeadHash: null as string | null, draftRev: 0, updatedAt: '', materialSources: [] }
 const run = (over: Record<string, unknown> = {}) => ({
   id: RUN, projectId: PROJECT, institutionId: PROFESSOR.institutionId, ownerId: PROFESSOR.userId, sectionId: SECTION, request: 'x', status: 'running',
   phase: 'editing', errorCode: null, plan: null, work: null, pendingApproval: null, questions: [], waitingUntil: null, result: null, baseHash: null, baseRev: 0, resultHash: null,
@@ -239,8 +246,62 @@ describe('save as version (a professor action, never the builder’s)', () => {
   })
 })
 
+// Step 9: the copy guard reads the project's provenance, not just the current run's searches.
+describe('the copy guard covers every build of the project', () => {
+  const m = proposeManifest(JSON.stringify(FLASHCARDS_MANIFEST), { slug: 'tool-abc12345', current: null, published: null })
+  if (!m.ok) throw new Error('fixture')
+  const files = { 'views/student.tsx': STUDENT_VIEW, 'views/professor.tsx': PROFESSOR_VIEW }
+  const hash = snapshotHash(COMPILER_ID, m.manifest, files)
+  const snapshot = { projectId: PROJECT, hash, compiler: COMPILER_ID, manifest: m.manifest, files, studentBundle: 's', professorBundle: 'p', checkSummary: {} }
+  // The section the earlier build ran in; not the section the professor saves from.
+  const BUILD_SECTION = crypto.randomUUID()
+  const KEY = `p:${crypto.randomUUID()}:3`
+  const provenance = [{ k: KEY, s: BUILD_SECTION }]
+  // An earlier build read this scheduled page; STUDENT_VIEW's empty-state sentence copies it.
+  const source = (disclosure: 'released' | 'scheduled' | 'withheld') => ({
+    unitKey: KEY, sourceKind: 'item', moduleTitle: 'Week 7', weekNumber: 7, itemType: 'lecture', page: 3, title: 'Transformers', disclosure, opensAt: null,
+    body: "Until next week your professor hasn't added any terms for the transformer unit.",
+  })
+
+  beforeEach(() => {
+    vi.mocked(db.loadBuilderProject).mockResolvedValue({ ...project, draftHeadHash: hash, materialSources: provenance } as never)
+    vi.mocked(db.loadSnapshot).mockResolvedValue(snapshot as never)
+  })
+
+  it('Save refuses a draft that copies scheduled material an earlier build read, resolved against that build’s section', async () => {
+    vi.mocked(db.courseSources).mockResolvedValue([source('scheduled')] as never)
+    expect((await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).ok).toBe(false)
+    expect(db.insertVersion).not.toHaveBeenCalled()
+    expect(vi.mocked(db.courseSources).mock.calls).toEqual([[PROFESSOR.institutionId, BUILD_SECTION, [KEY]]])
+  })
+  it('Save refuses a copy of material hidden since, and fails closed when the material can’t be read', async () => {
+    vi.mocked(db.courseSources).mockResolvedValueOnce([source('withheld')] as never)
+    expect((await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).ok).toBe(false)
+    vi.mocked(db.courseSources).mockResolvedValueOnce(null)
+    expect((await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).ok).toBe(false)
+    expect(db.insertVersion).not.toHaveBeenCalled()
+  })
+  it('once the material has opened, Save passes and the version carries the project’s provenance', async () => {
+    vi.mocked(db.courseSources).mockResolvedValue([source('released')] as never)
+    expect((await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).ok).toBe(true)
+    expect(vi.mocked(db.insertVersion).mock.calls[0][0]).toMatchObject({ materialSources: provenance })
+  })
+  it('a follow-up build that searches nothing still fails its checks on a copy of what an earlier build read', async () => {
+    vi.mocked(db.courseSources).mockResolvedValue([source('scheduled')] as never)
+    const deps = realHarnessDeps(scriptedModel([]))
+    const data = { slug: 'tool-abc12345', published: null, publishedVersions: [], base: null, course: null, skills: null, history: [], materialSources: provenance }
+    const work = initialWork({ manifest: m.manifest, files })
+    expect(work.material.sources).toEqual([])
+    const checked = await deps.runChecks(run() as never, data, work)
+    expect(checked.passed).toBe(false)
+    expect(checked.summary.disclosure).toBe('failed')
+    expect(checked.findings.find((f) => f.check_id === 'builder.disclosure')?.file).toBe('views/student.tsx')
+    expect(vi.mocked(db.courseSources).mock.calls[0].slice(0, 2)).toEqual([PROFESSOR.institutionId, BUILD_SECTION])
+  })
+})
+
 describe('the builder can’t reach student visibility', () => {
-  const BUILDER = ['harness', 'tools', 'context-builder', 'model', 'checks', 'manifest-delta', 'instructions', 'work', 'compile', 'typecheck', 'check-worker', 'check-worker-entry']
+  const BUILDER = ['harness', 'tools', 'context-builder', 'model', 'checks', 'manifest-delta', 'instructions', 'work', 'compile', 'typecheck', 'check-worker', 'check-worker-entry', 'course-material', 'course-retriever', 'disclosure']
   it.each(BUILDER)('builder/%s imports no publication, installation, record or binding code', (name) => {
     const source = readFileSync(`src/lib/studio/builder/${name}.ts`, 'utf8')
     expect(source).not.toMatch(/from ['"](?:\.\.\/|@\/lib\/studio\/)(student-visibility|records|skill-bindings|lifecycle|publication|bridge\/registry|runtime\/frame-ticket)['"]/)

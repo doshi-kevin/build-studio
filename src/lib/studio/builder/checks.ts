@@ -5,7 +5,8 @@
  *   1. compile both views          (check worker)
  *   2. typecheck both views        (check worker, same call)
  *   3. Stage 1 static checks       (the validator's pure engine, on the assembled artifact)
- *   4. builder checks              manifest correctness, purpose wording, student names
+ *   4. builder checks              manifest correctness, purpose wording, student names, and
+ *                                  no copy of course material students can't see yet
  *
  * Stage 1 runs exactly as it does at publish except for two checks: `artifact.hash`
  * (the harness supplies the hash, so it always matches) and `edtech.purpose` (the AI
@@ -25,6 +26,7 @@ import { quote } from '../validator/scan'
 import { runStaticChecks, type CheckStatus } from '../validator/static-checks'
 import { findRosterFullName } from '@/lib/validations/memory'
 import type { SourceDiagnostic } from './compile'
+import { findCopies, type GuardSource } from './disclosure'
 import { AVAILABLE_CAPABILITIES } from './manifest-delta'
 import { PLUGIN_PATHS, type PluginPath } from './paths'
 import { workHash } from './snapshot'
@@ -36,6 +38,7 @@ export type BuilderCheckId =
   | 'builder.typecheck'
   | 'builder.purpose_text'
   | 'builder.roster'
+  | 'builder.disclosure'
 
 export type RepairCategory =
   | 'syntax' | 'types' | 'module_shape' | 'kit_usage' | 'styling' | 'required_states' | 'bridge_declaration'
@@ -65,6 +68,10 @@ const GUIDE: Record<BuilderCheckId, { category: RepairCategory; hint: string }> 
   'builder.typecheck': { category: 'types', hint: 'Use only names and props the kit declares; call get_kit_reference to check a component.' },
   'builder.purpose_text': { category: 'purpose_wording', hint: 'Reword the manifest name, description or purpose summary plainly, as a description for a professor.' },
   'builder.roster': { category: 'student_data', hint: 'Remove the student’s name. Tools never contain student names; data comes from records at run time.' },
+  'builder.disclosure': {
+    category: 'student_data',
+    hint: 'Students can’t see this course material yet. Use it for the tool’s structure and topics, not its wording, or ask the professor to make it visible first.',
+  },
   'artifact.size': { category: 'size', hint: 'Make the view smaller.' },
   'artifact.entries': { category: 'module_shape', hint: 'Both views must exist and export a default function.' },
   'artifact.vendor_free': { category: 'module_shape', hint: 'Import React hooks and kit components; never include their code.' },
@@ -96,6 +103,7 @@ const BUILDER_SEVERITY: Record<`builder.${string}` & BuilderCheckId, CheckSeveri
   'builder.typecheck': 'reliability',
   'builder.purpose_text': 'policy',
   'builder.roster': 'security',
+  'builder.disclosure': 'security',
 }
 
 /** Stage 1 checks the draft gate requires: all required static checks but the two above. */
@@ -112,6 +120,8 @@ export interface CheckSummary {
   manifest: GateStatus
   purpose_text: GateStatus
   roster: GateStatus | 'unavailable'
+  /** Copies of course material students can't see yet. */
+  disclosure: GateStatus | 'unavailable'
   static: Partial<Record<StaticBuilderId, CheckStatus | 'not_run'>>
   /** Blocking findings by check and file, at most 10. */
   unresolved: { check_id: BuilderCheckId; file: string | null; count: number }[]
@@ -143,6 +153,12 @@ export interface DraftCheckDeps {
   rosterFullNames: readonly string[] | null
   /** The latest published version's manifest; its collections are frozen. */
   published: StudioManifest | null
+  /**
+   * The current text and disclosure class of every course source the project's builds read
+   * (studio_course_sources). Empty when they read none. Null: they couldn't be read, so the
+   * check fails closed.
+   */
+  disclosureSources: readonly GuardSource[] | null
 }
 
 const SEVERITY_ORDER: Record<CheckSeverity, number> = { security: 0, reliability: 1, policy: 2, quality: 3 }
@@ -192,6 +208,7 @@ export async function runDraftChecks(
     manifest: 'not_run',
     purpose_text: 'not_run',
     roster: 'not_run',
+    disclosure: 'not_run',
     static: {},
     unresolved: [],
     warnings: [],
@@ -238,6 +255,19 @@ export async function runDraftChecks(
     summary.roster = hit ? 'failed' : 'passed'
     // The name itself is never quoted: it would land in the prompt and the trajectory.
     if (hit) findings.push(finding('builder.roster', { file: hit.file, line: null, message: 'The tool contains a student’s full name.', detail: null }))
+  }
+
+  // Builder: no copy of course material students can't see yet. Fails closed. The finding
+  // names the source by its label, never by its text.
+  if (deps.disclosureSources === null) {
+    summary.disclosure = 'unavailable'
+    findings.push(finding('builder.disclosure', { file: null, line: null, message: 'The course-material check couldn’t run. Don’t change the code for it; checking again retries it.', detail: null }))
+  } else {
+    const { copies } = findCopies(work, deps.disclosureSources)
+    summary.disclosure = copies.length === 0 ? 'passed' : 'failed'
+    for (const c of copies.slice(0, 5)) {
+      findings.push(finding('builder.disclosure', { file: c.file, line: null, message: 'The tool copies course material students can’t see yet.', detail: quote(c.label) }))
+    }
   }
 
   // Compile and typecheck.
@@ -295,7 +325,8 @@ export async function runDraftChecks(
     summary.typecheck === 'passed' &&
     summary.manifest === 'passed' &&
     summary.purpose_text === 'passed' &&
-    summary.roster === 'passed'
+    summary.roster === 'passed' &&
+    summary.disclosure === 'passed'
   summary.passed = passed
 
   const group = (list: BuilderFinding[]) => {

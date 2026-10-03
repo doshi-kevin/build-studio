@@ -208,6 +208,24 @@ export const STUDIO_MEMORY_CONTEXT_MAX_BYTES = 2048
 export const STUDIO_MEMORY_PROPOSAL_TTL_MS = STUDIO_BUILDER_WAITING_TTL_MS
 export const STUDIO_MEMORY_EXPIRE_LIMIT = 100
 
+// ── Course material (Step 9, docs/reference/studio-agent-harness.md, "Course material") ──
+// Every cap is in UTF-8 bytes, measured after labels. One search's result to the model is
+// held to STUDIO_BUILDER_TOOL_RESULT_MAX_BYTES.
+
+/** search_course_material calls one run may make. */
+export const STUDIO_BUILDER_MAX_SEARCHES = 3
+/** Excerpts one search returns, at most. */
+export const STUDIO_COURSE_RESULTS_MAX = 6
+export const STUDIO_COURSE_EXCERPT_MAX_BYTES = 1200
+/** The course-material block one prompt carries. The oldest whole search goes first. */
+export const STUDIO_COURSE_BLOCK_MAX_BYTES = 12 * 1024
+export const STUDIO_COURSE_QUERY_MAX_BYTES = 200
+export const STUDIO_COURSE_LABEL_MAX_CHARS = 80
+/** How long the harness waits for a search or a re-read before carrying on without it. */
+export const STUDIO_COURSE_TIMEOUT_MS = 3_000
+/** Unopened source keys a run or a project keeps (studio_material_prune keeps the newest 96 too). */
+export const STUDIO_MATERIAL_SOURCES_MAX = 96
+
 /** Progress polling, and the most trajectory rows one poll returns. */
 export const STUDIO_BUILDER_PROGRESS_POLL_MS = 1_500
 export const STUDIO_BUILDER_PROGRESS_EVENTS_MAX = 50

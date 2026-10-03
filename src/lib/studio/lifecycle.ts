@@ -29,6 +29,8 @@ import { parseManifest, type StudioManifest } from './manifest'
 import { runDraftChecks } from './builder/checks'
 import { runWorkerCheck } from './builder/check-worker'
 import { COMPILER_ID } from './builder/compile'
+import type { MaterialSourceEntry } from './builder/course-material'
+import { loadGuardSources } from './builder/course-retriever'
 import type { PluginPath } from './builder/paths'
 import { snapshotHash } from './builder/snapshot'
 import { skillBindingIssues } from './skill-bindings'
@@ -150,6 +152,7 @@ async function insertAndValidate(
   studentBundle: string,
   professorBundle: string,
   sourceSnapshotHash: string | null,
+  material: { sources: MaterialSourceEntry[]; incomplete: boolean } = { sources: [], incomplete: false },
 ): Promise<LifecycleResult<string>> {
   const published = await db.insertVersion({
     // The verdict binds to exactly this content (validator/artifact.ts).
@@ -165,6 +168,8 @@ async function insertAndValidate(
     bundleSha256: createHash('sha256').update(studentBundle).update('\0').update(professorBundle).digest('hex'),
     publishedBy: professor.userId,
     sourceSnapshotHash,
+    materialSources: material.sources,
+    materialIncomplete: material.incomplete,
   })
   if (!published.ok) return { ok: false, error: explain(published.error) }
   audit(professor, 'studio.version.published', { projectId: project.id, versionId: published.value })
@@ -217,9 +222,13 @@ export async function publishDraft(input: z.input<typeof publishDraftInput>): Pr
 
   const latest = await db.loadLatestProjectManifest(project.id)
   const published = latest ? parseManifest(latest.manifest) : null
+  // The copy guard again, against everything the project's builds read, as the material
+  // stands now. The same provenance goes onto the version for the release review.
+  const roster = await db.loadOwnerRosterFullNames(professor.userId)
+  const disclosureSources = roster === null ? null : await loadGuardSources(project.institutionId, project.materialSources, roster, professor.userId)
   const gate = await runDraftChecks(
     { manifest: stamped.manifest, files },
-    { workerCheck: runWorkerCheck, rosterFullNames: await db.loadOwnerRosterFullNames(professor.userId), published: published?.ok ? published.manifest : null },
+    { workerCheck: runWorkerCheck, rosterFullNames: roster, published: published?.ok ? published.manifest : null, disclosureSources },
   ).catch(() => null)
   if (!gate) return { ok: false, error: 'The checks couldn’t run right now. Try again in a moment.' }
   if (!gate.passed || !gate.bundles) {
@@ -229,7 +238,7 @@ export async function publishDraft(input: z.input<typeof publishDraftInput>): Pr
   const version = nextVersion(latest?.version ?? null)
   const manifest = { ...stamped.manifest, version }
   const source = { ...files, 'plugin.manifest.json': canonicalJson(manifest) }
-  const saved = await insertAndValidate(professor, project, manifest, source, gate.bundles.student, gate.bundles.professor, snapshot.hash)
+  const saved = await insertAndValidate(professor, project, manifest, source, gate.bundles.student, gate.bundles.professor, snapshot.hash, { sources: project.materialSources, incomplete: project.materialIncomplete })
   if (!saved.ok) return saved
   audit(professor, 'studio.draft.saved', { projectId: project.id, versionId: saved.value })
   return { ok: true, value: { versionId: saved.value, version } }

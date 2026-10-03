@@ -78,6 +78,9 @@ const LABELS: Record<string, string | null> = {
   'check.cached': null,
   'run.finishing': 'Wrapping up',
   'memory.proposed': null,
+  'material.searched': 'Reading your course material',
+  'material.unavailable': 'Couldn’t open your course material, so I’m building without it',
+  'material.reclassified': null,
   'step.refused': 'That step didn’t work, so I’m trying another way',
   'step.interrupted': null,
   'run.preview_ready': 'Preview ready',
@@ -297,6 +300,8 @@ export interface ProgressRead {
     passed: boolean
     unresolved: { check: string; file: string | null; count: number }[]
     filesChanged: string[]
+    /** Course material the builder read, by label. `opensAt` (ISO) is set when it opens to students later. */
+    materialRead: { label: string; visible: boolean; opensAt: string | null }[]
   }
   /** Saved decisions: how many the last prompt carried, and the proposals waiting for a yes or no. */
   memory: { applied: number; proposals: MemoryProposalView[] }
@@ -359,7 +364,8 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
     if (!template) continue
     const path = typeof s.argsSummary.path === 'string' ? s.argsSummary.path : ''
     const view = path === 'views/student.tsx' ? 'student' : path === 'views/professor.tsx' ? 'professor' : 'tool'
-    events.push({ seq: s.seq, label: template.replace('{view}', view), outcome: s.status })
+    // An unavailable course search is a step that didn't work, whatever its stored status.
+    events.push({ seq: s.seq, label: template.replace('{view}', view), outcome: s.label === 'material.unavailable' ? 'refused' : s.status })
   }
 
   const proposals = MEMORY_CARD_STATUSES.includes(run.status) ? ((await db.listRunMemoryProposals(run.id, userId)) ?? []) : []
@@ -397,6 +403,7 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
           passed: result.passed === true,
           unresolved: (checks?.unresolved ?? []).map((u) => ({ check: CHECK_COPY[u.check_id] ?? 'A check didn’t pass', file: u.file, count: u.count })),
           filesChanged: files.filter((f) => f.changed).map((f) => f.path),
+          materialRead: materialReadOf(result.material_read),
         }
       : null,
     memory: {
@@ -413,6 +420,16 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
     events,
     lastSeq: steps.at(-1)?.seq ?? afterSeq,
   }
+}
+
+/** The result's material_read list, as the ending card shows it. Labels only; at most 8. */
+function materialReadOf(raw: unknown): { label: string; visible: boolean; opensAt: string | null }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.slice(0, 8).flatMap((m) => {
+    const e = m as { label?: unknown; visible?: unknown; opens_at?: unknown }
+    if (typeof e.label !== 'string') return []
+    return [{ label: e.label, visible: e.visible === true, opensAt: typeof e.opens_at === 'string' ? e.opens_at : null }]
+  })
 }
 
 export interface DraftSummary {

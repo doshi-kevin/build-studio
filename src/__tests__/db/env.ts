@@ -74,11 +74,24 @@ export function dbEnv(): DbEnv {
     )
   }
 
+  // Suites also connect to Postgres directly with this URL, so it gets the same rule: a
+  // production SUPABASE_DB_URL left in a shell must never receive raw SQL.
+  const pgUrl = vars.DB_URL || 'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
+  let pgHost = ''
+  try {
+    pgHost = new URL(pgUrl).hostname
+  } catch {
+    abort('the database URL is not a URL')
+  }
+  if (pgHost !== '127.0.0.1' && pgHost !== 'localhost') {
+    abort(`database host ${pgHost} is not local. This suite must never touch a shared or production database.`)
+  }
+
   cached = {
     url: vars.API_URL,
     anonKey: vars.ANON_KEY,
     serviceKey: vars.SERVICE_ROLE_KEY,
-    pgUrl: vars.DB_URL || 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
+    pgUrl,
   }
   return cached
 }

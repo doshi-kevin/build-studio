@@ -1,6 +1,7 @@
 /**
- * The builder's tool registry: the ten tools, and nothing else, that the model may call
- * (approved decision 1.6, plus propose_memory in Step 8B). Each entry defines its name,
+ * The builder's tool registry: the eleven tools, and nothing else, that the model may call
+ * (approved decision 1.6, plus propose_memory in Step 8B and search_course_material in
+ * Step 9). Each entry defines its name,
  * schema, what it may change and what is recorded about it. No tool takes an id, a path
  * outside the two views, or any scope: every tool is a closure over the run. The one
  * thing that looks like a reference, propose_memory's `replaces`, is a short label the
@@ -24,11 +25,14 @@ import {
   STUDIO_BUILDER_MAX_CHECK_RUNS,
   STUDIO_BUILDER_MAX_QUESTIONS,
   STUDIO_BUILDER_MAX_REPAIR_ROUNDS,
+  STUDIO_BUILDER_MAX_SEARCHES,
   STUDIO_BUILDER_MAX_WRITES,
   STUDIO_BUILDER_OPEN_QUESTIONS_MAX,
   STUDIO_BUILDER_QUESTION_MAX_CHARS,
   STUDIO_BUILDER_SAME_FINDING_LIMIT,
   STUDIO_BUILDER_SUMMARY_MAX_CHARS,
+  STUDIO_COURSE_QUERY_MAX_BYTES,
+  STUDIO_MATERIAL_SOURCES_MAX,
   STUDIO_MEMORY_EVIDENCE_MAX_CHARS,
   STUDIO_MEMORY_EVIDENCE_MIN_CHARS,
   STUDIO_MEMORY_MAX_ACTIVE,
@@ -38,6 +42,8 @@ import {
 import type { StudioManifest } from '../manifest'
 import { blockingKeys, type DraftCheckResult } from './checks'
 import { CheckFault, CheckTimeout } from './check-worker-errors'
+import { cleanQuery, FOCUS_PATTERN, withSources, type MaterialFocus } from './course-material'
+import type { SearchOutcome } from './course-retriever'
 import { evidenceProblem, isSlotOf, MEMORY_KINDS, MEMORY_SLOT_KEYS, MEMORY_SLOTS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemorySlot, type MemoryTopic } from './memory'
 import { deltaHash, proposeManifest, type DeltaItem } from './manifest-delta'
 import type { ModelToolDecl } from './model'
@@ -47,14 +53,14 @@ import { planSchema, type Plan, type ValidationCode, type Work } from './work'
 
 export const TOOL_NAMES = [
   'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change',
-  'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'finish',
+  'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'finish',
 ] as const
 export type ToolName = (typeof TOOL_NAMES)[number]
 
 export type RefusalCode =
   | 'unknown_tool' | 'invalid_args' | 'sdk_invalid' | 'no_tool_call' | 'turn_timeout' | 'turn_truncated' | 'turn_call_limit'
   | 'plan_required' | 'file_missing' | 'not_in_working_set' | 'match_count' | 'file_too_large' | 'bad_characters'
-  | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit'
+  | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit' | 'search_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
   | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
 
@@ -80,6 +86,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   bytes_limit: `This build has written its ${STUDIO_BUILDER_MAX_BYTES_WRITTEN} bytes.`,
   check_limit: `This build has used its ${STUDIO_BUILDER_MAX_CHECK_RUNS} check runs.`,
   question_limit: `You have asked ${STUDIO_BUILDER_MAX_QUESTIONS} questions. Decide, or finish blocked.`,
+  search_limit: `This build has used its ${STUDIO_BUILDER_MAX_SEARCHES} course searches. Work with what they found, or ask the professor.`,
   manifest_invalid: 'Fix the manifest issues listed and propose it again.',
   capability_unavailable: 'That capability isn’t available to tools yet. Leave it out, or finish blocked.',
   collection_frozen: 'A published collection can’t change. Propose a new collection, or finish blocked.',
@@ -98,6 +105,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
 export type LabelCode =
   | 'plan.submitted' | 'file.read' | 'kit.read' | 'file.written' | 'file.edited' | 'manifest.applied'
   | 'approval.waiting' | 'check.passed' | 'check.failed' | 'check.cached' | 'question.asked' | 'memory.proposed' | 'run.finishing'
+  | 'material.searched' | 'material.unavailable'
   | 'step.refused' | 'step.interrupted'
 
 export interface ToolState {
@@ -116,6 +124,8 @@ export interface ToolState {
     proposals: number
   }
   runChecks: (work: Work) => Promise<DraftCheckResult>
+  /** Searches the run's own course, scoped by the harness from the run row. */
+  searchMaterial: (query: string, focus: MaterialFocus | null) => Promise<SearchOutcome>
 }
 
 export type Delta = {
@@ -209,7 +219,10 @@ function withFile(work: Work, p: PluginPath, text: string): Work {
 export async function checkStep(state: ToolState, args: Summary): Promise<ToolOutcome & { cached?: boolean }> {
   const hash = workHash(state.work.manifest, state.work.files)
   const last = state.work.last_check
-  if (last && last.work_hash === hash) {
+  // A result whose roster or course-material check couldn't run is never reused: checking
+  // again is how a transient read failure clears.
+  const readFailed = last?.summary.roster === 'unavailable' || last?.summary.disclosure === 'unavailable'
+  if (last && last.work_hash === hash && !readFailed) {
     return { kind: 'done', label: 'check.cached', args, result: { cached: true, passed: last.passed, blocking: last.findings.filter((f) => f.required).length }, delta: {}, cached: true }
   }
   if (state.counters.checkRuns >= STUDIO_BUILDER_MAX_CHECK_RUNS) return refused('check_limit', args)
@@ -473,6 +486,58 @@ const TOOL_LIST: ToolSpec[] = [
     },
   },
   {
+    name: 'search_course_material',
+    kind: 'read',
+    description:
+      'Search this course’s own material (lectures, readings, notes, the syllabus, assignment descriptions) when the request depends on what the course teaches, such as "a practice tool for this week’s lecture on transformers". Send 1 to 4 topic keywords as query. Say when only through focus: this_week, next_week or week:N, never in query. The excerpts appear in the next turn as data, each labelled with its source and whether students can see it. Use text marked "not visible to students yet" for structure and topics only, never copy its wording into the tool. Don’t search for requests about the tool’s layout, wording or behaviour.',
+    schema: z.strictObject({
+      query: z.string().min(1).max(STUDIO_COURSE_QUERY_MAX_BYTES),
+      focus: z.string().regex(FOCUS_PATTERN).optional(),
+    }),
+    execute: async (state, args: { query: string; focus?: string }) => {
+      const focus = (args.focus ?? null) as MaterialFocus | null
+      const summary: Summary = { query_chars: args.query.length, query_sha16: sha16(args.query), focus }
+      const chars = characterProblem(args.query)
+      if (chars) return refused('bad_characters', summary, [chars])
+      if (utf8Bytes(args.query) > STUDIO_COURSE_QUERY_MAX_BYTES) return refused('invalid_args', summary, ['query: too long'])
+      const material = state.work.material
+      // Every call that reaches the database counts, successful or not.
+      if (material.attempts >= STUDIO_BUILDER_MAX_SEARCHES) return refused('search_limit', summary)
+      // Retrieval is optional context: an outage is a result the model reads, never an error
+      // that counts toward ending the run. After one, the run doesn't search again.
+      if (material.unavailable) return { kind: 'done', label: 'material.unavailable', args: summary, result: { unavailable: true }, delta: {} }
+      const query = cleanQuery(args.query)
+      // Only time words: nothing to search for, and nothing spent.
+      if (!query) return { kind: 'done', label: 'material.searched', args: summary, result: { results: 0, scheduled: 0, withheld: 0, empty_query: true }, delta: {} }
+      const outcome = await state.searchMaterial(query, focus)
+      if (!outcome.ok) {
+        return {
+          kind: 'done',
+          label: 'material.unavailable',
+          args: summary,
+          result: { unavailable: true },
+          work: { ...state.work, material: { ...material, attempts: material.attempts + 1, unavailable: true } },
+          delta: {},
+        }
+      }
+      const sources = withSources(material.sources, outcome.scheduled, STUDIO_MATERIAL_SOURCES_MAX)
+      const sourcesChanged = sources.length !== material.sources.length || sources.some((k, i) => k !== material.sources[i])
+      return {
+        kind: 'done',
+        label: 'material.searched',
+        args: summary,
+        result: { results: outcome.keys.length, scheduled: outcome.scheduled.length, withheld: outcome.withheld },
+        work: {
+          ...state.work,
+          // A passing check cached before these sources were seen no longer proves the copy guard.
+          last_check: sourcesChanged ? null : state.work.last_check,
+          material: { ...material, attempts: material.attempts + 1, searches: [...material.searches, { query, focus, keys: outcome.keys }], sources },
+        },
+        delta: {},
+      }
+    },
+  },
+  {
     name: 'finish',
     kind: 'control',
     description:
@@ -500,7 +565,7 @@ export function isToolName(name: string): name is ToolName {
   return (TOOL_NAMES as readonly string[]).includes(name)
 }
 
-/** What the model is told exists: the same ten tools on every turn. */
+/** What the model is told exists: the same eleven tools on every turn. */
 export function toolDeclarations(): ModelToolDecl[] {
   return TOOL_NAMES.map((name) => ({ name, description: TOOLS[name].description, inputSchema: TOOLS[name].schema }))
 }
