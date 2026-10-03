@@ -48,7 +48,13 @@ export interface RenderedImage {
   bytes: Uint8Array
 }
 
-export type RenderOutcome = { ok: true; images: RenderedImage[] } | { ok: false; reason: 'unavailable' | 'timeout' | 'failed' }
+/** A view that never reached a running state: its screenshot label and why the frame stopped. */
+export interface RenderFailure {
+  label: string
+  reason: string
+}
+
+export type RenderOutcome = { ok: true; images: RenderedImage[]; failures: RenderFailure[] } | { ok: false; reason: 'unavailable' | 'timeout' | 'failed' }
 
 export interface RenderInput {
   manifest: StudioManifest
@@ -87,6 +93,20 @@ export function parseRenderOutput(stdout: string): RenderedImage[] | null {
     images.push({ label, mediaType: 'image/jpeg', bytes })
   }
   return images
+}
+
+/** Views the child says didn't run, with whitelisted labels and reasons only: it is untrusted output. */
+export function parseRenderFailures(stdout: string): RenderFailure[] {
+  try {
+    const list = (JSON.parse(stdout) as { failures?: unknown }).failures
+    if (!Array.isArray(list)) return []
+    return list
+      .filter((f): f is RenderFailure => !!f && typeof f === 'object' && LABEL.test(String((f as RenderFailure).label)) && /^[a-z_-]{1,30}$/.test(String((f as RenderFailure).reason)))
+      .slice(0, STUDIO_BUILDER_REVIEW_IMAGES_MAX)
+      .map((f) => ({ label: f.label, reason: f.reason }))
+  } catch {
+    return []
+  }
 }
 
 export function renderPreview(input: RenderInput, env: Record<string, string | undefined> = process.env): Promise<RenderOutcome> {
@@ -134,7 +154,8 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
         return finish({ ok: false, reason: 'failed' })
       }
       const images = parseRenderOutput(out)
-      finish(images && images.length > 0 ? { ok: true, images } : { ok: false, reason: 'failed' })
+      const failures = parseRenderFailures(out)
+      finish(images && (images.length > 0 || failures.length > 0) ? { ok: true, images, failures } : { ok: false, reason: 'failed' })
     })
     child.on('error', () => finish({ ok: false, reason: 'failed' }))
     child.stdin.on('error', () => {

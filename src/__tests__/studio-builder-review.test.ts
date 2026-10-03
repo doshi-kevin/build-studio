@@ -52,7 +52,7 @@ function harness(script: ScriptedTurn[], setup: { render?: HarnessDeps['renderPr
   const mem = createMemoryStore(run)
   const model = scriptedModel(script)
   const base: SliceData['base'] = { manifest: stamped(), files: { ...views } }
-  const renderPreview = vi.fn(setup.render ?? (async (): Promise<RenderOutcome> => ({ ok: true, images: [jpeg('Professor view, desktop'), jpeg('Student view, phone')] })))
+  const renderPreview = vi.fn(setup.render ?? (async (): Promise<RenderOutcome> => ({ ok: true, images: [jpeg('Professor view, desktop'), jpeg('Student view, phone')], failures: [] })))
   const deps: HarnessDeps = {
     store: mem.store,
     model,
@@ -157,6 +157,7 @@ describe('the design review', () => {
       render: async () => ({
         ok: true,
         images: [jpeg('a'), jpeg('huge', STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES + 1), jpeg('b'), jpeg('c'), jpeg('d'), jpeg('e')],
+        failures: [],
       }),
     })
     await h.slice()
@@ -195,6 +196,29 @@ describe('the design review', () => {
     h.mem.state.run.cancelRequested = true
     await done
     expect(h.mem.state.run.status).toBe('cancelled')
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('a view that crashes when rendered goes back to the builder without a model call, and is never committed', async () => {
+    const crashing = async (): Promise<RenderOutcome> => ({ ok: true, images: [jpeg('student-desktop')], failures: [{ label: 'professor-desktop', reason: 'crashed' }] })
+    const h = harness(
+      [
+        readFiles,
+        { calls: [tweak(1), call('run_checks')] },
+        { calls: [finish()] },
+        // Back in the builder with the crash as a finding, twice more; then the crash survives the last round.
+        { calls: [tweak(2), call('run_checks')] },
+        { calls: [finish()] },
+        { calls: [call('edit_file', { path: 'views/professor.tsx', old_text: 'Add one card', new_text: 'New card' }), call('run_checks')] },
+        { calls: [finish()] },
+      ],
+      { render: crashing },
+    )
+    await h.slice()
+    // The review model was never called: a crash is a finding on its own.
+    expect(h.reviews()).toHaveLength(0)
+    expect(h.model.prompts[3].prompt).toMatch(/professor view crashed or didn’t start[\s\S]*hook/)
+    expect(h.mem.state.run.status).toBe('blocked')
     expect(h.mem.state.snapshots.size).toBe(0)
   })
 

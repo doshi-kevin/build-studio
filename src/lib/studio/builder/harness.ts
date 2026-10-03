@@ -77,7 +77,7 @@ import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome
 import { professorTextsOf, type ProjectMemory } from './memory'
 import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
 import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
-import { buildReviewPrompt, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
+import { buildReviewPrompt, crashFindings, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
 import { snapshotHash, workHash } from './snapshot'
 import {
@@ -907,7 +907,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   ): Promise<Work | 'improve' | 'stop'> {
     const files = work.files as Record<PluginPath, string>
     const current = workHash(work.manifest, files, work.sample)
-    if (work.review.rounds >= STUDIO_BUILDER_MAX_REVIEW_ROUNDS || work.review.last?.work_hash === current) return work
+    if (work.review.last?.work_hash === current) return work
+    const exhausted = work.review.rounds >= STUDIO_BUILDER_MAX_REVIEW_ROUNDS
     const round = work.review.rounds + 1
 
     const stopIf = async (r: Outcome): Promise<boolean> => {
@@ -930,11 +931,14 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       return flags.fenceLost ? 'stop' : null
     }
 
-    // Room for this call and one more turn to act on it, under every budget.
+    // Room for this call and one more turn to act on it, under every budget. After the last review
+    // round only the render runs (it costs no model call), to refuse a draft that crashes.
     const latest = (await deps.store.loadRun(runId)) ?? run
     const c = latest.counters
-    if (c.costUsd + 2 * WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD || c.modelTurns + 2 > STUDIO_BUILDER_MAX_MODEL_TURNS) return skip('budget')
-    if ((await deps.gate(latest)) !== null) return skip('gate')
+    if (!exhausted) {
+      if (c.costUsd + 2 * WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD || c.modelTurns + 2 > STUDIO_BUILDER_MAX_MODEL_TURNS) return skip('budget')
+      if ((await deps.gate(latest)) !== null) return skip('gate')
+    }
     if (await cancelled()) return 'stop'
 
     // ── Render ──
@@ -950,7 +954,24 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
           .slice(0, STUDIO_BUILDER_REVIEW_IMAGES_MAX)
           .map((img) => ({ label: img.label, mediaType: img.mediaType, bytes: img.bytes }))
       : []
-    if (await stopIf(await system('render', 'preview.rendered', { images: images.length, renderer: render.ok ? 'ok' : render.reason }, 'reviewing'))) return 'stop'
+    const failures = render.ok ? render.failures : []
+    if (await stopIf(await system('render', 'preview.rendered', { images: images.length, failed_views: failures.length, renderer: render.ok ? 'ok' : render.reason }, 'reviewing'))) return 'stop'
+
+    // A view that crashes when rendered never reaches a professor, however the review would go.
+    if (failures.length > 0) {
+      if (exhausted) {
+        await end(run, work, plan, 'blocked', 'repair_rounds')
+        return 'stop'
+      }
+      const crash: ReviewRecord = { round, work_hash: current, rendered: true, verdict: 'improve', unmet_requirements: [], major_issues: crashFindings(failures), minor_issues: [] }
+      const r = await deps.store.apply({
+        runId, token, step: step('tool', id, 'done', 'review.changes', { tool: 'finish', args: { call: id, round }, result: { call: id, unmet: 0, major: crash.major_issues.length, minor: 0, rendered: true, crashed: true } }),
+        expectedWorkRev: work.work_rev, work: { ...work, review: { rounds: round, last: crash } } as unknown as Record<string, unknown>, plan: null, phase: 'improving',
+        delta: { tool_calls: 1, error: false }, caps: CAPS, activeMs: takeActive(),
+      })
+      return (await stopIf(r)) ? 'stop' : 'improve'
+    }
+    if (exhausted) return work
 
     // ── One review call ──
     const prompt = buildReviewPrompt({ nonce: nonce(), request: run.request ?? '', plan, manifest: work.manifest!, files, sample: work.sample, round, images: images.map((i) => i.label) })

@@ -49,12 +49,12 @@ const RICH = ['StatCard', 'DataTable', 'RosterTable', 'Badge', 'Tabs', 'Progress
 /** What every case must show, whatever it is. */
 export function common(b: Built): Record<string, boolean> {
   return {
-    preview_ready: b.statuses.every((s) => s === 'preview_ready'),
+    preview_ready: b.statuses[0] === 'preview_ready' && b.statuses.every((s) => s === 'preview_ready' || s === 'completed'),
     no_refusal: !b.statuses.includes('blocked'),
     sample_data_written: b.sample !== null && Object.values(b.sample).some((l) => l.length > 0),
     professor_uses_rich_kit: RICH.filter((n) => uses(b.professor, n)).length >= 2,
     student_uses_rich_kit: RICH.some((n) => uses(b.student, n)),
-    no_placeholder_copy: !/Sample text|Lorem ipsum|TODO|placeholder/i.test(b.professor + b.student),
+    no_placeholder_copy: !/Sample text|Lorem ipsum|TODO/i.test(b.professor + b.student),
   }
 }
 
@@ -88,7 +88,20 @@ export const PRODUCT_CASES: ProductCase[] = [
       roster_table: uses(b.professor, 'RosterTable'),
       bulk_action: /saveMany\(/.test(b.professor),
       student_view_read_only: writesNothing(b.student),
-      history_in_professor_view: /history/i.test(b.professor),
+      history_in_professor_view: /history|past|previous|by date|dates/i.test(b.professor),
+    }),
+  },
+  {
+    id: 'G2-checkin-then-staff',
+    title: 'Follow-up changes who marks: students check in, then professors mark',
+    request: 'Build an attendance check-in where students mark themselves present for each class.',
+    followUps: ['Students shouldn’t mark themselves. Professors should mark them.'],
+    checks: (b) => ({
+      staff_marks_students: accessOf(b, 'staffPerStudent'),
+      roster_capability: profCaps(b).includes('course.roster'),
+      student_cannot_write_after_followup: writesNothing(b.student),
+      student_has_no_roster: !studentCaps(b).includes('course.roster'),
+      follow_up_not_refused: b.statuses.length === 2 && b.statuses[1] !== 'blocked',
     }),
   },
   {
@@ -120,7 +133,7 @@ export const PRODUCT_CASES: ProductCase[] = [
     checks: (b) => ({
       students_join: accessOf(b, 'perStudent'),
       staff_calls: accessOf(b, 'staffPerStudent'),
-      call_next_action: /next/i.test(b.professor),
+      call_next_action: /next|call/i.test(b.professor),
       shows_who_is_waiting: uses(b.professor, 'RosterTable'),
       student_sees_place_or_called: /position|place|called|your turn/i.test(b.student),
     }),

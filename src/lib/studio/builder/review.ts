@@ -138,3 +138,13 @@ export function reviewFeedback(review: ReviewRecord): string {
     ...list('Minor issues (fix when cheap)', review.minor_issues),
   ].join('\n')
 }
+
+/** A view that crashed or never started when rendered is a major issue no matter what the model
+ * thinks of the code: the harness records it as a review finding without a model call. */
+export function crashFindings(failures: readonly { label: string; reason: string }[]): string[] {
+  const views = [...new Set(failures.map((f) => (f.label.startsWith('professor') ? 'professor' : 'student')))]
+  return views.map(
+    (v) =>
+      `The ${v} view crashed or didn’t start when it was rendered, so people would see an error. The usual cause is calling a hook (useState, useMemo, useRecords, useRoster, useRequest) after an early return: call every hook at the top of the component, before any return, and also check for reads of undefined data.`,
+  )
+}

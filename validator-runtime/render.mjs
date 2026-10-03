@@ -62,6 +62,7 @@ async function render() {
   const browser = await chromium.launch({ chromiumSandbox: true })
   const killer = setTimeout(() => browser.close().catch(() => {}), TIMEOUT_MS)
   const images = []
+  const failures = []
   try {
     for (const shot of SHOTS) {
       const s = await openScenario(browser, servers, artifact, shot.view, 'normal', { width: shot.width, height: VIEWPORT_HEIGHT }, {
@@ -70,14 +71,20 @@ async function render() {
       })
       try {
         const ready = await waitFor(async () => (await s.snapshot())?.status === 'ready', 10_000)
-        if (!ready) continue
+        if (!ready) {
+          failures.push({ label: shot.label, reason: (await s.snapshot())?.reason ?? 'not_ready' })
+          continue
+        }
         // Let the first reads land and the frame settle at its content height.
         await waitFor(async () => {
           const frame = s.frame()
           return frame ? !(await frame.evaluate(() => !!document.querySelector('[data-kit-state="loading"]'))) : false
         }, 4_000)
         await s.page.waitForTimeout(600)
-        if ((await s.snapshot())?.status !== 'ready') continue
+        if ((await s.snapshot())?.status !== 'ready') {
+          failures.push({ label: shot.label, reason: (await s.snapshot())?.reason ?? 'not_ready' })
+          continue
+        }
         const height = await s.page.evaluate(() => Math.ceil(document.getElementById('mount').getBoundingClientRect().height))
         const clip = { x: 0, y: 0, width: shot.width, height: Math.min(Math.max(height, 160), CLIP_MAX_PX) }
         for (const quality of QUALITIES) {
@@ -95,13 +102,13 @@ async function render() {
     await browser.close().catch(() => {})
     servers.close()
   }
-  return images
+  return { images, failures }
 }
 
 try {
-  const images = await render()
+  const { images, failures } = await render()
   // Exit only once the result is flushed: pipes are asynchronous on some platforms.
-  process.stdout.write(JSON.stringify({ ok: images.length > 0, images }), () => process.exit(0))
+  process.stdout.write(JSON.stringify({ ok: images.length > 0 || failures.length > 0, images, failures }), () => process.exit(0))
 } catch {
   process.exit(1)
 }
