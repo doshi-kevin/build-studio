@@ -107,6 +107,9 @@ describe('labels', () => {
     expect(labelFor(row({ itemType: 'reference', page: 0 }), [])).toBe('Week 6: Attention (reading)')
     expect(labelFor(row({ sourceKind: 'assignment', title: 'Problem set 3', weekNumber: null }), [])).toBe('Problem set 3 (assignment)')
     expect(labelFor(row({ sourceKind: 'syllabus', title: 'Week 6: Attention' }), [])).toBe('Syllabus: Week 6: Attention')
+    // A title that already names its week isn't prefixed twice; another week number still is.
+    expect(labelFor(row({ sourceKind: 'module', title: 'Week 6: Attention' }), [])).toBe('Week 6: Attention (module)')
+    expect(labelFor(row({ sourceKind: 'module', title: 'Week 60 review' }), [])).toBe('Week 6: Week 60 review (module)')
   })
 
   it('redacts a student’s name from a title, strips markup and caps the length', () => {

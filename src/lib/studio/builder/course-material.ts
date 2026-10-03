@@ -174,7 +174,9 @@ export function labelFor(row: CourseUnitRow, roster: readonly string[]): string 
       // The syllabus title already says "Week N".
       return finishLabel(`Syllabus: ${row.title || 'week'}`, roster)
   }
-  return finishLabel(`${week}${base}`, roster)
+  // A title that already starts with its week ("Week 6: Respiration") isn't prefixed twice.
+  const titled = row.weekNumber !== null && new RegExp(`^week\\s*${row.weekNumber}\\b`, 'i').test(base)
+  return finishLabel(titled ? base : `${week}${base}`, roster)
 }
 
 // Cleaned before redaction, so a name split by an invisible character is still found.
