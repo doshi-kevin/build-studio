@@ -64,6 +64,7 @@ Everything else in `.env.example` is **feature-scoped** — the app boots withou
 | `SLACK_WEBHOOK_URL`, `SLACK_FEEDBACK_WEBHOOK_URL` | Slack notifications / feedback forwarding |
 | `TEST_*` | Playwright e2e test logins |
 | `STUDIO_RUNTIME_ORIGIN`, `STUDIO_FRAME_TICKET_SECRET` | Studio plugin frames. The runtime origin must be a different site from the app: locally `http://127.0.0.1:3000` while you browse on `localhost:3000`. Unset means plugin frames are off |
+| `STUDIO_BUILDER_RENDERER`, `STUDIO_BUILDER_RENDERER_ROOT` | `local` lets the Studio builder screenshot its drafts for the design review, using Playwright's Chromium on this machine. Refused in a production build unless the database is on loopback. The root is the repository path, needed when the server runs from a standalone build. Unset means the review reads the code only |
 | `STUDIO_STUDENT_ACCESS` | `on` lets students open Studio plugins their professor has shown them. Anything else keeps students out. Off in production until the release gate in `docs/reference/studio-plugin-publication.md` passes. Studio also needs the `studio` entitlement, which no institution has by default: grant it in the super-admin plan editor |
 | `STUDIO_VALIDATOR_RUNNER` | `local` runs the Studio validator's browser checks on your machine, using Playwright's Chromium (`npx playwright install chromium`). Refused in production. Unset means the browser checks can't run, so no plugin can be shown to students |
 

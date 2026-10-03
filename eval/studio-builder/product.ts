@@ -121,6 +121,7 @@ async function main() {
         openQuestions: result?.open_questions ?? [],
         progress: mem.state.steps.map((st) => st.label),
         refused: mem.state.steps.filter((st) => st.status === 'refused').map((st) => String(st.resultSummary.reason)),
+        refusedIssues: mem.state.steps.filter((st) => st.status === 'refused').map((st) => JSON.stringify(st.resultSummary.issues ?? null).slice(0, 400)),
       })
       console.log(JSON.stringify({ id: c.id, request: request.slice(0, 60), status: s.status, costUsd: s.counters.costUsd }))
     }
