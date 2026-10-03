@@ -142,8 +142,17 @@ describe('origins', () => {
     ['a subdomain of the app', { SITE_URL: 'https://app.scholera.example', STUDIO_RUNTIME_ORIGIN: 'https://plugins.app.scholera.example' }],
     ['a parent of the app', { SITE_URL: 'https://app.scholera.example', STUDIO_RUNTIME_ORIGIN: 'https://scholera.example' }],
     ['plain http in production', { NODE_ENV: 'production', SITE_URL: 'https://app.scholera.example', STUDIO_RUNTIME_ORIGIN: 'http://plugins.example' }],
+    ['plain http on loopback in production behind a deployed app', { NODE_ENV: 'production', SITE_URL: 'https://app.scholera.example', STUDIO_RUNTIME_ORIGIN: 'http://127.0.0.1:3000' }],
+    ['plain http in production for a deployed runtime behind a local app', { NODE_ENV: 'production', SITE_URL: 'http://localhost:3000', STUDIO_RUNTIME_ORIGIN: 'http://plugins.example' }],
   ])('turns the runtime off when the runtime origin is %s', (_label, env) => {
     expect(studioOrigins(env)).toBeNull()
+  })
+
+  it('accepts plain http in a production build only when the app and the runtime are both on this machine', () => {
+    expect(studioOrigins({ NODE_ENV: 'production', SITE_URL: 'http://localhost:3000', STUDIO_RUNTIME_ORIGIN: 'http://127.0.0.1:3000' })).toEqual({
+      app: 'http://localhost:3000',
+      runtime: 'http://127.0.0.1:3000',
+    })
   })
 
   it('accepts a different host and prefers SITE_URL for the app, like getSiteUrl', () => {

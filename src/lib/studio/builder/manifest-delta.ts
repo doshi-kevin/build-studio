@@ -249,3 +249,28 @@ export function classify(
 export function deltaHash(baseWorkRev: number, base: StudioManifestV2 | null, proposed: StudioManifestV2): string {
   return contentHash({ format: 'studio-delta-v1', base_work_rev: baseWorkRev, base: base ?? null, proposed })
 }
+
+/** What a professor reads first on an approval card: a few plain sentences, one per kind of new
+ * permission, built only from the change's capabilities and access modes (fixed copy, never the
+ * model's words). The exact lines stay on the card under a disclosure. */
+export function approvalSummary(before: StudioManifest | null, after: StudioManifest): string[] {
+  const caps = (m: StudioManifest | null) => new Set(m ? [...m.views.student.capabilities, ...m.views.professor.capabilities] : [])
+  const had = caps(before)
+  const added = [...caps(after)].filter((c) => !had.has(c))
+  const newAccess = new Set(
+    Object.entries(after.collections)
+      .filter(([name, c]) => before?.collections[name]?.access !== c.access)
+      .map(([, c]) => c.access),
+  )
+  const lines: string[] = []
+  if (added.includes('course.roster')) {
+    lines.push('Use your class list, so you can work with each student by name. Names stay in Scholera: the tool’s own code only ever gets anonymous IDs.')
+  }
+  if (newAccess.has('staffPerStudent')) lines.push('Save a record about each student. Each student sees only their own; you and your TAs see everyone’s.')
+  if (newAccess.has('perStudent')) lines.push('Let each student save their own work. Each student sees only theirs; you and your TAs see everyone’s.')
+  if (newAccess.has('shared')) lines.push('Save content you and your TAs write, which everyone in the course can read.')
+  if (newAccess.has('staffOnly')) lines.push('Save notes that only you and your TAs can see.')
+  if (added.includes('course.assignments')) lines.push('Read your published assignments and their due dates.')
+  if (added.includes('course.skills')) lines.push('Read your course’s skill list.')
+  return lines
+}

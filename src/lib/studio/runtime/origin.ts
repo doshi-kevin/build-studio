@@ -42,13 +42,19 @@ export function requestHost(request: { headers: { get(name: string): string | nu
   return request.headers.get('host') || request.nextUrl.host
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]'])
+
 /** Both origins, or null when the runtime is off or misconfigured. Fails closed. */
 export function studioOrigins(env: Env = process.env): StudioOrigins | null {
   const runtime = originOf(env.STUDIO_RUNTIME_ORIGIN)
   // Same source and fallback order as getSiteUrl() (src/lib/site-url.ts).
   const app = originOf(env.SITE_URL || env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000')
   if (!runtime || !app) return null
-  if (env.NODE_ENV === 'production' && runtime.protocol !== 'https:') return null
+  // A deployed runtime origin is https. The one exception is a production build serving this
+  // machine only (the guarded local server): both origins on loopback, which nothing off the
+  // machine can reach, where a self-signed certificate would only make browsers refuse the frame.
+  const local = LOOPBACK.has(app.hostname) && LOOPBACK.has(runtime.hostname)
+  if (env.NODE_ENV === 'production' && runtime.protocol !== 'https:' && !local) return null
 
   const a = app.hostname
   const r = runtime.hostname

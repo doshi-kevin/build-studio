@@ -171,6 +171,23 @@ export interface HarnessDeps {
   heartbeatMs: number
 }
 
+/** One argument issue for the model: the path, the code and, for the codes whose message is the
+ * schema's own words (limits, our refinements), the message. Never the message of a code that can
+ * quote a model-chosen key. */
+function issueLine(i: z.core.$ZodIssue): string {
+  const at = i.path.map((p) => String(p).replace(/[^\w.-]/g, '').slice(0, 40)).join('.') || 'arguments'
+  const own = i.code === 'too_big' || i.code === 'too_small' || i.code === 'custom' || i.code === 'invalid_type' || i.code === 'invalid_value'
+  return own ? `${at}: ${i.message.replace(/\s+/g, ' ').slice(0, 160)}` : `${at}: ${i.code}`
+}
+
+const readJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
 const paramsSchema = z.strictObject({ runId: z.uuid(), sliceNo: z.number().int().min(1) })
 
 /** Budgets the harness checks before every model call, in order. */
@@ -769,14 +786,16 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
 
   /** The registry's rules, first refusal wins: SDK-invalid, unknown tool, schema, plan, then the tool. */
   async function validateAndExecute(call: { name: string; input: unknown; invalid: boolean }, work: Work, plan: Plan | null, counters: db.BuilderRunRow['counters'], run: db.BuilderRunRow): Promise<ToolOutcome> {
-    if (call.invalid) return { kind: 'refused', code: 'sdk_invalid', args: {} }
-    if (!isToolName(call.name)) return { kind: 'refused', code: 'unknown_tool', args: { name: call.name.replace(/[^a-z_]/gi, '').slice(0, 40) } }
+    if (!isToolName(call.name)) return { kind: 'refused', code: call.invalid ? 'sdk_invalid' : 'unknown_tool', args: { name: call.name.replace(/[^a-z_]/gi, '').slice(0, 40) } }
     const spec = TOOLS[call.name]
-    const parsed = spec.schema.safeParse(call.input)
+    // The SDK flags a call whose arguments failed its own copy of the schema. Parsing them here
+    // again turns that into issues the model can act on; only unreadable arguments stay sdk_invalid.
+    const input = call.invalid && typeof call.input === 'string' ? readJson(call.input) : call.input
+    if (call.invalid && (input === null || typeof input !== 'object')) return { kind: 'refused', code: 'sdk_invalid', args: {} }
+    const parsed = spec.schema.safeParse(input)
     if (!parsed.success) {
       const fields = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? '(arguments)')))].slice(0, 5)
-      // Path and code only: zod messages can quote model-chosen keys.
-      const issues = parsed.error.issues.slice(0, 5).map((i) => `${i.path.map((p) => String(p).replace(/[^\w.-]/g, '').slice(0, 40)).join('.') || 'arguments'}: ${i.code}`)
+      const issues = parsed.error.issues.slice(0, 6).map(issueLine)
       return { kind: 'refused', code: 'invalid_args', args: { fields: fields.map((f) => f.replace(/[^\w.-]/g, '').slice(0, 40)) }, issues }
     }
     const state = toolState(work, plan, counters, run)

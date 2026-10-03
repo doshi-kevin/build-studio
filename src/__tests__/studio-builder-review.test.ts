@@ -265,9 +265,29 @@ describe('review parsing', () => {
 })
 
 describe('plan v2', () => {
-  it('reads a plan saved before plan v2 with empty lists, and refuses requirements that aren’t checkable', () => {
+  it('reads a plan saved before plan v2 with empty lists, and accepts requirements in the professor’s own words', () => {
     const legacy = { goal: 'g', files_to_change: ['views/student.tsx'], manifest_changes: [], capabilities_needed: [], checks: [] }
     expect(readPlan(legacy)?.requirements).toEqual([])
-    expect(readPlan({ ...legacy, professor_view: [], student_view: [], data: [], requirements: ['Make it nice', 'Looks good'], enhancements: [] })).toBeNull()
+    expect(readPlan({ ...legacy, professor_view: [], student_view: [], data: [], requirements: ['Professors mark each student present, late or absent'], enhancements: [] })?.requirements).toHaveLength(1)
+  })
+
+  it('an SDK-rejected plan comes back with the field and the reason, and the build recovers (live failure, 2026-10-03)', async () => {
+    const overlong = { goal: 'Staff mark attendance', files_to_change: ['views/student.tsx', 'views/professor.tsx'], manifest_changes: [], capabilities_needed: [], checks: [], professor_view: ['x'.repeat(400)], student_view: [], data: [], requirements: ['Professor can mark a student present'], enhancements: [] }
+    const h = harness([
+      // What Gemini did live: the SDK flags the call invalid, four times in a row ended the run.
+      { calls: [{ name: 'submit_plan', input: overlong, invalid: true }] },
+      (input) => {
+        expect(input.prompt).toMatch(/professor_view\.0: Too big/)
+        return [call('submit_plan', { ...overlong, professor_view: ['Mark each student'] })]
+      },
+      readFiles,
+      { calls: [tweak(1), call('run_checks')] },
+      { calls: [finish()] },
+      ready,
+    ])
+    await h.slice()
+    expect(h.mem.state.steps.find((s) => s.resultSummary.reason === 'invalid_args')).toBeTruthy()
+    expect(h.mem.state.steps.some((s) => s.resultSummary.reason === 'sdk_invalid')).toBe(false)
+    expect(h.mem.state.run.status).toBe('preview_ready')
   })
 })

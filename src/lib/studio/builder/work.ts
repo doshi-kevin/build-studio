@@ -86,10 +86,6 @@ const prose = (max: number) =>
 
 const items = (maxItems: number, maxChars: number) => z.array(prose(maxChars)).max(maxItems)
 
-/** A requirement the design review checks the finished tool against. The fixed openings keep
- * each one about what a person can do or see, so it can be checked from the screens and code. */
-const REQUIREMENT = /^(Professor can|Professor sees|Student can|Student cannot|Student sees|Tool shows) /
-
 const planFields = {
   goal: prose(500),
   files_to_change: z.array(z.enum(PLUGIN_PATHS)).min(1).max(2),
@@ -102,11 +98,11 @@ const planFields = {
 export const planSchema = z
   .strictObject({
     ...planFields,
-    professor_view: items(8, 160),
-    student_view: items(8, 160),
-    data: items(6, 200),
-    requirements: z.array(prose(200).refine((r) => REQUIREMENT.test(r), 'Start with Professor can, Professor sees, Student can, Student cannot, Student sees or Tool shows')).min(2).max(10),
-    enhancements: items(4, 160),
+    professor_view: items(10, 240),
+    student_view: items(10, 240),
+    data: items(8, 300),
+    requirements: z.array(prose(300)).min(1).max(12),
+    enhancements: items(6, 240),
   })
   .refine((p) => utf8Bytes(JSON.stringify(p)) <= STUDIO_BUILDER_PLAN_MAX_BYTES, 'The plan is too long')
 

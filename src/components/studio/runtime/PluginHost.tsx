@@ -54,8 +54,10 @@ type PluginHostProps = CommonProps &
 // Plain language only: a stop reason is never shown as a code (ui-design rules).
 // `retry`: a reload can help. Otherwise the same thing would happen again.
 const STOPPED: Record<Exclude<StopReason, 'destroyed'>, { title: string; description: string; retry: boolean }> = {
-  'start-timeout': { title: 'This tool didn’t load', description: 'It took too long to start. Try again in a moment.', retry: true },
-  'hello-timeout': { title: 'This tool didn’t load', description: 'It took too long to start. Try again in a moment.', retry: true },
+  // The frame's page never arrived: the tool runner is unreachable from this browser, not the tool.
+  'start-timeout': { title: 'The preview couldn’t connect', description: 'Your browser couldn’t reach Studio’s tool runner. Check your connection and reload.', retry: true },
+  // The page arrived but Studio's runtime in it never started.
+  'hello-timeout': { title: 'This tool didn’t start', description: 'Studio’s runtime didn’t answer in time. Reload to try again.', retry: true },
   'unsupported-runtime': {
     title: 'This tool needs an update',
     description: 'It was built for an older version of Studio. Rebuild it in Studio to run it again.',
@@ -64,7 +66,7 @@ const STOPPED: Record<Exclude<StopReason, 'destroyed'>, { title: string; descrip
   navigated: { title: 'This tool was stopped', description: 'It tried to leave its own window, which tools aren’t allowed to do.', retry: false },
   malformed: { title: 'This tool was stopped', description: 'It sent Scholera messages it isn’t allowed to send.', retry: false },
   throttled: { title: 'This tool was stopped', description: 'It kept sending requests faster than Scholera allows.', retry: true },
-  crashed: { title: 'This tool ran into a problem', description: 'Something inside it stopped working.', retry: true },
+  crashed: { title: 'This tool couldn’t render', description: 'Something inside the tool stopped working. If this keeps happening in a draft, ask Athena to fix it.', retry: true },
   // Hidden, switched off, or no longer yours to use. Never says which.
   unavailable: {
     title: 'This tool isn’t available right now',

@@ -45,7 +45,7 @@ const progress = (over: Partial<ProgressRead> = {}): ProgressRead => ({
 const result = (over: Partial<NonNullable<ProgressRead['result']>> = {}): NonNullable<ProgressRead['result']> => ({
   summary: null, openQuestions: [], previewHash: null, passed: false, unresolved: [], filesChanged: [], materialRead: [], ...over,
 })
-const approval = { proposalId: 'prop-1', deltaHash: 'd'.repeat(64), items: ['Store "cards": staff write, everyone in the section reads. Fields: term (text)'], expiresAt: null }
+const approval = { proposalId: 'prop-1', deltaHash: 'd'.repeat(64), items: ['Store "cards": staff write, everyone in the section reads. Fields: term (text)'], summary: [], expiresAt: null }
 const SECTION = '11111111-1111-4111-8111-111111111111'
 const HEAD = 'a'.repeat(64)
 
@@ -99,7 +99,15 @@ describe('the approval card', () => {
     render(<ApprovalCard approval={approval} onDecide={vi.fn()} />)
     expect(screen.getByText(/Store "cards"/)).toBeTruthy()
     expect(screen.queryByText('Athena’s plan')).toBeNull()
-    expect(screen.getByText(/doesn’t install the tool or show it to students/)).toBeTruthy()
+    expect(screen.getByText(/Nothing is installed or shown to students/)).toBeTruthy()
+  })
+  it('leads with plain language, and keeps every exact line one click away', () => {
+    const summary = ['Use your class list, so you can work with each student by name. Names stay in Scholera: the tool’s own code only ever gets anonymous IDs.']
+    render(<ApprovalCard approval={{ ...approval, summary }} onDecide={vi.fn()} />)
+    expect(screen.getByText(/Names stay in Scholera/)).toBeTruthy()
+    const details = screen.getByText('Show exactly what changes').closest('details')!
+    expect(details.open).toBe(false)
+    expect(details.textContent).toMatch(/Store "cards"/)
   })
   it('approve and decline each call the decision once', async () => {
     const onDecide = vi.fn(async () => null)

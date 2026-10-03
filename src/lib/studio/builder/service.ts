@@ -23,6 +23,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { logEvent } from '@/lib/supabase/event-logger'
 import { STUDIO_PAUSED, studioAccess } from '../access'
 import type { PreviewSample } from '../runtime/preview-bridge'
+import { approvalSummary } from './manifest-delta'
 import { allowedBridgeMethods } from '../bridge/catalog'
 import { requireProfessor, sessionUserId, type StudioProfessor } from '../context'
 import * as db from '../db'
@@ -111,14 +112,17 @@ export function endingCopy(status: db.BuilderRunStatus, reason: string | null, h
     case 'completed':
       return 'Nothing needed to change.'
     case 'cancelled':
-      return reason === 'expired' ? 'This request expired. Your tool is unchanged.' : reason === 'superseded' ? 'Replaced by your newer request. Your tool is unchanged.' : 'Stopped. Your tool is unchanged.'
+      return reason === 'expired' ? 'This request waited too long for your answer and expired. Your tool is unchanged. Send it again to continue.' : reason === 'superseded' ? 'Replaced by your newer request. Your tool is unchanged.' : 'Stopped. Your tool is unchanged.'
     case 'budget_exhausted':
       return reason === 'limit_daily_cost'
         ? 'Your school has used today’s budget for Athena’s tool builder, so I stopped without saving. Try again tomorrow.'
         : 'I reached the limit for one build, so I stopped without saving. Ask me again, in smaller steps if you can.'
     case 'failed':
       if (reason === 'model_unavailable') return 'I couldn’t reach the AI service, so I stopped without saving. Your tool is unchanged.'
-      return reason === 'interrupted' ? 'The build was interrupted too many times. Your tool is unchanged.' : 'Something went wrong on our side. Your tool is unchanged.'
+      if (reason === 'interrupted') return 'The build was interrupted too many times. Your tool is unchanged.'
+      if (reason === 'repeated_tool_errors') return 'I kept getting a step of the build wrong, so I stopped without saving. Your tool is unchanged. Try again, or describe the change in different words.'
+      if (reason === 'check_timeout') return 'Checking the tool took too long, so I stopped without saving. Your tool is unchanged. Try again in a moment.'
+      return 'The tool builder hit an unexpected error, so I stopped without saving. Your tool is unchanged. Try again in a moment.'
     case 'blocked':
       if (reason === 'repair_rounds' || reason === 'same_finding' || reason === 'check_runs') return 'I couldn’t get every check to pass, so I didn’t save anything. Try describing the change differently.'
       if (reason === 'draft_changed') return 'Your draft changed while I worked, so I didn’t overwrite it. Ask again to build on the latest draft.'
@@ -303,7 +307,7 @@ export interface ProgressRead {
   turns: { used: number; max: number }
   checks: number
   repairRounds: number
-  approval: null | { proposalId: string; deltaHash: string; items: string[]; expiresAt: string | null }
+  approval: null | { proposalId: string; deltaHash: string; items: string[]; summary: string[]; expiresAt: string | null }
   question: null | { id: string; text: string; expiresAt: string | null }
   ending: string | null
   /** The ending's fixed reason code (the run's error code), for the UI to choose a next step. */
@@ -349,6 +353,15 @@ export interface MemoryProposalView {
 const MEMORY_CARD_STATUSES: db.BuilderRunStatus[] = ['preview_ready', 'completed', 'blocked']
 
 const ACTIVE: db.BuilderRunStatus[] = ['queued', 'running', 'waiting_for_approval', 'waiting_for_professor']
+
+/** The approval card's plain summary, from the working copy's manifest and the proposed one. */
+function pendingSummary(run: db.BuilderRunRow, pending: Record<string, unknown>): string[] {
+  const after = parseManifest(pending.proposed_manifest)
+  if (!after.ok) return []
+  const work = run.work as { manifest?: unknown } | null
+  const before = work?.manifest ? parseManifest(work.manifest) : null
+  return approvalSummary(before?.ok ? before.manifest : null, after.manifest)
+}
 
 /** What a check id means to a professor. */
 const CHECK_COPY: Record<string, string> = {
@@ -418,6 +431,7 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
           proposalId: String(pending.proposal_id),
           deltaHash: String(pending.delta_hash),
           items: Array.isArray(pending.items) ? (pending.items as { line: string }[]).map((i) => i.line) : [],
+          summary: pendingSummary(run, pending),
           expiresAt: run.waitingUntil,
         }
       : null,

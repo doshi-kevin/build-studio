@@ -347,3 +347,21 @@ describe('usage and budgets', () => {
     expect(budgetStop({ ...c, consecutiveErrors: 3 })?.code).toBe('repeated_tool_errors')
   })
 })
+
+describe('the approval card summary', () => {
+  it('describes roster and per-student records in fixed, plain words, built from the change alone', async () => {
+    const { approvalSummary } = await import('@/lib/studio/builder/manifest-delta')
+    const after = {
+      manifestVersion: 2, id: 'tool-a', name: 'n', description: 'd', version: '0.0.0', bridgeVersion: 'v2',
+      views: { student: { entry: 'views/student.tsx', capabilities: [] }, professor: { entry: 'views/professor.tsx', capabilities: ['course.roster'] } },
+      collections: { marks: { access: 'staffPerStudent', fields: { date: 'text' } } },
+      purpose: { category: 'course-logistics', summary: 'x'.repeat(30), audience: 'both' }, signals: [], skillSlots: [], aiFallback: 'not-applicable',
+    } as const
+    const lines = approvalSummary(null, after as never)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatch(/Names stay in Scholera/)
+    expect(lines[1]).toMatch(/Each student sees only their own/)
+    // A change that adds nothing new says nothing.
+    expect(approvalSummary(after as never, after as never)).toEqual([])
+  })
+})

@@ -42,3 +42,12 @@ describe('a model that could not be reached', () => {
     expect(copy).toMatch(/without saving/)
   })
 })
+
+describe('a failed build says which kind of failure it was', () => {
+  it('never falls back to one generic line for a known reason', () => {
+    const lines = ['repeated_tool_errors', 'check_timeout', 'model_unavailable', 'interrupted', 'internal'].map((r) => endingCopy('failed', r))
+    expect(new Set(lines).size).toBe(lines.length)
+    expect(lines.join(' ')).not.toMatch(/Something went wrong on our side/)
+    expect(endingCopy('cancelled', 'expired')).toMatch(/expired/)
+  })
+})

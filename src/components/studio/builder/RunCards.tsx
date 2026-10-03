@@ -186,16 +186,28 @@ export function ApprovalCard({ approval, onDecide }: {
     <section aria-labelledby="approval-heading" className="space-y-3 rounded-2xl bg-card p-4 shadow-sm">
       <div className="flex items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-primary" aria-hidden="true" />
-        <h3 id="approval-heading" className="text-sm font-semibold">This tool would:</h3>
+        <h3 id="approval-heading" className="text-sm font-semibold">Athena needs your OK to keep building</h3>
       </div>
-      <ul className="list-disc space-y-1 pl-5 text-sm">
-        {approval.items.map((line, i) => (
-          <li key={i}>{line}</li>
-        ))}
-      </ul>
+      {approval.summary.length > 0 && (
+        <ul className="space-y-2 text-sm">
+          {approval.summary.map((line, i) => (
+            <li key={i} className="flex gap-2">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <details className="group rounded-xl bg-muted px-3 py-2 text-sm" open={approval.summary.length === 0 || undefined}>
+        <summary className="flex min-h-11 cursor-pointer items-center font-medium">Show exactly what changes</summary>
+        <ul className="list-disc space-y-1 pb-2 pl-5 text-muted-foreground">
+          {approval.items.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      </details>
       <p className="text-xs text-muted-foreground">
-        Approving lets Athena keep building this draft. It doesn’t install the tool or show it to students. If you build without
-        it, Athena carries on without these changes.
+        This only lets Athena keep building your draft. Nothing is installed or shown to students until you choose to.
       </p>
       <WaitingUntil expiresAt={approval.expiresAt} />
       {/* No live role: the conversation log around this card announces it. */}
