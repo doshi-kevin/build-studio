@@ -10,6 +10,7 @@ import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logEvent } from '@/lib/supabase/event-logger'
 import { logger } from '@/lib/logger'
+import { isUnlockPending, openModuleFilter } from '@/lib/modules/unlock'
 import { recordAiUsage } from '@/lib/ai/usage'
 import { rerankPassages } from '@/lib/ai/vertex-rerank'
 import { queryMaterialPageVectors, queryCourseContentVectors, type CourseContentMatch } from './data'
@@ -30,8 +31,8 @@ import { resolveLocator, type LocatorItem } from './locator'
  * Load the section's boost inputs in one query: (a) stored concepts flattened
  * into (name → page) refs, and (b) the embeddable materials' titles for the
  * explicit-locator resolver. Selects only the `concepts` sub-object (not the
- * huge extraction blob) from published modules / visible items, so hidden
- * material can never be pinned. `items` is restricted to materials that HAVE
+ * huge extraction blob) from published, open modules / visible items, so hidden
+ * or not-yet-opened material can never be pinned. `items` is restricted to materials that HAVE
  * stored concepts — the embeddable set — so external readings/links can't
  * create phantom locator matches. Returns empty on shape mismatch (boost no-ops).
  */
@@ -45,6 +46,7 @@ async function loadSectionBoostData(
     .select('id, title, concepts:content->concepts, modules!inner(section_id, is_published)')
     .eq('modules.section_id', sectionId)
     .eq('modules.is_published', true)
+    .or(openModuleFilter(), { referencedTable: 'modules' })
     .eq('is_visible', true)
 
   // A dropped error here silently disables the concept/locator boost — log it so
@@ -271,7 +273,7 @@ export async function searchMaterialPages(input: {
       : await admin
           .from('material_vector_chunks')
           .select(
-            'module_item_id, module_id, page_number, breadcrumb, content, module_items(title, is_visible), modules(is_published)',
+            'module_item_id, module_id, page_number, breadcrumb, content, module_items(title, is_visible, modules(is_published, unlock_date))',
           )
           .eq('institution_id', institutionId)
           .eq('section_id', sectionId)
@@ -294,15 +296,19 @@ export async function searchMaterialPages(input: {
   const byKey = new Map((rows ?? []).map((r) => [`${r.module_item_id}#${r.page_number}`, r]))
 
   // Visibility enforced at hydration against LIVE Postgres state (Pinecone holds
-  // no publish flag): drop pages from unpublished modules or hidden items so
-  // retrieval never surfaces material the professor withheld (design doc G9 /
-  // §4). Applied identically to vector matches and pinned concept pages, so the
+  // no publish flag): drop pages from unpublished modules, modules whose open date
+  // hasn't arrived, or hidden items, so retrieval never surfaces material the
+  // professor withheld or scheduled (design doc G9 / §4; unlock.ts). The module is
+  // read through the item, never the chunk's own module_id: that column is copied at
+  // embed time, so an item moved into a scheduled or unpublished week would otherwise
+  // be judged by the week it left. Applied identically to vector matches and pinned concept pages, so the
   // boost can only reorder pages that already clear this gate — never widen it.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const visible = (row: any): boolean => {
     const item = Array.isArray(row.module_items) ? row.module_items[0] : row.module_items
-    const mod = Array.isArray(row.modules) ? row.modules[0] : row.modules
-    return !!(item as { is_visible?: boolean } | null)?.is_visible && !!(mod as { is_published?: boolean } | null)?.is_published
+    const mod = Array.isArray(item?.modules) ? item.modules[0] : item?.modules
+    const m = mod as { is_published?: boolean; unlock_date?: string | null } | null
+    return !!(item as { is_visible?: boolean } | null)?.is_visible && !!m?.is_published && !isUnlockPending(m?.unlock_date)
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const toResult = (row: any, moduleItemId: string, moduleId: string, pageNumber: number, score: number): MaterialPageResult => {

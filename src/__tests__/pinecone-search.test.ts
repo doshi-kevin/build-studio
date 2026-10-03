@@ -19,7 +19,7 @@ const rerankPassages = vi.fn()
 // it resolves to { data }.
 function chainResolving(data: unknown) {
   const chain: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'in']) {
+  for (const m of ['select', 'eq', 'in', 'or']) {
     chain[m] = vi.fn(() => chain)
   }
   chain.then = (resolve: (v: { data: unknown }) => void) => resolve({ data })
@@ -75,10 +75,10 @@ function row(
   page: number,
   text: string,
   joinShape: 'object' | 'array' = 'object',
-  vis: { is_visible?: boolean; is_published?: boolean } = {},
+  vis: { is_visible?: boolean; is_published?: boolean; unlock_date?: string | null } = {},
 ) {
-  const item = { title: `title-${itemId.slice(-1)}`, is_visible: vis.is_visible ?? true }
-  const mod = { is_published: vis.is_published ?? true }
+  const mod = { is_published: vis.is_published ?? true, unlock_date: vis.unlock_date ?? null }
+  const item = { title: `title-${itemId.slice(-1)}`, is_visible: vis.is_visible ?? true, modules: joinShape === 'array' ? [mod] : mod }
   return {
     module_item_id: itemId,
     module_id: MODULE,
@@ -86,7 +86,6 @@ function row(
     breadcrumb: `crumb ${itemId.slice(-1)} p.${page}`,
     content: text,
     module_items: joinShape === 'array' ? [item] : item,
-    modules: joinShape === 'array' ? [mod] : mod,
   }
 }
 
@@ -175,6 +174,48 @@ describe('searchMaterialPages', () => {
     })
     expect(out).toHaveLength(1)
     expect(out[0]).toMatchObject({ moduleItemId: ITEM_A, pageNumber: 1, text: 'visible' })
+  })
+
+  it('drops pages from published modules whose open date has not arrived', async () => {
+    // A student must not get next week's material before it opens: the tutor is a
+    // student-facing reader of modules (unlock.ts), so hydration applies the open date
+    // as well as the publish and visibility flags.
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString()
+    const past = new Date(Date.now() - 86_400_000).toISOString()
+    queryMaterialPageVectors.mockResolvedValue([
+      match(ITEM_A, 1, 0.9),
+      match(ITEM_B, 2, 0.8),
+      match(ITEM_A, 3, 0.7),
+    ])
+    hydrationRows = [
+      row(ITEM_A, 1, 'opened', 'object', { unlock_date: past }),
+      row(ITEM_B, 2, 'scheduled', 'array', { unlock_date: future }),
+      row(ITEM_A, 3, 'no-date', 'object', { unlock_date: null }),
+    ]
+    const out = await searchMaterialPages({
+      institutionId: INSTITUTION,
+      sectionId: SECTION,
+      query: 'q',
+      conceptBoost: false,
+    })
+    expect(out.map((r) => r.text)).toEqual(['opened', 'no-date'])
+  })
+
+  it("judges a page by its item's current module, not the chunk's copied module_id", async () => {
+    // The chunk row was embedded while the item sat in an open week; the item has since
+    // been moved into a scheduled one. Only the item's own module may decide.
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString()
+    queryMaterialPageVectors.mockResolvedValue([match(ITEM_A, 1, 0.9)])
+    hydrationRows = [{ ...row(ITEM_A, 1, 'moved', 'object', { unlock_date: future }), modules: { is_published: true, unlock_date: null } }]
+    const out = await searchMaterialPages({ institutionId: INSTITUTION, sectionId: SECTION, query: 'q', conceptBoost: false })
+    expect(out).toEqual([])
+  })
+
+  it('reads boost data only from open modules', async () => {
+    queryMaterialPageVectors.mockResolvedValue([])
+    await searchMaterialPages({ institutionId: INSTITUTION, sectionId: SECTION, query: 'q' })
+    const boost = from.mock.results.find((_, i) => from.mock.calls[i][0] === 'module_items')?.value as { or: ReturnType<typeof vi.fn> }
+    expect(boost.or).toHaveBeenCalledWith(expect.stringMatching(/^unlock_date\.is\.null,unlock_date\.lte\./), { referencedTable: 'modules' })
   })
 
   it('resolves the module_items join whether Supabase returns object or array', async () => {
