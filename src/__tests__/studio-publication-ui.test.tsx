@@ -355,7 +355,7 @@ describe('Studio’s automatic checks in the card', () => {
     checks(
       summary({
         verdict: { status: 'needs_review', runId: 'r', checkIds: ['data.answer_key'] },
-        stages: { static: { status: 'needs_review', findings: [{ checkId: 'data.answer_key', status: 'needs_review', message: 'Answers may be visible to students.' }] }, runtime: null },
+        stages: { static: { status: 'needs_review', findings: [{ checkId: 'data.answer_key', status: 'needs_review', message: 'Answers may be visible to students.', review: null }] }, runtime: null },
       }),
     )
     expect(screen.getByText('Answers may be visible to students.')).toBeInTheDocument()

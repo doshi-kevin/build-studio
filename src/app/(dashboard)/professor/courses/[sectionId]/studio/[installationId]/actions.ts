@@ -2,7 +2,7 @@
 
 /**
  * The professor's publication actions for one installed plugin: show it to students,
- * hide it, remove it from the course (archive).
+ * hide it, switch or roll back its version, remove it from the course (archive).
  *
  * Thin on purpose. Every rule lives in the trusted services, which validate the input,
  * verify the section's professor again, re-run every publication check, write through
@@ -14,7 +14,7 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { requireProfessor } from '@/lib/studio/context'
-import { archiveInstallation } from '@/lib/studio/lifecycle'
+import { approveAndActivateVersion, archiveInstallation } from '@/lib/studio/lifecycle'
 import { bindSkillSlot } from '@/lib/studio/skill-bindings'
 import { requestRuntimeValidation } from '@/lib/studio/validator/service'
 import {
@@ -98,4 +98,24 @@ export async function bindSkillSlotAction(
   if (!result.ok) return { error: result.error }
   refresh(sectionId, installationId)
   return { success: true }
+}
+
+/**
+ * Makes another published version the course's version: Use this version, or Roll back to
+ * an older one. The professor previewed it on this page; approving again is a no-op for a
+ * version this course already approved. A tool students see gets the full version review
+ * (warnings acknowledged). Studio's browser checks for it then start on their own.
+ */
+export async function switchVersionAction(
+  sectionId: string,
+  installationId: string,
+  versionId: string,
+  acknowledgeWarnings: boolean,
+): Promise<PublicationActionResult & { checks?: string }> {
+  if (!(await professorOf(sectionId))) return { error: VISIBILITY_NOT_AVAILABLE }
+  const result = await approveAndActivateVersion({ sectionId, installationId, versionId, acknowledgeWarnings: acknowledgeWarnings === true })
+  if (!result.ok) return { error: result.error, blockers: result.blockers, warnings: result.warnings }
+  const checks = await requestRuntimeValidation({ sectionId, installationId })
+  refresh(sectionId, installationId)
+  return { success: true, checks: checks.ok ? undefined : checks.error }
 }

@@ -17,6 +17,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { requireProfessor } from '@/lib/studio/context'
 import {
+  addSavedVersionToCourse,
   answerQuestion,
   decideApproval,
   decideMemoryProposal,
@@ -30,10 +31,13 @@ import {
   startBuild,
   stopBuild,
   undoDraft,
+  versionRelease,
   type ConversationTurn,
   type DraftHistory,
   type MemoryItem,
+  type VersionRelease,
 } from '@/lib/studio/builder/service'
+import type { BlockerCode, Issue, WarningCode } from '@/lib/studio/student-visibility'
 import type { MemoryKind, MemorySlot, MemoryTopic } from '@/lib/studio/builder/memory'
 import type { StudioManifest } from '@/lib/studio/manifest'
 
@@ -122,13 +126,37 @@ export async function saveDraftAsVersionAction(input: {
   sectionId: string
   pluginProjectId: string
   snapshotHash: string
-}): Promise<{ success: true; version: string } | { error: string }> {
+}): Promise<{ success: true; version: string; versionId: string } | { error: string }> {
   if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
   const r = await saveDraftAsVersion(input)
   if (!r.ok) return { error: r.error }
   refresh(input.sectionId)
   revalidatePath(`/professor/courses/${input.sectionId}`, 'layout')
-  return { success: true, version: r.value.version }
+  return { success: true, version: r.value.version, versionId: r.value.versionId }
+}
+
+/** Where a saved version stands in this course, and its plugin card, for the Save card. */
+export async function versionReleaseAction(input: { sectionId: string; versionId: string }): Promise<({ success: true } & VersionRelease) | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await versionRelease(input)
+  return r.ok ? { success: true, ...r.value } : { error: r.error }
+}
+
+/** Add to this course, or Use this version in the course; Studio's browser checks then
+ * start on their own. The services audit both steps. */
+export async function addVersionToCourseAction(input: {
+  sectionId: string
+  versionId: string
+  acknowledgeWarnings: boolean
+}): Promise<{ success: true; installationId: string; added: boolean; checks: string } | { error: string; blockers?: Issue<BlockerCode>[]; warnings?: Issue<WarningCode>[] }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await addSavedVersionToCourse({ sectionId: input.sectionId, versionId: input.versionId, acknowledgeWarnings: input.acknowledgeWarnings === true })
+  if (!r.ok) return { error: r.error, blockers: r.blockers, warnings: r.warnings }
+  refresh(input.sectionId)
+  revalidatePath(`/professor/courses/${input.sectionId}`, 'layout')
+  revalidatePath(`/student/courses/${input.sectionId}`, 'layout')
+  revalidatePath(`/professor/courses/${input.sectionId}/studio/${r.value.installationId}`)
+  return { success: true, ...r.value }
 }
 
 export async function loadDraftHistoryAction(input: { sectionId: string; pluginProjectId: string }): Promise<({ success: true } & DraftHistory) | { error: string }> {

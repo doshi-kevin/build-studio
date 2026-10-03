@@ -22,7 +22,9 @@ interface StudioChatProps {
   onDecide: (approve: boolean) => Promise<string | null>
   onAnswer: (answer: string) => Promise<string | null>
   onPreview: () => void
-  onSave: () => Promise<{ ok: boolean; message: string }>
+  onSave: () => Promise<{ ok: boolean; message: string; saved?: { versionId: string; version: string } }>
+  /** The next step after a successful Save (Add to this course / Use this version). */
+  afterSave?: (saved: { versionId: string; version: string }) => React.ReactNode
   /** Approve or skip a decision Athena suggests remembering. Resolves to a message when it failed. */
   onDecideMemory: (memoryId: string, approve: boolean) => Promise<string | null>
   canSave: boolean
@@ -44,7 +46,7 @@ function Athena({ children }: { children: React.ReactNode }) {
 /** Within this many pixels of the bottom, new messages keep the log scrolled down. */
 const PINNED_PX = 96
 
-export function StudioChat({ turns, conversation, onReloadConversation, current, onSend, onStop, onDecide, onAnswer, onPreview, onSave, onDecideMemory, canSave, savesOtherDraft = false }: StudioChatProps) {
+export function StudioChat({ turns, conversation, onReloadConversation, current, onSend, onStop, onDecide, onAnswer, onPreview, onSave, afterSave, onDecideMemory, canSave, savesOtherDraft = false }: StudioChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -164,6 +166,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
                 savesOtherDraft={savesOtherDraft}
                 onPreview={onPreview}
                 onSave={onSave}
+                afterSave={afterSave}
                 onDecideMemory={onDecideMemory}
                 onRetry={currentRequest ? () => void send(currentRequest, undefined, false) : undefined}
                 retrying={sending}

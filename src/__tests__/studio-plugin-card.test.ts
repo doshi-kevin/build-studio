@@ -72,9 +72,10 @@ describe('buildPluginCard', () => {
   })
 
   it('says plainly there is no AI, grading or tracking, rather than leaving it out', () => {
-    expect(card.ai).toMatch(/^None/)
-    expect(card.grading).toMatch(/^None/)
-    expect(card.tracking).toMatch(/^None/)
+    // Each line stands alone (the Save card shows them without a heading), so it says the negative itself.
+    expect(card.ai).toBe('This tool doesn’t use AI.')
+    expect(card.grading).toMatch(/^This tool doesn’t grade/)
+    expect(card.tracking).toMatch(/^This tool doesn’t record/)
   })
 
   it('shows storage use and each student’s allowance', () => {

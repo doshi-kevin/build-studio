@@ -17,18 +17,23 @@
  * The validator service, lifecycle, visibility, skill bindings, the report route and db.ts
  * are real.
  */
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GOOD, STATIC_BAD, type FixtureArtifact } from '@/lib/studio/validator/fixtures'
 import { RUNTIME_CHECK_IDS, STUDIO_VALIDATOR_RULESET, checksFor } from '@/lib/studio/validator/ruleset'
 import type { PurposeClassifier } from '@/lib/studio/validator/purpose'
-import type { RuntimeJob } from '@/lib/studio/validator/runtime-runner'
 import { dbEnv } from './env'
 import { FIXTURE } from './fixture'
 import { grantStudio } from './studio-entitlement'
 
 const session: { userId: string | null } = { userId: null }
+/** What the local runner was handed: the run, the exact payload bytes, and the nonce inside them. */
+interface RuntimeJob {
+  validationId: string
+  bytes: string
+  nonce: string
+}
 const harness = vi.hoisted(() => ({
   jobs: [] as RuntimeJob[],
   classify: null as PurposeClassifier | null,
@@ -43,10 +48,11 @@ vi.mock('@/lib/supabase/server', () => ({
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/lib/studio/validator/purpose-ai', () => ({ createPurposeClassifier: () => harness.classify }))
-vi.mock('@/lib/studio/validator/runtime-runner', () => ({
+vi.mock('@/lib/studio/validator/runtime-runner', async (importActual) => ({
   runnerMode: () => 'local',
-  runLocally: (job: RuntimeJob) => {
-    harness.jobs.push(job)
+  buildPayload: (await importActual<typeof import('@/lib/studio/validator/runtime-runner')>()).buildPayload,
+  runLocally: (validationId: string, bytes: string) => {
+    harness.jobs.push({ validationId, bytes, nonce: JSON.parse(bytes).nonce })
     return new Promise(() => {})
   },
 }))
@@ -57,6 +63,8 @@ vi.mock('@/lib/auth/super-admin-context', () => ({
 const lifecycle = await import('@/lib/studio/lifecycle')
 const visibility = await import('@/lib/studio/student-visibility')
 const service = await import('@/lib/studio/validator/service')
+const studioDb = await import('@/lib/studio/db')
+const { PURPOSE_RUBRIC_VERSION } = await import('@/lib/studio/validator/purpose')
 const { bindSkillSlot } = await import('@/lib/studio/skill-bindings')
 const { POST } = await import('@/app/api/studio/validator/runtime-report/route')
 
@@ -118,13 +126,17 @@ const goodReport = () => ({
   checks: RUNTIME_CHECK_IDS.flatMap((id) => (['student', 'professor'] as const).map((view) => ({ id, view, status: 'passed', findings: [] }))),
 })
 
-/** Reports for a runtime run exactly as a runner does: bearer token, JSON, the route. */
-const report = (job: RuntimeJob, body: unknown = goodReport(), token = job.token) =>
+/** Reports for a runtime run exactly as the local runner does: the nonce as bearer token,
+ * and the envelope binding the report to the run, the nonce and the payload's hash. */
+const report = (job: RuntimeJob, body: unknown = goodReport(), token = job.nonce, binding: Record<string, unknown> = {}) =>
   POST(
     new Request('http://localhost:3000/api/studio/validator/runtime-report', {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ validationId: job.validationId, report: body }),
+      body: JSON.stringify({
+        binding: { validationId: job.validationId, nonce: job.nonce, payloadSha256: createHash('sha256').update(job.bytes).digest('hex'), runtimeVersion: 'v1', ...binding },
+        report: body,
+      }),
     }),
   )
 
@@ -204,9 +216,10 @@ describe('from publishing to showing students', () => {
   it('asking for the browser checks opens one runtime run, keyed to the artifact, holding only the token’s hash', async () => {
     job = await askForBrowserChecks(tool.installation)
     const runtime = (await runsOf(tool.version)).find((r) => r.stage === 'runtime')!
-    expect(runtime).toMatchObject({ id: job.validationId, status: 'pending' })
-    expect(runtime.callback_sha256).toMatch(/^[0-9a-f]{64}$/)
-    expect(runtime.callback_sha256).not.toContain(job.token)
+    expect(runtime).toMatchObject({ id: job.validationId, status: 'running' })
+    expect(runtime.callback_sha256).toBe(createHash('sha256').update(job.nonce).digest('hex'))
+    const [dispatch] = await sql<{ runner_mode: string; payload_sha256: string }>('select runner_mode, payload_sha256 from public.studio_plugin_validations where id = $1', [job.validationId])
+    expect(dispatch).toEqual({ runner_mode: 'local', payload_sha256: createHash('sha256').update(job.bytes).digest('hex') })
     // A second request while it runs doesn't stack another run.
     session.userId = PROFESSOR
     expect(await service.requestRuntimeValidation({ sectionId: section, installationId: tool.installation })).toEqual({ ok: true, status: 'running' })
@@ -216,7 +229,7 @@ describe('from publishing to showing students', () => {
   it('a report with the wrong token is refused and changes nothing', async () => {
     const res = await report(job, goodReport(), randomBytes(32).toString('base64url'))
     expect(res.status).toBe(403)
-    expect((await runsOf(tool.version)).find((r) => r.id === job.validationId)?.status).toBe('pending')
+    expect((await runsOf(tool.version)).find((r) => r.id === job.validationId)?.status).toBe('running')
   })
 
   it('the runner’s report, with its token, passes the version', async () => {
@@ -297,13 +310,29 @@ describe('Stage 1 outcomes in the database', () => {
     expect(await service.currentVerdict(tool.version)).toMatchObject({ status: 'needs_review', checkIds: ['edtech.purpose'] })
 
     session.userId = PROFESSOR
-    const review = { validationId: staticRun.id, checkId: 'edtech.purpose', decision: 'approved' as const, reason: 'Looks fine to me.' }
+    const review = { validationId: staticRun.id, checkId: 'edtech.purpose', artifactSha256: staticRun.artifact_sha256, decision: 'approved' as const, reason: 'Looks fine to me.' }
     expect(await service.resolveValidationReview(review)).toEqual({ ok: false, error: expect.any(String) })
     await expectRefused(
       `insert into public.studio_plugin_validation_reviews (validation_id, check_id, decision, reviewer_id, reason) values ($1, 'edtech.purpose', 'approved', $2, 'x')`,
       [staticRun.id, PROFESSOR],
       /super admin/i,
     )
+  })
+
+  it('the review queue lists a flagged check with its school, course and stated purpose, for super admins only', async (ctx) => {
+    if (!harness.superAdmin) ctx.skip()
+    harness.classify = async () => ({ ok: false, reason: 'unavailable' })
+    const tool = await publish('queue')
+    const [staticRun] = await runsOf(tool.version)
+    session.userId = PROFESSOR
+    expect(await service.getReviewQueue()).toBeNull()
+    session.userId = harness.superAdmin
+    const queue = await service.getReviewQueue()
+    const item = queue?.find((i) => i.validationId === staticRun.id)
+    const [course] = await sql<{ code: string; title: string }>('select c.code, c.title from public.course_sections s join public.courses c on c.id = s.course_id where s.id = $1', [section])
+    expect(item).toMatchObject({ checkId: 'edtech.purpose', artifactSha256: staticRun.artifact_sha256, courses: [`${course.code}: ${course.title}`], publishedByYou: false })
+    expect(item?.purpose.length).toBeGreaterThan(0)
+    expect(await service.countWaitingReviews()).toBeGreaterThan(0)
   })
 
   it('a super admin’s approval clears the review', async (ctx) => {
@@ -313,9 +342,11 @@ describe('Stage 1 outcomes in the database', () => {
     const [staticRun] = await runsOf(tool.version)
     session.userId = harness.superAdmin
     expect(
-      await service.resolveValidationReview({ validationId: staticRun.id, checkId: 'edtech.purpose', decision: 'approved', reason: 'A reflection tool.' }),
+      await service.resolveValidationReview({ validationId: staticRun.id, checkId: 'edtech.purpose', artifactSha256: staticRun.artifact_sha256, decision: 'approved', reason: 'A reflection tool.' }),
     ).toEqual({ ok: true })
     expect(await service.currentVerdict(tool.version)).toEqual({ status: 'unavailable', reason: 'runtime_not_checked' })
+    // A decided check leaves the queue.
+    expect((await service.getReviewQueue())?.some((i) => i.validationId === staticRun.id)).toBe(false)
     // A check that passed can't be "reviewed".
     await expectRefused(
       `insert into public.studio_plugin_validation_reviews (validation_id, check_id, decision, reviewer_id, reason) values ($1, 'code.navigation', 'rejected', $2, 'x')`,
@@ -525,5 +556,241 @@ describe('the gate’s check and its write are one decision', () => {
     const { v } = await current()
     await sql(`select public.studio_set_student_visibility($1, $2, 'visible', $3, $4)`, [tool.installation, section, PROFESSOR, v])
     expect((await sql<{ c: boolean }>(`select public.studio_set_student_visibility($1, $2, 'hidden', $3, null) as c`, [tool.installation, section, PROFESSOR]))[0].c).toBe(true)
+  })
+})
+
+describe('Stage 2 admission, dispatch and the ruleset control (Step 10)', () => {
+  const caps = (over: Partial<Record<'global_concurrent' | 'institution_concurrent' | 'institution_daily' | 'system_concurrent', number>> = {}) =>
+    JSON.stringify({ global_concurrent: 1000, institution_concurrent: 2, institution_daily: 30, system_concurrent: 1, ...over })
+  const ADMIT = `select public.studio_runtime_admit($1, $2, $3, 'test', $4, 'v1', $5, $6, $7, $8, $9::jsonb) as r`
+  const tools: { version: string; hash: string }[] = []
+
+  /** Admits a runtime run for tools[i] through `client` (the shared one unless racing). */
+  const admit = async (i: number, lane: 'professor' | 'system', capsJson = caps(), client: Client = db) => {
+    const trigger = lane === 'system' ? 'ruleset_change' : 'professor'
+    const { rows } = await client.query(ADMIT, [tools[i].version, A.institution, tools[i].hash, STUDIO_VALIDATOR_RULESET, trigger, PROFESSOR, 'c'.repeat(64), lane, capsJson])
+    return rows[0].r as { outcome: string; id?: string }
+  }
+  const closeRuntime = (status = 'error') =>
+    sql(`update public.studio_plugin_validations set status = $2, finished_at = now() where institution_id = $1 and stage = 'runtime' and status in ('pending', 'running')`, [A.institution, status])
+
+  beforeAll(async () => {
+    harness.classify = educational
+    for (const tag of ['q0', 'q1', 'q2', 'q3']) {
+      const tool = await publish(tag)
+      const [{ h }] = await sql<{ h: string }>('select artifact_sha256 as h from public.studio_plugin_versions where id = $1', [tool.version])
+      tools.push({ version: tool.version, hash: h })
+    }
+  })
+  beforeEach(async () => {
+    await closeRuntime()
+  })
+
+  it('two concurrent requests for the last professor slot: exactly one gets it', async () => {
+    expect((await admit(0, 'professor')).outcome).toBe('admitted')
+    const env = dbEnv()
+    const racers = [new Client({ connectionString: env.pgUrl }), new Client({ connectionString: env.pgUrl })]
+    await Promise.all(racers.map((c) => c.connect()))
+    try {
+      const outcomes = await Promise.all([admit(1, 'professor', caps(), racers[0]), admit(2, 'professor', caps(), racers[1])])
+      expect(outcomes.map((o) => o.outcome).sort()).toEqual(['admitted', 'busy'])
+    } finally {
+      await Promise.all(racers.map((c) => c.end()))
+    }
+  })
+
+  it('a revalidation run leaves the professors’ slots alone, and takes only its own one', async () => {
+    expect((await admit(0, 'system')).outcome).toBe('admitted')
+    expect((await admit(1, 'system')).outcome).toBe('busy')
+    expect((await admit(2, 'professor')).outcome).toBe('admitted')
+    expect((await admit(3, 'professor')).outcome).toBe('admitted')
+  })
+
+  it('the daily cap counts runs that reached a verdict, not runner errors', async () => {
+    // Today's earlier runs in this suite may have reached a verdict: count from what's there.
+    const [{ n }] = await sql<{ n: number }>(
+      `select count(*)::int as n from public.studio_plugin_validations where institution_id = $1 and stage = 'runtime' and trigger <> 'ruleset_change' and status in ('passed', 'failed', 'needs_review') and created_at > now() - interval '24 hours'`,
+      [A.institution],
+    )
+    const daily = caps({ institution_daily: n + 1 })
+    expect((await admit(0, 'professor', daily)).outcome).toBe('admitted')
+    await closeRuntime('error')
+    expect((await admit(1, 'professor', daily)).outcome).toBe('admitted')
+    await closeRuntime('failed')
+    expect((await admit(2, 'professor', daily)).outcome).toBe('daily')
+    // Revalidation is outside the daily cap.
+    expect((await admit(2, 'system', daily)).outcome).toBe('admitted')
+  })
+
+  it('the daily cap counts a dispatched run a plugin made fail, but not the platform’s own errors', async () => {
+    const [{ n }] = await sql<{ n: number }>(
+      `select count(*)::int as n from public.studio_plugin_validations where institution_id = $1 and stage = 'runtime' and trigger <> 'ruleset_change' and created_at > now() - interval '24 hours'
+         and (status in ('passed', 'failed', 'needs_review') or (status = 'error' and runner_mode is not null and coalesce(error ->> 'code', '') not in ('runner_unavailable', 'runner_image_mismatch', 'callback_expired')))`,
+      [A.institution],
+    )
+    const daily = caps({ institution_daily: n + 1 })
+    const dispatchAndFail = async (i: number, code: string) => {
+      const { id } = await admit(i, 'professor', daily)
+      await sql(`select public.studio_validation_dispatch($1, 'cloud', $2, 'executions/e', 'img@sha256:x', null)`, [id, 'a'.repeat(64)])
+      await sql(`update public.studio_plugin_validations set status = 'error', error = $2, finished_at = now() where id = $1`, [id, JSON.stringify({ code, message: 'x' })])
+    }
+    await dispatchAndFail(0, 'runner_image_mismatch')
+    expect((await admit(1, 'professor', daily)).outcome).toBe('admitted')
+    await closeRuntime()
+    await dispatchAndFail(2, 'runner_failed')
+    expect((await admit(3, 'professor', daily)).outcome).toBe('daily')
+  })
+
+  it('the global cap holds across institutions', async () => {
+    const [{ n }] = await sql<{ n: number }>(`select count(*)::int as n from public.studio_plugin_validations where stage = 'runtime' and status in ('pending', 'running')`)
+    expect((await admit(0, 'professor', caps({ global_concurrent: n + 1 }))).outcome).toBe('admitted')
+    expect((await admit(1, 'professor', caps({ global_concurrent: n + 1 }))).outcome).toBe('global_busy')
+  })
+
+  it('a second request for the same artifact reads as already running', async () => {
+    expect((await admit(0, 'professor')).outcome).toBe('admitted')
+    expect((await admit(0, 'professor')).outcome).toBe('exists')
+  })
+
+  it('only revalidation uses the system lane', async () => {
+    await expectRefused(ADMIT, [tools[0].version, A.institution, tools[0].hash, STUDIO_VALIDATOR_RULESET, 'professor', PROFESSOR, null, 'system', caps()], /system lane/)
+  })
+
+  it('dispatch is recorded once, and neither it nor the nonce hash can change after', async () => {
+    const { id } = await admit(0, 'professor')
+    const dispatch = (exec: string) =>
+      sql<{ d: boolean }>(`select public.studio_validation_dispatch($1, 'cloud', $2, $3, $4, null) as d`, [id, 'a'.repeat(64), exec, 'img@sha256:' + 'b'.repeat(64)])
+    expect((await dispatch('executions/one'))[0].d).toBe(true)
+    expect((await dispatch('executions/two'))[0].d).toBe(false)
+    await expectRefused(`update public.studio_plugin_validations set payload_sha256 = $2 where id = $1`, [id, 'e'.repeat(64)], /dispatch can.t change/)
+    await expectRefused(`update public.studio_plugin_validations set runner_image = 'other' where id = $1`, [id], /dispatch can.t change/)
+    await expectRefused(`update public.studio_plugin_validations set callback_sha256 = $2 where id = $1`, [id, 'd'.repeat(64)], /identity can.t change/)
+  })
+
+  it('the collector lists only dispatched cloud runs, oldest first', async () => {
+    const { id } = await admit(0, 'professor')
+    expect((await studioDb.listDispatchedCloudRuns(50)).some((r) => r.id === id)).toBe(false)
+    await sql(`select public.studio_validation_dispatch($1, 'cloud', $2, 'executions/e', 'img@sha256:x', null)`, [id, 'a'.repeat(64)])
+    expect((await studioDb.listDispatchedCloudRuns(50)).find((r) => r.id === id)).toMatchObject({ executionName: 'executions/e', runnerImage: 'img@sha256:x' })
+  })
+
+  it('revalidation reads the version’s earlier purpose answer, and finds the course’s installation of a project', async () => {
+    const outcome = await studioDb.loadLatestPurposeOutcome(tools[0].version, PURPOSE_RUBRIC_VERSION)
+    expect(outcome).toMatchObject({ status: 'passed', metadata: { verdict: 'educational' }, aiModel: 'test-model' })
+    const [{ project_id: project }] = await sql<{ project_id: string }>('select project_id from public.studio_plugin_versions where id = $1', [tools[0].version])
+    const found = await studioDb.findActiveInstallation(section, project)
+    expect(found).toMatchObject({ sectionId: section, projectId: project, status: 'active' })
+    expect(await studioDb.findActiveInstallation(otherSection, project)).toBeNull()
+    const page = await studioDb.listInstitutionCurrentVersions(A.institution, 1000, 0)
+    expect(page?.rows.some((r) => r.installationId === (found as { id: string }).id)).toBe(true)
+  })
+
+  it('the revalidation upkeep continues a job that stopped on capacity, once, as its super admin', async (ctx) => {
+    if (!harness.superAdmin) ctx.skip()
+    const { continueRevalidations } = await import('@/lib/studio/validator/pipelines')
+    const { createAdminClient } = await import('@/lib/supabase/admin')
+    const TYPE = 'studio_validator_revalidate'
+    await sql('delete from public.background_jobs where type = $1 and institution_id = $2', [TYPE, A.institution])
+    try {
+      await sql(
+        `insert into public.background_jobs (type, params, status, institution_id, subject_key, created_by, result, completed_at)
+         values ($1, '{}', 'done', $2, 'revalidate', $3, '{"next": 25, "minRuleset": 2, "checked": 3, "waiting": true}', now())`,
+        [TYPE, A.institution, harness.superAdmin],
+      )
+      expect(await studioDb.revalidationProgress(TYPE)).toMatchObject({ active: expect.any(Number), waiting: expect.any(Number) })
+      const before = await studioDb.revalidationProgress(TYPE)
+      expect(before!.waiting).toBeGreaterThanOrEqual(1)
+      expect(await continueRevalidations(createAdminClient())).toBeGreaterThanOrEqual(1)
+      const queued = await sql<{ params: { offset: number; minRuleset: number }; created_by: string; status: string }>(
+        `select params, created_by, status from public.background_jobs where type = $1 and institution_id = $2 and status = 'pending'`,
+        [TYPE, A.institution],
+      )
+      expect(queued).toEqual([{ params: { offset: 25, minRuleset: 2 }, created_by: harness.superAdmin, status: 'pending' }])
+      // The newest job is now the queued one: a second upkeep adds nothing for this school.
+      await continueRevalidations(createAdminClient())
+      expect((await sql(`select 1 from public.background_jobs where type = $1 and institution_id = $2 and status = 'pending'`, [TYPE, A.institution])).length).toBe(1)
+    } finally {
+      await sql('delete from public.background_jobs where type = $1 and institution_id = $2', [TYPE, A.institution])
+    }
+  })
+
+  it('a run is never created already dispatched', async () => {
+    await expectRefused(
+      `insert into public.studio_plugin_validations (version_id, institution_id, stage, status, artifact_sha256, validator_version, ruleset_version, runtime_version, trigger, runner_mode)
+       values ($1, $2, 'runtime', 'pending', $3, 'test', $4, 'v1', 'professor', 'cloud')`,
+      [tools[0].version, A.institution, tools[0].hash, STUDIO_VALIDATOR_RULESET],
+      /dispatched after it is created/,
+    )
+  })
+
+  it('a run with no nonce hash can’t be dispatched without one', async () => {
+    const { rows } = await db.query(ADMIT, [tools[1].version, A.institution, tools[1].hash, STUDIO_VALIDATOR_RULESET, 'professor', PROFESSOR, null, 'professor', caps()])
+    const id = (rows[0].r as { id: string }).id
+    expect((await sql<{ d: boolean }>(`select public.studio_validation_dispatch($1, 'cloud', $2, 'e', 'i', null) as d`, [id, 'a'.repeat(64)]))[0].d).toBe(false)
+  })
+
+  it('the purpose classifier’s daily cap counts the institution’s recorded calls', async () => {
+    const [{ n }] = await sql<{ n: number }>(
+      `select count(*)::int as n from public.ai_usage_events where institution_id = $1 and feature = 'studio_purpose_check' and created_at > now() - interval '24 hours'`,
+      [A.institution],
+    )
+    await sql(
+      `insert into public.ai_usage_events (institution_id, feature, model, input_tokens, output_tokens) values ($1, 'studio_purpose_check', 'test-model', 1, 1)`,
+      [A.institution],
+    )
+    expect((await sql<{ ok: boolean }>('select public.studio_purpose_admit($1, $2) as ok', [A.institution, n + 1]))[0].ok).toBe(true)
+    expect((await sql<{ ok: boolean }>('select public.studio_purpose_admit($1, $2) as ok', [A.institution, n]))[0].ok).toBe(false)
+    await sql(`delete from public.ai_usage_events where institution_id = $1 and feature = 'studio_purpose_check' and model = 'test-model'`, [A.institution])
+  })
+
+  describe('the minimum accepted ruleset', () => {
+    /** Calls the control as `userId` would through their own client: the authenticated role and their JWT claims. */
+    const setAs = async (userId: string, ruleset: number, max = STUDIO_VALIDATOR_RULESET) => {
+      await db.query('begin')
+      try {
+        await db.query(`select set_config('request.jwt.claims', $1, true), set_config('request.jwt.claim.sub', $2, true)`, [JSON.stringify({ sub: userId, role: 'authenticated' }), userId])
+        await db.query('set local role authenticated')
+        const { rows } = await db.query('select public.studio_set_min_accepted_ruleset($1, $2) as r', [ruleset, max])
+        await db.query('commit')
+        return rows[0].r as { ok: boolean; reason?: string }
+      } catch (error) {
+        await db.query('rollback')
+        throw error
+      }
+    }
+
+    it('a professor can’t change it', async () => {
+      await expect(setAs(PROFESSOR, STUDIO_VALIDATOR_RULESET)).rejects.toThrow(/super admin/)
+    })
+
+    it('a super admin raises it, up to the code’s ruleset, never lowers it, and is recorded', async (ctx) => {
+      if (!harness.superAdmin) ctx.skip()
+      await sql('update public.studio_validator_settings set min_accepted_ruleset = 1, updated_by = null where id')
+      expect(await setAs(harness.superAdmin!, STUDIO_VALIDATOR_RULESET + 1)).toMatchObject({ ok: false, reason: 'out_of_range' })
+      expect(await setAs(harness.superAdmin!, STUDIO_VALIDATOR_RULESET)).toMatchObject({ ok: true })
+      expect(await sql('select min_accepted_ruleset, updated_by from public.studio_validator_settings')).toEqual([
+        { min_accepted_ruleset: STUDIO_VALIDATOR_RULESET, updated_by: harness.superAdmin },
+      ])
+      if (STUDIO_VALIDATOR_RULESET > 1) expect(await setAs(harness.superAdmin!, 1)).toMatchObject({ ok: false, reason: 'lower' })
+      // One step at a time, whatever maximum the caller names.
+      expect(await setAs(harness.superAdmin!, STUDIO_VALIDATOR_RULESET + 2, STUDIO_VALIDATOR_RULESET + 5)).toMatchObject({ ok: false, reason: 'out_of_range' })
+      await sql('update public.studio_validator_settings set min_accepted_ruleset = 1, updated_by = null where id')
+    })
+
+    it('only signed-in users may call the control; the queue functions are service-role only', async () => {
+      const grants = await sql<{ f: string; anon: boolean; authed: boolean }>(
+        `select p.proname as f, has_function_privilege('anon', p.oid, 'execute') as anon, has_function_privilege('authenticated', p.oid, 'execute') as authed
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public' and p.proname in ('studio_set_min_accepted_ruleset', 'studio_runtime_admit', 'studio_validation_dispatch', 'studio_purpose_admit', 'studio_review_queue')
+          order by 1`,
+      )
+      expect(grants).toEqual([
+        { f: 'studio_purpose_admit', anon: false, authed: false },
+        { f: 'studio_review_queue', anon: false, authed: false },
+        { f: 'studio_runtime_admit', anon: false, authed: false },
+        { f: 'studio_set_min_accepted_ruleset', anon: false, authed: true },
+        { f: 'studio_validation_dispatch', anon: false, authed: false },
+      ])
+    })
   })
 })

@@ -56,6 +56,7 @@ describe('Studio storage tables', () => {
       'src/lib/studio/runtime/frame.ts',
       'src/lib/studio/skill-bindings.ts',
       'src/lib/studio/student-visibility.ts',
+      'src/lib/studio/validator/pipelines.ts',
       'src/lib/studio/validator/service.ts',
     ])
   })
@@ -66,7 +67,7 @@ describe('Studio service modules', () => {
     'context', 'db', 'lifecycle', 'publication', 'records', 'runtime/frame', 'runtime/frame-ticket',
     'bridge/registry', 'bridge/dispatch', 'bridge/context-get', 'bridge/rate-limit',
     'access', 'navigation', 'prepublish', 'student-visibility', 'skill-bindings',
-    'validator/service', 'validator/purpose-ai', 'validator/runtime-runner',
+    'validator/service', 'validator/purpose-ai', 'validator/runtime-runner', 'validator/cloud-runner', 'validator/pipelines',
     'builder/harness', 'builder/service', 'builder/model', 'builder/check-worker',
   ].map(
     (m) => `src/lib/studio/${m}.ts`,

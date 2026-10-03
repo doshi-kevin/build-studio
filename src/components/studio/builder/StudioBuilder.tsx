@@ -34,6 +34,7 @@ import {
 import type { DraftHistory as DraftHistoryData } from '@/lib/studio/builder/service'
 import { DraftHistory } from './DraftHistory'
 import { MemoryPanel } from './MemoryPanel'
+import { SaveReleaseCard } from './SaveReleaseCard'
 import { StudioChat } from './StudioChat'
 import { StudioPreview } from './StudioPreview'
 import { useBuildRun } from './use-build-run'
@@ -294,8 +295,9 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
                 if ('error' in r) return { ok: false, message: r.error }
                 onChanged()
                 setHistoryReads((n) => n + 1)
-                return { ok: true, message: `Saved as version ${r.version}. It isn’t installed or shown to students yet.` }
+                return { ok: true, message: `Saved as version ${r.version}.`, saved: { versionId: r.versionId, version: r.version } }
               }}
+              afterSave={(saved) => <SaveReleaseCard sectionId={sectionId} versionId={saved.versionId} version={saved.version} />}
             />
           </aside>
           <section

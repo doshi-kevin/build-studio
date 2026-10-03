@@ -6,7 +6,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import exitTicket from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
 import type { StudioProfessor } from '@/lib/studio/context'
-import type { VersionVerdict } from '@/lib/studio/validator/verdict'
 
 vi.mock('@/lib/studio/context', () => ({ requireProfessor: vi.fn() }))
 vi.mock('@/lib/studio/db', () => ({
@@ -16,21 +15,23 @@ vi.mock('@/lib/studio/db', () => ({
   insertProject: vi.fn(),
   insertVersion: vi.fn(),
   installPlugin: vi.fn(),
+  findActiveInstallation: vi.fn(),
   activateVersion: vi.fn(),
   archiveInstallation: vi.fn(),
   archiveProject: vi.fn(),
 }))
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 vi.mock('@/lib/studio/access', () => ({ studioAccess: vi.fn(), STUDIO_PAUSED: 'Studio is paused right now. Try again later.' }))
-vi.mock('@/lib/studio/validator/service', () => ({ validateAfterPublish: vi.fn(), currentVerdict: vi.fn() }))
-vi.mock('@/lib/studio/skill-bindings', () => ({ skillBindingIssues: vi.fn() }))
+vi.mock('@/lib/studio/validator/service', () => ({ validateAfterPublish: vi.fn() }))
+// The version review itself is tested in studio-student-visibility.test.ts.
+vi.mock('@/lib/studio/student-visibility', () => ({ reviewVersionForStudents: vi.fn() }))
 
 const { requireProfessor } = await import('@/lib/studio/context')
 const { studioAccess } = await import('@/lib/studio/access')
 const db = await import('@/lib/studio/db')
 const { logEvent } = await import('@/lib/supabase/event-logger')
-const { validateAfterPublish, currentVerdict } = await import('@/lib/studio/validator/service')
-const { skillBindingIssues } = await import('@/lib/studio/skill-bindings')
+const { validateAfterPublish } = await import('@/lib/studio/validator/service')
+const { reviewVersionForStudents } = await import('@/lib/studio/student-visibility')
 const { artifactHash } = await import('@/lib/studio/validator/artifact')
 const lifecycle = await import('@/lib/studio/lifecycle')
 const { LIFECYCLE_NOT_AVAILABLE } = lifecycle
@@ -81,8 +82,6 @@ beforeEach(() => {
     studentVisibility: 'hidden',
   })
   vi.mocked(db.activateVersion).mockResolvedValue({ ok: true, value: null })
-  vi.mocked(currentVerdict).mockResolvedValue({ status: 'passed', staticRunId: crypto.randomUUID(), runtimeRunId: crypto.randomUUID(), rulesetVersion: 1 })
-  vi.mocked(skillBindingIssues).mockResolvedValue({ ok: true })
 })
 
 describe('who may act', () => {
@@ -237,67 +236,54 @@ describe('what reaches the database', () => {
 
 describe('switching versions while students can see the tool', () => {
   const input = { sectionId: PROFESSOR.sectionId, installationId: INSTALLATION, versionId: VERSION }
-  const visible = () =>
-    vi.mocked(db.loadInstallation).mockResolvedValue({
-      id: INSTALLATION,
-      institutionId: PROFESSOR.institutionId,
-      sectionId: PROFESSOR.sectionId,
-      projectId: PROJECT,
-      status: 'active',
-      currentVersionId: VERSION,
-      studentVisibility: 'visible',
-    })
+  const INSTALLATION_ROW = {
+    id: INSTALLATION,
+    institutionId: PROFESSOR.institutionId,
+    sectionId: PROFESSOR.sectionId,
+    projectId: PROJECT,
+    status: 'active' as const,
+    currentVersionId: VERSION,
+    studentVisibility: 'visible' as const,
+  }
+  const visible = () => vi.mocked(db.loadInstallation).mockResolvedValue(INSTALLATION_ROW)
+  const material = { code: 'unreleased_material' as const, message: 'Athena read course material students can’t see yet.', sources: [{ label: 'Week 6 slides', opensAt: '2026-10-09T13:00:00Z', note: 'not visible to students yet' }] }
 
-  it.each([
-    { status: 'unavailable', reason: 'runtime_not_checked' },
-    { status: 'needs_review', runId: crypto.randomUUID(), checkIds: ['data.answer_key'] },
-    { status: 'failed', reason: 'static_failed' },
-  ] satisfies VersionVerdict[])('refuses upgrade and rollback to a version whose verdict is $status', async (verdict) => {
+  beforeEach(() => {
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers: [], warnings: [] })
+  })
+
+  it('refuses upgrade and rollback when the version review has a blocker, and says which', async () => {
     visible()
-    vi.mocked(currentVerdict).mockResolvedValue(verdict)
+    const blockers = [{ code: 'validator_review' as const, message: 'Waiting for a Scholera reviewer.' }]
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers, warnings: [] })
     for (const act of [lifecycle.approveAndActivateVersion, lifecycle.rollbackVersion]) {
-      expect(await act(input)).toMatchObject({ ok: false, error: expect.stringMatching(/pass Studio’s automatic checks/) })
+      expect(await act({ ...input, acknowledgeWarnings: true })).toMatchObject({ ok: false, error: expect.stringMatching(/same checks as showing it/), blockers })
     }
     expect(db.activateVersion).not.toHaveBeenCalled()
   })
 
-  it('refuses a passing version whose skill slots are not linked in this course', async () => {
-    visible()
-    vi.mocked(skillBindingIssues).mockResolvedValue({ ok: false, unbound: ['Topic'] })
-    expect(await lifecycle.approveAndActivateVersion(input)).toMatchObject({ ok: false, error: expect.stringMatching(/skill slots/) })
-    expect(db.activateVersion).not.toHaveBeenCalled()
-  })
-
-  it('allows a passing, fully linked version', async () => {
-    visible()
-    expect(await lifecycle.approveAndActivateVersion(input)).toEqual({ ok: true, value: null })
-    expect(currentVerdict).toHaveBeenCalledWith(VERSION)
-  })
-
-  it('gates the version being switched to, not the one already active', async () => {
+  it('reviews the version being switched to, as the session professor', async () => {
     visible()
     const TARGET = crypto.randomUUID()
-    vi.mocked(currentVerdict).mockImplementation(async (id) =>
-      id === VERSION
-        ? { status: 'passed', staticRunId: 'a', runtimeRunId: 'b', rulesetVersion: 1 }
-        : { status: 'unavailable', reason: 'runtime_not_checked' },
-    )
-    expect(await lifecycle.approveAndActivateVersion({ ...input, versionId: TARGET })).toMatchObject({ ok: false })
-    expect(currentVerdict).toHaveBeenCalledWith(TARGET)
-    expect(db.activateVersion).not.toHaveBeenCalled()
+    await lifecycle.approveAndActivateVersion({ ...input, versionId: TARGET })
+    expect(reviewVersionForStudents).toHaveBeenCalledWith(INSTALLATION_ROW, TARGET, PROFESSOR.userId)
   })
 
-  it('refuses a passing version whose manifest no longer parses', async () => {
+  it('holds an unreleased_material warning until the professor acknowledges it, on upgrade and rollback', async () => {
     visible()
-    vi.mocked(db.loadVersion).mockResolvedValue({ id: VERSION, projectId: PROJECT, institutionId: PROFESSOR.institutionId, version: '1.0.0', bridgeVersion: 'v1', manifest: { manifestVersion: 9 } })
-    expect(await lifecycle.approveAndActivateVersion(input)).toEqual({ ok: false, error: 'That version can’t be used.' })
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers: [], warnings: [material] })
+    for (const act of [lifecycle.approveAndActivateVersion, lifecycle.rollbackVersion]) {
+      expect(await act(input)).toMatchObject({ ok: false, warnings: [material] })
+    }
     expect(db.activateVersion).not.toHaveBeenCalled()
+    expect(await lifecycle.approveAndActivateVersion({ ...input, acknowledgeWarnings: true })).toEqual({ ok: true, value: null })
+    expect(db.activateVersion).toHaveBeenCalledTimes(1)
   })
 
-  it('fails closed when skill links can’t be read', async () => {
+  it('acknowledging warnings never bypasses a blocker', async () => {
     visible()
-    vi.mocked(skillBindingIssues).mockResolvedValue({ ok: false, unreadable: true })
-    expect(await lifecycle.approveAndActivateVersion(input)).toMatchObject({ ok: false })
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers: [{ code: 'manifest_v1', message: 'older format' }], warnings: [material] })
+    expect(await lifecycle.approveAndActivateVersion({ ...input, acknowledgeWarnings: true })).toMatchObject({ ok: false })
     expect(db.activateVersion).not.toHaveBeenCalled()
   })
 
@@ -308,10 +294,74 @@ describe('switching versions while students can see the tool', () => {
     expect(db.activateVersion).toHaveBeenCalledWith(INSTALLATION, VERSION, PROFESSOR.userId, true, 'visible')
   })
 
-  it('does not consult the validator while the tool is hidden from students', async () => {
-    vi.mocked(currentVerdict).mockResolvedValue({ status: 'unavailable', reason: 'not_checked' })
+  it('does not review the version while the tool is hidden from students', async () => {
     expect(await lifecycle.approveAndActivateVersion(input)).toEqual({ ok: true, value: null })
-    expect(currentVerdict).not.toHaveBeenCalled()
+    expect(reviewVersionForStudents).not.toHaveBeenCalled()
+  })
+})
+
+describe('Add to this course / Use this version in the course, after Save', () => {
+  const NEW_VERSION = crypto.randomUUID()
+  const input = { sectionId: PROFESSOR.sectionId, versionId: NEW_VERSION }
+  const installed = (over: Partial<{ currentVersionId: string; studentVisibility: 'hidden' | 'visible' }> = {}) => ({
+    id: INSTALLATION, institutionId: PROFESSOR.institutionId, sectionId: PROFESSOR.sectionId, projectId: PROJECT,
+    status: 'active' as const, currentVersionId: VERSION, studentVisibility: 'hidden' as const, ...over,
+  })
+  beforeEach(() => {
+    vi.mocked(db.loadVersion).mockResolvedValue({ id: NEW_VERSION, projectId: PROJECT, institutionId: PROFESSOR.institutionId, version: '1.1.0', bridgeVersion: 'v1', manifest: exitTicket })
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers: [], warnings: [] })
+  })
+
+  it('installs the version when the course doesn’t have the tool', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValue(null)
+    expect(await lifecycle.addVersionToCourse(input)).toEqual({ ok: true, value: { installationId: INSTALLATION, added: true, changed: true } })
+    expect(db.installPlugin).toHaveBeenCalledWith(PROFESSOR.sectionId, NEW_VERSION, PROFESSOR.userId)
+    expect(db.findActiveInstallation).toHaveBeenCalledWith(PROFESSOR.sectionId, PROJECT)
+  })
+
+  it('makes it the course’s version when the course has another one, approving its card', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValue(installed())
+    vi.mocked(db.loadInstallation).mockResolvedValue(installed())
+    expect(await lifecycle.addVersionToCourse(input)).toEqual({ ok: true, value: { installationId: INSTALLATION, added: false, changed: true } })
+    expect(db.activateVersion).toHaveBeenCalledWith(INSTALLATION, NEW_VERSION, PROFESSOR.userId, true, 'hidden')
+    expect(db.installPlugin).not.toHaveBeenCalled()
+  })
+
+  it('on a tool students see, holds a warning until acknowledged', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValue(installed({ studentVisibility: 'visible' }))
+    vi.mocked(db.loadInstallation).mockResolvedValue(installed({ studentVisibility: 'visible' }))
+    vi.mocked(reviewVersionForStudents).mockResolvedValue({ blockers: [], warnings: [{ code: 'unreleased_material', message: 'm' }] })
+    expect(await lifecycle.addVersionToCourse(input)).toMatchObject({ ok: false, warnings: [{ code: 'unreleased_material' }] })
+    expect(db.activateVersion).not.toHaveBeenCalled()
+    expect(await lifecycle.addVersionToCourse({ ...input, acknowledgeWarnings: true })).toMatchObject({ ok: true })
+  })
+
+  it('changes nothing when the course already uses this version', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValue(installed({ currentVersionId: NEW_VERSION }))
+    expect(await lifecycle.addVersionToCourse(input)).toEqual({ ok: true, value: { installationId: INSTALLATION, added: false, changed: false } })
+    expect(db.activateVersion).not.toHaveBeenCalled()
+    expect(db.installPlugin).not.toHaveBeenCalled()
+  })
+
+  it('refuses a version of someone else’s project without looking for an installation', async () => {
+    vi.mocked(db.loadProject).mockResolvedValue({ ...ownProject, ownerId: crypto.randomUUID() })
+    expect(await lifecycle.addVersionToCourse(input)).toEqual({ ok: false, error: LIFECYCLE_NOT_AVAILABLE })
+    expect(db.findActiveInstallation).not.toHaveBeenCalled()
+  })
+
+  it('an unreadable installation is an error, never a second install', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValue('error')
+    expect(await lifecycle.addVersionToCourse(input)).toMatchObject({ ok: false })
+    expect(db.installPlugin).not.toHaveBeenCalled()
+  })
+
+  it('placement says what the Save card should offer', async () => {
+    vi.mocked(db.findActiveInstallation).mockResolvedValueOnce(null)
+    expect(await lifecycle.versionPlacement(input)).toEqual({ ok: true, value: { mode: 'add', installationId: null, visible: false } })
+    vi.mocked(db.findActiveInstallation).mockResolvedValueOnce(installed({ studentVisibility: 'visible' }))
+    expect(await lifecycle.versionPlacement(input)).toEqual({ ok: true, value: { mode: 'use', installationId: INSTALLATION, visible: true } })
+    vi.mocked(db.findActiveInstallation).mockResolvedValueOnce(installed({ currentVersionId: NEW_VERSION }))
+    expect(await lifecycle.versionPlacement(input)).toMatchObject({ ok: true, value: { mode: 'current' } })
   })
 })
 

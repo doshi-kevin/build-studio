@@ -6,6 +6,7 @@ import { canWriteAsProfessor, verifySectionAccess } from '@/lib/auth/section-acc
 import { studioKillSwitchEngaged } from '@/lib/studio/access'
 import { candidateVersion, resolveViewer, type ReadOnlyReason } from '@/lib/studio/context'
 import { getPublicationPanel } from '@/lib/studio/student-visibility'
+import { buildPluginCard, cardAdditions } from '@/lib/studio/plugin-card'
 import { allowedBridgeMethods } from '@/lib/studio/bridge/catalog'
 import { issueFrameUrl } from '@/lib/studio/runtime/frame-ticket'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -92,6 +93,17 @@ export default async function StudioRuntimePage({ params, searchParams }: Studio
         }
       : null
 
+  // Previewing another version of an active tool: offer to make it the course's version.
+  const versions = panel.ok ? panel.value.versions : []
+  const useVersion =
+    candidate && viewer.writable && panel.ok && panel.value.status === 'active'
+      ? {
+          older: versions.findIndex((v) => v.id === candidate.versionId) > versions.findIndex((v) => v.id === viewer.versionId),
+          visible: panel.value.visibility === 'visible',
+          added: cardAdditions(buildPluginCard(candidate.manifest, null), buildPluginCard(viewer.manifest, null)),
+        }
+      : undefined
+
   return (
     <StudioRuntimeView
       title={manifest.name}
@@ -104,7 +116,8 @@ export default async function StudioRuntimePage({ params, searchParams }: Studio
       preview={preview ? manifest : undefined}
       candidate={candidate ? { versionId: candidate.versionId, version: candidate.manifest.version } : undefined}
       publication={publication}
-      versions={panel.ok ? panel.value.versions : []}
+      versions={versions}
+      useVersion={useVersion}
       activeVersionId={viewer.versionId}
       readOnlyNotice={viewer.readOnlyReason ? READ_ONLY_NOTICE[viewer.readOnlyReason] : undefined}
       sectionId={sectionId}

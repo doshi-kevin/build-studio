@@ -8,13 +8,18 @@ infra/
 │   ├── README.md                 # How to run each of these, and what they guard against
 │   ├── deploy-to-prod.sh         # Deploys the `scholera` service
 │   ├── deploy-to-staging.sh      # Deploys the `scholera-staging` service
+│   ├── production-project-ref    # The production Supabase ref; staging and browser tests refuse it
 │   ├── setup-sweep-schedulers.sh # Creates the Cloud Scheduler queue-drain jobs
 │   ├── cloudbuild.yaml           # Build config used by deploy-to-prod.sh
 │   └── cloudbuild.staging.yaml   # Build config used by deploy-to-staging.sh
-└── microservices/                # Supporting services, deployed separately
-    └── deck-converter/           # Converts PowerPoint to PDF for Live Classroom
-        ├── deploy.sh
-        └── README.md             # Runbook: deploy, IAM, health checks, rollback
+├── microservices/                # Supporting services, deployed separately
+│   └── deck-converter/           # Converts PowerPoint to PDF for Live Classroom
+│       ├── deploy.sh
+│       └── README.md             # Runbook: deploy, IAM, health checks, rollback
+└── validator-runner/             # Cloud Run job that runs Studio's browser checks
+    ├── Dockerfile
+    ├── deploy.sh                 # Dry run by default; --apply is a deployment
+    └── README.md                 # How one run works, isolation, what is unverified
 ```
 
 Local setup tooling (like `scripts/dev-setup/setup-local.sh`) lives under `scripts/`, not here.
@@ -69,3 +74,13 @@ unset, Office support switches itself off and PDF handling is unaffected. Detail
 [README](./microservices/deck-converter/README.md).
 
 New standalone services go in `microservices/<name>/` with their own `deploy.sh` and `README.md`.
+
+## validator-runner/
+
+A Cloud Run **job**, not a service: one fresh container per Studio plugin check. Stage 2 of the
+Studio validator runs a professor's plugin in headless Chromium, and that code is untrusted, so it
+never runs in the app. The app starts one execution per check, hands it two signed Cloud Storage
+URLs, and reads the report from a write-once object. The runner holds no secret and its service
+account has no roles. Nothing here has been deployed yet, and several isolation properties (the
+no-egress network, Chromium's sandbox on Cloud Run gen2) are unverified until it is. Details and
+the list of what is verified in its [README](./validator-runner/README.md).

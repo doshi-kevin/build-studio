@@ -2,11 +2,12 @@
 // must pass every runtime check in both views, through the same CLI contract and report
 // schema the server uses, and each bad fixture must fail the check it was built to break.
 import { spawn } from 'node:child_process'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { expect, test } from '@playwright/test'
 import { GOOD, RUNTIME_BAD, type FixtureArtifact } from '../../src/lib/studio/validator/fixtures'
-import { runtimeReportSchema, summarizeRuntimeReport } from '../../src/lib/studio/validator/runtime-report'
+import { runtimeEnvelopeSchema, runtimeReportSchema, summarizeRuntimeReport } from '../../src/lib/studio/validator/runtime-report'
 
 // runner.mjs uses top-level await, and Playwright compiles specs to CommonJS: load it lazily.
 const runRuntimeValidation = async (artifact: unknown): Promise<unknown> =>
@@ -14,8 +15,12 @@ const runRuntimeValidation = async (artifact: unknown): Promise<unknown> =>
 
 const toJob = (a: FixtureArtifact) => ({ manifest: a.manifest, studentBundle: a.studentBundle, professorBundle: a.professorBundle })
 
-/** Spawns the CLI the way runtime-runner.ts does: stdin in, JSON report out, no app secrets. */
-function runCli(artifact: unknown): Promise<{ code: number | null; out: string }> {
+/** The payload bytes runtime-runner.ts's buildPayload produces for a run. */
+const toPayload = (artifact: unknown, validationId = randomUUID(), nonce = randomBytes(32).toString('base64url')) =>
+  JSON.stringify({ format: 'studio-validator-payload-v1', validationId, nonce, ...(artifact as object) })
+
+/** Spawns the CLI the way runtime-runner.ts does: payload on stdin, envelope out, no app secrets. */
+function runCli(payload: string): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
     const env: NodeJS.ProcessEnv = { NODE_ENV: 'production' }
     for (const k of ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'PLAYWRIGHT_BROWSERS_PATH']) {
@@ -26,24 +31,29 @@ function runCli(artifact: unknown): Promise<{ code: number | null; out: string }
     child.stdout.on('data', (c) => (out += c))
     child.stderr.resume()
     child.on('close', (code) => resolve({ code, out }))
-    child.stdin.end(JSON.stringify(artifact))
+    child.stdin.end(payload)
   })
 }
 
 test('the known-good tool passes every runtime check in both views, through the CLI', async () => {
-  const { code, out } = await runCli(toJob(GOOD))
+  const validationId = randomUUID()
+  const nonce = randomBytes(32).toString('base64url')
+  const payload = toPayload(toJob(GOOD), validationId, nonce)
+  const { code, out } = await runCli(payload)
   expect(code).toBe(0)
-  const parsed = runtimeReportSchema.safeParse(JSON.parse(out))
+  const parsed = runtimeEnvelopeSchema.safeParse(JSON.parse(out))
   expect(parsed.success).toBe(true)
   if (!parsed.success) return
-  const results = summarizeRuntimeReport(parsed.data)
+  // The envelope is bound to exactly the payload it was given.
+  expect(parsed.data.binding).toEqual({ validationId, nonce, payloadSha256: createHash('sha256').update(payload).digest('hex'), runtimeVersion: 'v1' })
+  const results = summarizeRuntimeReport(parsed.data.report)
   expect(results.map((r) => [r.checkId, r.status, r.views])).toEqual(
     results.map((r) => [r.checkId, 'passed', { student: 'passed', professor: 'passed' }]),
   )
 })
 
-test('the CLI refuses input that is not an artifact', async () => {
-  const { code, out } = await runCli({ manifest: {} })
+test('the CLI refuses input that is not a payload', async () => {
+  const { code, out } = await runCli(JSON.stringify(toJob(GOOD)))
   expect(code).not.toBe(0)
   expect(out).toBe('')
 })

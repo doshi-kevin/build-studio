@@ -37,11 +37,12 @@ Dotted arrows carry model output. Each ends at code that validates it.
 | Input | Why it is untrusted | How it is contained |
 |---|---|---|
 | The professor's request and answers | Free text | At most 4000 characters, control and bidi characters refused, never logged |
-| Model tool calls | The model can be wrong or steered | Only ten tools exist. Each argument is a flat strict schema; paths are a two-value enum; no argument names an id or scope |
+| Model tool calls | The model can be wrong or steered | Only eleven tools exist. Each argument is a flat strict schema; paths are a two-value enum; no argument names an id or scope |
 | Generated code | It may be broken, insecure or written to exfiltrate | Scholera compiles it, typechecks it against a hand-written environment, runs Stage 1, and it only ever runs in the Step 4 sandbox |
 | Generated manifest | It is the plugin's whole escalation surface | Parsed, owned fields stamped, diffed and classified; escalations wait for the professor |
 | Course labels and skill names | Skill names can come from uploaded files | Entered as fenced data with provenance `course-data`, below the professor in the authority order. Never accepted as the evidence for a saved decision |
 | Saved project decisions | Approved by the professor, but the model worded most of them | Fenced as data with provenance `project-memory`, below the current request. The model can only propose; the professor approves that exact row |
+| Course material | Uploaded files and professor-written text, some not yet visible to students | Reached only through `search_course_material`, read again from Postgres every turn, fenced with provenance `course-material`, below the request. Never evidence for a saved decision. A copy guard keeps unreleased wording out of the tool (see [Course material](#course-material)) |
 
 ## What is stored
 
@@ -147,7 +148,7 @@ Staging gets the builder's settings from `deploy-to-staging.sh`: the jobs and fr
 
 ## The tools
 
-The model sees the same ten tools every turn. There is no shell, filesystem, network, database, publication, activation, visibility, entitlement or binding tool.
+The model sees the same eleven tools every turn. There is no shell, filesystem, network, database, publication, activation, visibility, entitlement or binding tool.
 
 | Tool | Does | Limits |
 |---|---|---|
@@ -159,6 +160,7 @@ The model sees the same ten tools every turn. There is no shell, filesystem, net
 | `run_checks` | Compile, typecheck, Stage 1, builder checks | The model can't choose or skip checks. Unchanged work returns the cached result |
 | `submit_plan` | Records goal, files, manifest changes, checks | Plain text, at most 8 KiB. A plan grants nothing |
 | `ask_professor` | Pauses for one answer | At most 2 per run |
+| `search_course_material` | Searches this course's own material; the excerpts arrive next turn as data | 1 to 4 keywords, at most 200 bytes; time only through `focus` (`this_week`, `next_week`, `week:N`); 3 searches per run, 6 excerpts each (see [Course material](#course-material)) |
 | `propose_memory` | Suggests one lasting decision for the professor to keep | Topic and slot from closed lists; at most 2 per run; needs a quote of the professor's own words; inert until the professor approves it (see [Project memory](#project-memory)) |
 | `finish` | Asks to end: `completed` or `blocked` with a summary | `completed` triggers the harness's own gate |
 
@@ -193,6 +195,7 @@ The draft gate (`checks.ts`), in a fixed order:
 2. Typecheck both views against `kit/plugin-kit-types.ts` alone (`noLib`, `strict`, `noUnusedLocals`). There is no DOM, Node or Scholera type to reach.
 3. Stage 1 static checks from the validator, on the artifact a Save would publish, minus `artifact.hash` (always matches) and `edtech.purpose` (the AI classifier runs at Save, never in the loop). A `needs_review` outcome blocks.
 4. Builder checks: the manifest is valid, available and compatible; the purpose wording passes `deterministicPurpose`; and no student's full name (across every section the owner teaches) appears in code or manifest. The roster check fails closed when the roster can't be read, and never quotes the name.
+5. `builder.disclosure`: the tool's visible text doesn't copy course material students can't see yet (see [Course material](#course-material)). It fails closed when that material can't be read.
 
 Stage 2 (the browser) never runs in the loop. It stays with publication.
 
@@ -210,20 +213,21 @@ Repair is bounded:
 
 ## Context
 
-Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v4`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
+Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v5`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
 
 1. The manifest's structure, unfenced, and its own words, fenced.
 2. The file map, frozen collections and available capabilities.
 3. The last 3 builds of the project.
 4. The project's saved decisions, picked deterministically (see [Project memory](#project-memory)).
 5. The course code and title, plus skill names only when the request is about skills.
-6. The kit references the model asked for.
-7. The files it has read, with line numbers.
-8. The latest findings.
-9. The action log and refusal hints, the plan, and the remaining budgets.
-10. Last, the professor's request and answers.
+6. The course material the model's searches found, re-read for this turn.
+7. The kit references the model asked for.
+8. The files it has read, with line numbers.
+9. The latest findings.
+10. The action log and refusal hints, the plan, and the remaining budgets.
+11. Last, the professor's request and answers.
 
-Everything not written by Scholera or the professor sits inside a `<data_NONCE>` block with a provenance attribute (`plugin-code`, `check-output`, `course-data`, `earlier-request`, `model-authored`, `project-memory`). The nonce changes per prompt, and text inside a block can't close it (`fenceBlock` in `prompt-fence.ts`).
+Everything not written by Scholera or the professor sits inside a `<data_NONCE>` block with a provenance attribute (`plugin-code`, `check-output`, `course-data`, `course-material`, `earlier-request`, `model-authored`, `project-memory`). The nonce changes per prompt, and text inside a block can't close it (`fenceBlock` in `prompt-fence.ts`).
 
 The authority order, stated in the instructions and enforced by what tools exist, is:
 
@@ -236,7 +240,27 @@ The authority order, stated in the instructions and enforced by what tools exist
 
 A saved decision never outranks the request in front of the model, and never outranks a platform rule.
 
-No id (tenant, section, user, project, run, memory), student data, course material, secret or URL ever enters a prompt. The prompt is held to 64,000 estimated tokens by fixed trims, in order: memory preferences, history, skills, the action log, kit references, findings.
+No id (tenant, section, user, project, run, memory), student data, secret or URL ever enters a prompt. Course material enters only as the fenced excerpts below, with student names redacted. The prompt is held to 64,000 estimated tokens by fixed trims, in order: memory preferences, course material (all but the newest search), history, skills, the action log, kit references, findings.
+
+## Course material
+
+Step 9 lets the builder read the course it is building for (`course-material.ts`, pure; `course-retriever.ts`; the `studio_course_*` functions in `20261003003000_studio_course_context.sql`). Pinecone stays a future provider behind the `CourseRetriever` interface; version 1 is PostgreSQL full-text search.
+
+**What it can read.** One SQL function, `studio_course_units`, decides eligibility for every read: module items, modules, assignments and the syllabus of the run's own section and institution. Each unit has a disclosure class:
+
+- `released`: students can see it now;
+- `scheduled`: published, with an unlock date still ahead (the builder may read it, decision D9-1);
+- `withheld`: hidden or unpublished. Never shown; a search reports only how many matched, so the model can tell the professor to publish them with a date or paste the material.
+
+**Searching.** `search_course_material` takes 1 to 4 keywords and an optional `focus`. Time words are stripped from the query; time goes through `focus`. "This week" ranks modules dated within 7 days of now 1.5 times higher (D9-3), and falls back to the course start date and week numbers only when modules have no dates. Ranking is `ts_rank_cd` over an OR of the query's lexemes, at most 2,000 units per section, and excerpts come from `ts_headline` with no markup. A search returns at most 6 excerpts of 1,200 bytes, labelled with their source ("Week 6: Attention (lecture), page 12") and, when not yet visible, "not visible to students yet, opens Oct 9". A search or re-read that takes longer than 3 seconds, or fails, is reported to the model as unavailable and the build carries on without it.
+
+**Every turn re-reads.** Excerpts aren't stored in the prompt history. Each turn reads the found units again, so material hidden or deleted mid-run drops out, and material that changed class is relabelled; a unit that became unopened is added to the run's provenance (`material.reclassified`). The block is held to 12 KiB, dropping the oldest whole search first.
+
+**Provenance.** The run keeps the key of every unopened unit it read, with the section it was built in (`material_sources`, `{k, s}`). At commit `studio_builder_end` unions them into the project's and prunes: a source students can now see, or that no longer exists, can't leak and is dropped; of the rest the newest 96 stay, and `material_incomplete` is set when any had to go. Save copies both onto the version. The professor sees "Athena read these from your course:" on the ending card, unopened material first, with when students can see it. The release review reads the version's provenance again as it is now and warns `unreleased_material` before Show or a version switch ([studio-plugin-publication.md](./studio-plugin-publication.md)).
+
+**The copy guard** (`disclosure.ts`, check `builder.disclosure`). The model may use unopened material for structure and topics, never its wording. The gate compares the tool's visible text (string literals and JSX text in each view, parsed with the TypeScript parser, as one word stream per view, plus the manifest's words) against the current text of every unopened source in the provenance. Two shared 5-word shingles fail the draft; a short source of 4 to 9 words fails when it appears whole. It runs again at Save. It fails closed when the material can't be read, and names a source the owner no longer teaches only generically.
+
+**Roster names** in material are redacted before the model sees them, matched after NFKD folding, with curly apostrophes and Unicode dashes made plain, invisible characters removed, and "Last, First" order recognized.
 
 ## Project memory
 
@@ -434,6 +458,8 @@ Each has a test, and the starred ones also have a mutation test that removes the
 - A project can't pass its active cap, a run can't pass its proposal cap, and a prompt carries at most 8 decisions and 2 KiB of them. ★ memory caps
 - The current request outranks a saved decision, in the instructions, in the prompt, and by position. ★ request overrides memory
 - A failed memory read never fails a build, and a stale or stopped slice records no proposal (harness and database tests).
+- Course material is read only through `studio_course_units`, pinned to the run's institution and section; hidden and unpublished material never reaches a prompt (database tests, `db/studio-course-context.test.ts`). ★ eligibility
+- A draft that copies unopened wording into the tool fails the gate and Save, and an unreadable source fails closed (`studio-course-material.test.ts`, harness tests). ★ copy guard
 
 ## Evals
 
@@ -476,6 +502,8 @@ What ran, and on what. Status words: **verified**, **verified with a stand-in** 
 | Entitlement | Verified with a stand-in | Without `studio` the page offers no build and says why; history and the draft are kept |
 | Live eval | Partly verified | Step 8C baseline, $1 cap: 8 cases ran, 6 met their outcome, every memory check passed, no invariant failures; 6 cases skipped by the cap. See the live eval section above |
 | Project memory (Steps 8B to 8D) | Verified with a stand-in | The same stand-in as above, passed to the test process explicitly with no `.env` file loaded. `npm run test:db` 290 of 290, with a super admin in the fixture (58 memory tests, among them overlapping-transaction races proven to wait on the per-project lock). The browser walkthrough passed 50 of 50 on the production build. 34 mutations each broke one safeguard and were each caught: slot uniqueness, cross-slot replacement in the tool, the function and the guard, project and institution binding, the evidence, support and negation checks, professor approval, the proposal TTL, the lock, retrieval of superseded rows, the retrieval and byte caps, slot scoring, the request-over-memory rule and order, the active cap and the claim fence |
+| Course material (Step 9) | Verified with a stand-in | `db/studio-course-context.test.ts` on real PostgreSQL and PostgREST (eligibility, disclosure classes, search, provenance union and prune, and a whole build through the real harness), the harness and pure-rule suites, and 35 mutations each caught. In the Step 10 walkthrough a scripted build's search recorded next week's unopened material, the ending card listed it, and the release review warned about it by name and date. No live model call |
+| Live eval (Step 9) | Not run | The course-material cases (R1 to R3) need a Google key passed explicitly to the eval command; none was supplied, so no new baseline was recorded |
 
 The walkthrough found that every plugin frame 404ed in a production build (`request.nextUrl.host` is the server's own address there; fixed in 7C with `requestHost`), and in 7D that the school's daily cap told professors to ask again in smaller steps (now `limit_daily_cost`).
 
@@ -493,4 +521,4 @@ The walkthrough found that every plugin frame 404ed in a production build (`requ
 
 ## Not in Step 7
 
-Course material retrieval, Stage 2 in the loop, autonomous publication or activation, student visibility changes, multi-file plugins and their build service, model routing, redo or multi-step history, a manual code editor, and Git in any role. Project memory arrived in Step 8B. Memory that spans projects, sections or students, and summaries of past conversations, are still not built.
+Stage 2 in the loop, autonomous publication or activation, student visibility changes, multi-file plugins and their build service, model routing, redo or multi-step history, a manual code editor, and Git in any role. Project memory arrived in Step 8B, course material in Step 9. Memory that spans projects, sections or students, and summaries of past conversations, are still not built.

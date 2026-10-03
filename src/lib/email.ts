@@ -1251,3 +1251,43 @@ export async function sendFeatureRequestDeclined(
     return false
   }
 }
+
+/**
+ * Tells Scholera's super admins a Studio tool's check is waiting for a reviewer. Names
+ * the tool and school only; the code is read in the queue, never sent by email.
+ */
+export async function sendStudioReviewWaiting(to: string[], opts: { pluginName: string; institution: string }): Promise<boolean> {
+  const resend = getResendClient()
+  if (!resend) {
+    logger.warn('sendStudioReviewWaiting: Skipped — no email client configured')
+    return false
+  }
+  const queueUrl = `${getSiteUrl()}/super-admin/studio-reviews`
+  try {
+    const { error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to,
+      subject: 'Scholera Studio — a tool is waiting for review',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h1 style="color: #111827; font-size: 22px; margin-bottom: 8px;">A Studio tool needs a reviewer</h1>
+          <p style="color: #6b7280; font-size: 15px; margin-bottom: 24px;">
+            <strong>${escapeHtml(opts.pluginName)}</strong> from ${escapeHtml(opts.institution)} has a check Studio couldn't decide on its own. Students can't see the tool until someone approves it.
+          </p>
+          <p><a href="${escapeHtml(queueUrl)}" style="color: #2563eb;">Open the review queue</a></p>
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+          <p style="color: #9ca3af; font-size: 12px;">Automated message from Scholera.</p>
+        </div>
+      `,
+    })
+    if (error) {
+      logger.error('sendStudioReviewWaiting: Failed', error)
+      return false
+    }
+    logger.info('sendStudioReviewWaiting: Sent', { recipients: to.length })
+    return true
+  } catch (error) {
+    logger.error('sendStudioReviewWaiting: Exception', error)
+    return false
+  }
+}

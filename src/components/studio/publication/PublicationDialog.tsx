@@ -2,16 +2,15 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlertTriangle, CircleAlert, Clock } from 'lucide-react'
+import { CircleAlert, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
 import type { PluginCard } from '@/lib/studio/plugin-card'
 import type { BlockerCode, Issue, WarningCode } from '@/lib/studio/student-visibility'
 import type { ValidationSummary } from '@/lib/studio/validator/service'
+import { IssueWarnings } from './IssueWarnings'
 import { SkillSlotLinks } from './SkillSlotLinks'
 import { ValidationChecks } from './ValidationChecks'
 import { showToStudentsAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/[installationId]/actions'
@@ -196,29 +195,12 @@ export function PublicationDialog({
             <p>{card.tracking}</p>
           </Section>
 
-          {warnings.length > 0 && (
-            <Alert>
-              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-              <AlertTitle>Before you continue</AlertTitle>
-              <AlertDescription className="space-y-3">
-                <ul className="list-disc space-y-1 pl-5">
-                  {warnings.map((w) => (
-                    <li key={w.code}>{w.message}</li>
-                  ))}
-                </ul>
-                {!blocked && (
-                  <div className="flex min-h-11 items-center gap-2">
-                    <Checkbox
-                      id="publication-acknowledge"
-                      checked={acknowledged}
-                      onCheckedChange={(v) => setAcknowledged(v === true)}
-                    />
-                    <Label htmlFor="publication-acknowledge">I’ve read these and want to continue</Label>
-                  </div>
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
+          <IssueWarnings
+            id="publication-acknowledge"
+            warnings={warnings}
+            acknowledged={acknowledged}
+            onAcknowledge={blocked ? undefined : setAcknowledged}
+          />
         </div>
 
         <DialogFooter>

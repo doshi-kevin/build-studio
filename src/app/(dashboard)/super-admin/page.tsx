@@ -15,6 +15,7 @@ import { verifySuperAdmin } from '@/lib/auth/super-admin-context'
 import { institutionQueries } from '@/lib/supabase/queries'
 import { logger } from '@/lib/logger'
 import { InstitutionsTable, type InstitutionRow } from '@/components/super-admin/institutions/InstitutionsTable'
+import { countWaitingReviews } from '@/lib/studio/validator/service'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,7 +41,7 @@ export default async function SuperAdminPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const adminDb = createAdminClient() as any
 
-  const institutions = (await institutionQueries.getAllWithCounts(adminDb)) as InstitutionRow[]
+  const [institutions, studioReviews] = (await Promise.all([institutionQueries.getAllWithCounts(adminDb), countWaitingReviews()])) as [InstitutionRow[], number | null]
   logger.info('SuperAdminPage: Loaded', { count: institutions.length })
 
   const noAdminCount = institutions.filter((i) => i.admin_count === 0).length
@@ -64,6 +65,13 @@ export default async function SuperAdminPage() {
               {noAdminCount === 1
                 ? '1 institution has no admin assigned.'
                 : `${noAdminCount} institutions have no admin assigned.`}
+            </p>
+          )}
+          {!!studioReviews && (
+            <p className="text-[13px] mt-2">
+              <Link href="/super-admin/studio-reviews" className="text-primary underline-offset-4 hover:underline">
+                {studioReviews === 1 ? '1 Studio check is waiting for a reviewer.' : `${studioReviews} Studio checks are waiting for a reviewer.`}
+              </Link>
             </p>
           )}
         </div>

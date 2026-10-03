@@ -91,12 +91,23 @@ export function buildPluginCard(manifest: StudioManifest, storage: StorageFigure
       fields: Object.keys(c.fields).map(humanize),
       access: ACCESS[c.access].label,
     })),
-    ai: 'None. This tool doesn’t use AI.',
-    grading: 'None. This tool doesn’t grade or send scores to the gradebook.',
-    tracking: 'None. This tool doesn’t record activity signals.',
+    ai: 'This tool doesn’t use AI.',
+    grading: 'This tool doesn’t grade or send scores to the gradebook.',
+    tracking: 'This tool doesn’t record activity signals.',
     storage: storage && {
       used: `${count(storage.records)} of ${count(storage.installationMaxRecords)} saved entries, ${formatBytes(storage.bytes)} of ${formatBytes(storage.installationMaxBytes)}`,
       perStudent: `Each student can save up to ${count(storage.studentMaxRecords)} entries (${formatBytes(storage.studentMaxBytes)})`,
     },
   }
+}
+
+/** The plugin card lines `next` has that `previous` doesn't: what a new version adds. */
+export function cardAdditions(next: PluginCard, previous: PluginCard): string[] {
+  const lines = (c: PluginCard) => [
+    ...c.students.map((l) => `Students can: ${l}`),
+    ...c.professors.map((l) => `You can: ${l}`),
+    ...c.data.map((d) => `Saves ${d.name}: ${d.access}. Includes ${d.fields.join(', ')}.`),
+  ]
+  const before = new Set(lines(previous))
+  return lines(next).filter((l) => !before.has(l))
 }

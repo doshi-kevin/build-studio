@@ -5,6 +5,10 @@
  * freezes a code release for its owner's Studio. Showing an installation lets one
  * section's students open it, on whatever version is current there (always approved).
  *
+ * reviewVersionForStudents is the one review of a version for students: showing a tool
+ * runs it with the installation's own checks, and switching the version of a tool
+ * students already see (lifecycle.ts: Use this version, Roll back) runs it alone.
+ *
  * Every hard blocker below is checked here, on the server, every time: a confirmation
  * dialog is never the boundary. The database then re-checks the parts it can hold on its
  * own (active installation, same section, actor's institution) under a row lock.
@@ -24,6 +28,8 @@ import { requireProfessor, type StudioProfessor } from './context'
 import * as db from './db'
 import { STUDIO_QUOTA_WARNING_RATIO } from './limits'
 import { parseManifest } from './manifest'
+import { disclosureNote } from './builder/course-material'
+import { loadGuardSources } from './builder/course-retriever'
 import { buildPluginCard, type PluginCard } from './plugin-card'
 import { prePublishVerdict } from './prepublish'
 import { skillBindingIssues } from './skill-bindings'
@@ -41,6 +47,7 @@ export type BlockerCode =
   | 'version_missing'
   | 'version_mismatch'
   | 'manifest_invalid'
+  | 'manifest_v1'
   | 'bridge_unsupported'
   | 'student_bundle_missing'
   | 'validator_unavailable'
@@ -50,12 +57,22 @@ export type BlockerCode =
   | 'over_quota'
   | 'quota_unavailable'
 
-export type WarningCode = 'near_quota' | 'newer_version' | 'duplicate_label'
+export type WarningCode = 'near_quota' | 'newer_version' | 'duplicate_label' | 'unreleased_material'
+
+/** One piece of course material students can't see yet, for the unreleased_material warning. */
+export interface UnreleasedSource {
+  label: string
+  /** ISO time it opens to students; null when it has no date (hidden or unpublished). */
+  opensAt: string | null
+  note: string
+}
 
 export interface Issue<C extends string> {
   code: C
   /** Plain language for the professor. Never shown to anyone else. */
   message: string
+  /** unreleased_material only: each source the version's builder read that students can't see. */
+  sources?: UnreleasedSource[]
 }
 
 export interface PublicationReview {
@@ -74,9 +91,114 @@ const denied = (): { ok: false; error: string } => ({ ok: false, error: VISIBILI
 const input = z.strictObject({ sectionId: z.uuid(), installationId: z.uuid() })
 const showInput = input.extend({ acknowledgeWarnings: z.boolean().optional() })
 
-/** Every hard blocker and warning for showing this installation to students. The
- * caller has already verified the professor and that the installation is in their
- * section. Checks are all run, so the professor sees everything at once. */
+/**
+ * Every check of one version for students, whether it is being shown or becoming the
+ * version students already see: the version and manifest, the validator's verdict, skill
+ * bindings, and course material its builder read that students can't see yet (a warning,
+ * acknowledged). `professorId` labels that material as the professor may see it.
+ */
+export async function reviewVersionForStudents(
+  installation: db.InstallationRow,
+  versionId: string,
+  professorId: string,
+): Promise<PublicationReview> {
+  const blockers: Issue<BlockerCode>[] = []
+  const warnings: Issue<WarningCode>[] = []
+  const block = (code: BlockerCode, message: string) => blockers.push({ code, message })
+
+  const version = await db.loadVersion(versionId)
+  if (!version) {
+    block('version_missing', VERSION_UNUSABLE)
+    return { blockers, warnings }
+  }
+  if (version.projectId !== installation.projectId || version.institutionId !== installation.institutionId) {
+    block('version_mismatch', VERSION_UNUSABLE)
+  }
+  const manifest = parseManifest(version.manifest)
+  if (!manifest.ok) block('manifest_invalid', VERSION_UNUSABLE)
+  else if (manifest.manifest.manifestVersion === 1) {
+    block('manifest_v1', 'This version was made with an older Studio format. Save a new version from the builder to use it with students.')
+  }
+  if (!isSupportedRuntime(version.bridgeVersion)) {
+    block('bridge_unsupported', 'This tool was built for an older version of Studio. Rebuild it to show it to students.')
+  }
+  const [bundle, verdict, material] = await Promise.all([
+    db.loadVersionBundle(version.id, 'student'),
+    prePublishVerdict(version.id),
+    unreleasedMaterial(installation.institutionId, version.id, professorId),
+  ])
+  if (!bundle || bundle.code.trim().length === 0) block('student_bundle_missing', 'This tool has no student view to show.')
+
+  if (verdict.status === 'unavailable') {
+    block(
+      'validator_unavailable',
+      verdict.reason === 'checking'
+        ? 'Studio’s automatic checks are still running.'
+        : verdict.reason === 'runtime_not_checked'
+          ? 'Run the browser checks before students can see this tool.'
+          : verdict.reason === 'runtime_error'
+            ? 'The browser checks didn’t finish. Run them again.'
+            : verdict.reason === 'below_minimum_ruleset'
+              ? 'Studio’s checks were updated. This tool is being re-checked.'
+              : 'Studio’s automatic checks haven’t passed for this version yet.',
+    )
+  } else if (verdict.status === 'failed') {
+    block('validator_failed', 'This tool didn’t pass Studio’s automatic checks. Fix what’s listed under Studio’s automatic checks, then publish a new version.')
+  } else if (verdict.status === 'needs_review') {
+    block('validator_review', 'Waiting for a Scholera reviewer. You don’t need to do anything until they decide.')
+  }
+
+  if (manifest.ok) {
+    const bindings = await skillBindingIssues(installation, manifest.manifest)
+    if (!bindings.ok) {
+      block(
+        'skill_binding_missing',
+        'unbound' in bindings
+          ? `Link each skill slot to one of this course’s skills: ${bindings.unbound.join(', ')}.`
+          : 'Skill links couldn’t be checked. Try again in a moment.',
+      )
+    }
+  }
+  if (material) warnings.push(material)
+  return { blockers, warnings }
+}
+
+/**
+ * The unreleased_material warning for a version, or null when everything its builder read
+ * is visible to students. Material is read as it is now, not as it was at Save: something
+ * released since then no longer warns, and something hidden since then does. When the
+ * provenance can't be read, the warning says so rather than staying silent.
+ */
+async function unreleasedMaterial(institutionId: string, versionId: string, professorId: string): Promise<Issue<'unreleased_material'> | null> {
+  const unreadable = {
+    code: 'unreleased_material' as const,
+    message: 'Studio couldn’t check which course material Athena read for this version. Make sure the tool doesn’t give away anything students shouldn’t see yet.',
+  }
+  const stored = await db.loadVersionMaterial(versionId)
+  if (!stored) return unreadable
+  if (stored.sources.length === 0 && !stored.incomplete) return null
+  const roster = await db.loadOwnerRosterFullNames(professorId)
+  const current = roster === null ? null : await loadGuardSources(institutionId, stored.sources, roster, professorId)
+  if (!current) return unreadable
+  const sources = current
+    .filter((c) => c.disclosure !== 'released')
+    .map((c) => ({ label: c.label, opensAt: c.opensAt, note: disclosureNote({ disclosure: 'scheduled', opensAt: c.opensAt }) }))
+  if (sources.length === 0 && !stored.incomplete) return null
+  const more = stored.incomplete ? ' Athena read more material than Studio can list here, so this list may be incomplete.' : ''
+  return {
+    code: 'unreleased_material',
+    message:
+      sources.length > 0
+        ? `While building this version, Athena read course material students can’t see yet. Make sure the tool doesn’t give it away early.${more}`
+        : `Athena read more course material than Studio can list for this version. Make sure the tool doesn’t give away anything students shouldn’t see yet.`,
+    sources,
+  }
+}
+
+/** Every hard blocker and warning for showing this installation to students: the
+ * installation's own checks plus the version review above. The caller has already
+ * verified the professor and that the installation is in their section. Checks are all
+ * run, so the professor sees everything at once. */
 async function reviewPublication(
   professor: StudioProfessor,
   installation: db.InstallationRow,
@@ -85,12 +207,13 @@ async function reviewPublication(
   const warnings: Issue<WarningCode>[] = []
   const block = (code: BlockerCode, message: string) => blockers.push({ code, message })
 
-  const [access, section, version, usage, limits] = await Promise.all([
+  const [access, section, version, usage, limits, versionReview] = await Promise.all([
     studioAccess(professor.institutionId),
     db.loadSectionState(installation.sectionId),
     db.loadVersion(installation.currentVersionId),
     db.loadUsage(installation.id),
     db.loadQuotaLimits(),
+    reviewVersionForStudents(installation, installation.currentVersionId, professor.userId),
   ])
 
   if (access === 'off') block('kill_switch', STUDIO_PAUSED)
@@ -98,51 +221,11 @@ async function reviewPublication(
   if (access === 'read_only') block('not_entitled', entitlementRefusalMessage('studio'))
   if (installation.status !== 'active') block('not_active', 'This tool has been removed from the course, so it can’t be shown to students.')
   if (!section || section.archived) block('section_archived', 'This course is archived, so nothing new can be shown to students.')
+  blockers.push(...versionReview.blockers)
+  warnings.push(...versionReview.warnings)
 
-  if (!version) {
-    block('version_missing', VERSION_UNUSABLE)
-  } else {
-    if (version.projectId !== installation.projectId || version.institutionId !== installation.institutionId) {
-      block('version_mismatch', VERSION_UNUSABLE)
-    }
+  if (version) {
     const manifest = parseManifest(version.manifest)
-    if (!manifest.ok) block('manifest_invalid', VERSION_UNUSABLE)
-    if (!isSupportedRuntime(version.bridgeVersion)) {
-      block('bridge_unsupported', 'This tool was built for an older version of Studio. Rebuild it to show it to students.')
-    }
-    const bundle = await db.loadVersionBundle(version.id, 'student')
-    if (!bundle || bundle.code.trim().length === 0) block('student_bundle_missing', 'This tool has no student view to show.')
-
-    const verdict = await prePublishVerdict(version.id)
-    if (verdict.status === 'unavailable') {
-      block(
-        'validator_unavailable',
-        verdict.reason === 'checking'
-          ? 'Studio’s automatic checks are still running.'
-          : verdict.reason === 'runtime_not_checked'
-            ? 'Run the browser checks before students can see this tool.'
-            : verdict.reason === 'runtime_error'
-              ? 'The browser checks didn’t finish. Run them again.'
-              : 'Studio’s automatic checks haven’t passed for this version yet.',
-      )
-    } else if (verdict.status === 'failed') {
-      block('validator_failed', 'This tool didn’t pass Studio’s automatic checks. Fix what’s listed under Studio’s automatic checks, then publish a new version.')
-    } else if (verdict.status === 'needs_review') {
-      block('validator_review', 'A Scholera reviewer needs to approve this tool before students can see it. Contact Scholera support to ask for a review.')
-    }
-
-    if (manifest.ok) {
-      const bindings = await skillBindingIssues(installation, manifest.manifest)
-      if (!bindings.ok) {
-        block(
-          'skill_binding_missing',
-          'unbound' in bindings
-            ? `Link each skill slot to one of this course’s skills: ${bindings.unbound.join(', ')}.`
-            : 'Skill links couldn’t be checked. Try again in a moment.',
-        )
-      }
-    }
-
     const latest = await db.loadLatestProjectVersion(installation.projectId)
     if (latest && latest.id !== version.id) {
       warnings.push({ code: 'newer_version', message: 'A newer version of this tool is published but not active in this course.' })

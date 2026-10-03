@@ -29,6 +29,23 @@ export const runtimeReportSchema = z.strictObject({
 
 export type RuntimeReport = z.infer<typeof runtimeReportSchema>
 
+/**
+ * What a runner returns: the report plus the binding that ties it to one run and one exact
+ * payload (validator-runtime/binding.mjs). The server compares each field with what it
+ * recorded for the run; the runner's word decides nothing.
+ */
+export const runtimeEnvelopeSchema = z.strictObject({
+  binding: z.strictObject({
+    validationId: z.uuid(),
+    nonce: z.string().regex(/^[A-Za-z0-9_-]{20,200}$/),
+    payloadSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    runtimeVersion: z.literal('v1'),
+  }),
+  report: runtimeReportSchema,
+})
+
+export type RuntimeEnvelope = z.infer<typeof runtimeEnvelopeSchema>
+
 export interface RuntimeCheckResult {
   checkId: RuntimeCheckId
   status: 'passed' | 'failed' | 'error'

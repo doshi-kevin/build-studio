@@ -38,7 +38,7 @@ Visibility always applies to the installation's **current** version, which is al
 
 ## Publication checks
 
-`showToStudents` runs every check on the server, every time. The professor's confirmation dialog shows them but is never the boundary. All checks run, so the professor sees every problem at once.
+`showToStudents` runs every check on the server, every time. The professor's confirmation dialog shows them but is never the boundary. All checks run, so the professor sees every problem at once. The checks about the version itself are `reviewVersionForStudents`, which a version switch on a visible tool runs too (see [Upgrade, rollback, unpublish](#upgrade-rollback-unpublish)).
 
 ### Hard blockers
 
@@ -52,11 +52,12 @@ Visibility always applies to the installation's **current** version, which is al
 | `section_archived` | The course section is archived | Service |
 | `version_missing`, `version_mismatch` | The current version can't be loaded, or belongs to another project or institution | Service; the database's keys make both impossible today |
 | `manifest_invalid` | The stored manifest no longer parses | Service |
+| `manifest_v1` | The version uses manifest version 1, which Studio's checks can't pass (no purpose, signals or AI fallback). Save a new version from the builder | Service |
 | `bridge_unsupported` | The version's bridge version isn't served any more | Service |
 | `student_bundle_missing` | The student bundle is empty | Service; the database refuses an empty bundle at publish |
-| `validator_unavailable` | The validator hasn't passed this version yet: not checked, still checking, the browser checks haven't run or didn't finish, the verdict predates the minimum ruleset, or it can't be read. **Every plugin in production today**, because the browser stage has no production runner | Service (`prepublish.ts`) |
+| `validator_unavailable` | The validator hasn't passed this version yet: not checked, still checking, the browser checks haven't run or didn't finish, the verdict predates the minimum ruleset ("being re-checked"), or it can't be read. Every plugin in production until the runner job is deployed | Service (`prepublish.ts`) |
 | `validator_failed` | A check failed, a review was rejected, or the stored content no longer matches its hash | Service |
-| `validator_review` | A check needs a Scholera reviewer (a super admin). The professor can't resolve it | Service |
+| `validator_review` | A check waits for a Scholera reviewer (a super admin) in the review queue. The professor has nothing to do | Service |
 | `skill_binding_missing` | A manifest version 2 skill slot isn't linked to a skill that still exists in the section, or the links can't be read | Service (`skill-bindings.ts`) |
 | `over_quota` | The installation's storage is already full | Service |
 | `quota_unavailable` | The storage limits can't be read (the database refuses every write without them) | Service |
@@ -74,15 +75,19 @@ Shown to the professor; the change waits until they acknowledge them (`acknowled
 | `near_quota` | Storage is at 80% or more of either limit |
 | `newer_version` | A newer version of the project is published but not active here |
 | `duplicate_label` | Students already see another plugin with the same name in this section |
+| `unreleased_material` | The course material Athena read while building this version (its stored provenance, read as it is now) includes something students can't see yet. The warning lists each source and when it opens, and says so when the list was cut short or couldn't be read. Also raised on a version switch |
 
 ## The professor's flow
 
 On the plugin's runtime page (`/professor/courses/[sectionId]/studio/[installationId]`), section professor only:
 
 - **Status:** "Visible to students", "Hidden from students" or "Removed from course", with an icon and words, never color alone.
-- **Show to students…** opens the plugin card (rule 8.2): name and version, what students can do, what staff can do, the data it saves and who sees it, storage use and each student's allowance, and AI, grading and activity tracking (each "None" in V1, said explicitly). Then the blockers, then the warnings. With any blocker the confirm button is disabled and warnings can't be acknowledged. With only warnings the professor ticks "I've read these" first. The dialog shows the server's checks from page load; confirming runs every check again on the server, and a refusal replaces the list with the server's latest answer. The dialog also lists the validator's findings, with a "Run browser checks" button, and a picker for each skill slot. Both sit right under the blockers, since they're what clears them. While a check runs, the dialog re-reads the page every 5 seconds. In production the button is replaced by a note that browser checks aren't available yet, so every attempt is blocked by `validator_unavailable`.
+- **Show to students…** opens the plugin card (rule 8.2): name and version, what students can do, what staff can do, the data it saves and who sees it, storage use and each student's allowance, and AI, grading and activity tracking (each a plain "This tool doesn't…" line in V1, said explicitly rather than left out). Then the blockers, then the warnings. With any blocker the confirm button is disabled and warnings can't be acknowledged. With only warnings the professor ticks "I've read these" first. The dialog shows the server's checks from page load; confirming runs every check again on the server, and a refusal replaces the list with the server's latest answer. The dialog also lists the validator's findings, with a "Run browser checks" button, and a picker for each skill slot. Both sit right under the blockers, since they're what clears them. A check a Scholera reviewer decided reads "Approved by a Scholera reviewer" or "Rejected by a Scholera reviewer", with their note. While a check runs, the dialog re-reads the page every 5 seconds, and every 30 seconds while one waits for a reviewer. Where no runner is configured, the button is replaced by a note that browser checks aren't available yet.
 - **Hide from students** and **Remove from course** each ask for confirmation first. Neither deletes a record.
-- **Preview version** lists the plugin's published versions (newest first, at most `STUDIO_PROJECT_VERSIONS_LISTED`) and opens one on sample data (see [Upgrade, rollback, unpublish](#upgrade-rollback-unpublish)).
+- **Preview version** lists the plugin's published versions (newest first, at most `STUDIO_PROJECT_VERSIONS_LISTED`) and opens one on sample data. While previewing, "Use vX in the course" (or "Roll back to vX" for an older version) makes it the course's version (see [Upgrade, rollback, unpublish](#upgrade-rollback-unpublish)).
+- **After the accepted checks were raised,** the page says "Studio's checks were updated. This tool is being re-checked."
+
+**From the builder.** After "Save as version", the builder's Save card offers the next step in place: "Add to this course" when the course doesn't have the tool (`installPlugin`, which starts hidden), or "Use this version in the course" when it has another version (`approveAndActivateVersion`). It shows the plugin card first, or for a new version what it can do that the course's version can't (rule 8.2), and says when students would get the new version at once. Either way Studio's browser checks then start on their own, within quota; the card says what happened to them, and if they couldn't start the tool page keeps its "Run browser checks" button. `addVersionToCourse` in `lifecycle.ts` and `addSavedVersionToCourse` in the builder service do the work.
 
 The actions (`studio/[installationId]/actions.ts`) are thin: they authenticate, confirm the section's professor, call `showToStudents`, `hideFromStudents` or `archiveInstallation`, refresh the runtime page and both course layouts, and return `{ success }` or `{ error, blockers?, warnings? }`. Every rule and the audit live in the services. The page reads everything it shows from one professor-only call, `getPublicationPanel`.
 
@@ -224,7 +229,7 @@ The heartbeat goes through the same route checks as a call (origin, session, rat
 | Hide | `unavailable` at the next call or heartbeat | Kept. Showing it again restores access |
 | Archive | Read-only at the next heartbeat | Kept and readable |
 
-Visibility doesn't change on upgrade. While students can see the tool, an upgrade or rollback is refused unless the target version passed the validator and every skill slot is linked. The database refuses the switch if the tool was shown or hidden after that check.
+Visibility doesn't change on upgrade. While students can see the tool, an upgrade or rollback runs `reviewVersionForStudents` on the target version: every version blocker refuses it (validator verdict, `manifest_v1`, skill slots and the rest), and warnings such as `unreleased_material` need acknowledging (`acknowledgeWarnings`, the same round trip Show has). The database refuses the switch if the tool was shown or hidden after that check. The tool page's switch approves the version again, which changes nothing for a version this course already approved; the database requires an approval row for whatever version is current.
 
 **Previewing another version.** The professor picks a published version of the same plugin from "Preview version" on the runtime page (`?version=<id>`). The server checks it: section professor only, the same project and institution, a manifest that still parses (`candidateVersion`), otherwise 404. The frame ticket names that version, so the frame route serves its own student or professor bundle. It always runs on the preview bridge with sample data. Nothing changes: not `current_version_id`, not visibility, no approval and no record. Its ticket is useless on the live Bridge, which answers `stale` for any version but the current one. Previewing is UX, not a gate; the validator is.
 
@@ -241,7 +246,8 @@ Identifiers only, never record contents or student answers.
 | `studio.validation.runtime_requested` | installation, version, run |
 | `studio.skill_slot.bound` | installation, slot, skill |
 | `studio.validation.review_approved`, `studio.validation.review_rejected` | run, check |
-| `studio.validation.revalidated` | how many runs, page offset, ruleset |
+| `studio.validator.ruleset_raised` | from, to, how many institutions were queued |
+| `studio.plugin.installed`, `studio.version.activated`, `studio.version.rolled_back` | installation, version |
 | `studio.record.quota_refused` | installation, version, collection, operation, which limit |
 | `studio.kill_switch.engaged`, `studio.kill_switch.released` | the super admin who changed it |
 
@@ -256,13 +262,13 @@ Losing or regaining the entitlement is written by the existing entitlement edito
 3. Regenerated Supabase types.
 4. Supabase Security and Performance advisors clean or reviewed.
 5. The dedicated runtime origin verified on the deployment ([studio-plugin-runtime.md](./studio-plugin-runtime.md), deployment checklist).
-6. The pre-publish validator's browser stage running in production: an isolated runner container per run, verified (no credentials, no egress, sandbox on, limits enforced). Stage 1, the verdict and the gate are built ([studio-plugin-validator.md](./studio-plugin-validator.md), "Pending before students can use Studio").
-9. A super-admin review page, so `needs_review` versions can be resolved.
+6. The validator's runner job deployed and verified on GCP (no credentials, no egress, Chromium's sandbox on, limits enforced). The code, the job's infrastructure script and the app's dispatcher are built ([studio-plugin-validator.md](./studio-plugin-validator.md), "Pending before students can use Studio").
 7. The browser isolation probes passing against the deployed origins.
 8. The per-student storage cap (built in Step 5C) verified on real Postgres, including the two concurrency tests that PGlite skips.
 
+The review queue (`/super-admin/studio-reviews`) and the revalidation trigger (the AI Controls "Studio validator" card) are built.
+
 ## Not built yet
 
-- The validator's production runner, review page and revalidation trigger ([studio-plugin-validator.md](./studio-plugin-validator.md)). Until the runner exists, nothing can be shown to students in production.
-- Activating (upgrading to) a previewed version from the runtime page. The service exists (`approveAndActivateVersion`); no UI calls it yet.
+- Deploying the validator's runner job ([studio-plugin-validator.md](./studio-plugin-validator.md)). Until it runs, nothing can be shown to students in production.
 - Hide and remove from the plugin's sidebar tab. They're on the runtime page only.

@@ -4,13 +4,13 @@ The pre-publish validator decides whether a published plugin version may reach s
 
 | | |
 |---|---|
-| **Status** | Built and tested locally. Stage 2 has no production runner, so no version can pass in production |
-| **Ruleset** | 1 (`STUDIO_VALIDATOR_RULESET`), validator `1.0.0`, runtime `v1` |
+| **Status** | Built and tested locally. The production Stage 2 runner (a Cloud Run job) is written but not deployed, so no version can pass in production yet |
+| **Ruleset** | 2 (`STUDIO_VALIDATOR_RULESET`), validator `1.0.0`, runtime `v1` |
 | **Owner** | Kevin Dohsi |
-| **Date** | 2026-10-01 |
-| **Code** | `src/lib/studio/validator/` (checks, verdict, service), `validator-runtime/` (Stage 2 runner), `src/lib/studio/prepublish.ts` (what the publication gate reads), `src/lib/studio/skill-bindings.ts` |
-| **Migration** | `supabase/migrations/20261001202323_studio_validator.sql` |
-| **Tests** | `src/__tests__/studio-validator*.test.ts`, `studio-skill-bindings.test.ts`, `db/studio-validator.test.ts`, `e2e/studio-validator/` |
+| **Date** | 2026-10-02 (Step 10) |
+| **Code** | `src/lib/studio/validator/` (checks, verdict, service, `cloud-runner.ts`, `pipelines.ts`), `validator-runtime/` (Stage 2 runner), `infra/validator-runner/` (the job), `src/lib/studio/prepublish.ts`, `src/lib/studio/skill-bindings.ts` |
+| **Migration** | `20261001202323_studio_validator.sql`, `20261003020000_studio_release.sql` |
+| **Tests** | `src/__tests__/studio-validator*.test.ts`, `studio-skill-bindings.test.ts`, `studio-release-ui.test.tsx`, `db/studio-validator.test.ts`, `e2e/studio-validator/` |
 
 ## What it's for
 
@@ -26,24 +26,35 @@ The validator checks these before students see a tool. It also re-checks, static
 
 ```mermaid
 flowchart LR
-  P[Professor publishes a version] --> S1[Stage 1: static<br/>reads the code, never runs it]
-  S1 -->|passed| ASK[Professor presses<br/>Run browser checks]
-  ASK --> S2[Stage 2: runtime<br/>runner runs the plugin in the sandbox]
-  S2 -->|report with one-time token| V[Verdict]
+  P[Professor saves a version] --> S1[Stage 1: static<br/>reads the code, never runs it]
+  S1 -->|passed| ASK[Add to course, Use this version,<br/>Run browser checks, or revalidation]
+  ASK --> S2[Stage 2: runtime<br/>one Cloud Run execution per run]
+  S2 -->|report bound to run, nonce and payload| V[Verdict]
   S1 -->|failed, needs review, error| V
   V --> G[Publication gate<br/>show to students, activate a version]
 ```
 
 **Stage 1 (static)** runs on the app server right after publish, inside `publishVersion`. It reads the stored artifact and never evaluates it: the scanner parses each bundle with the TypeScript compiler API as a plain script and walks the syntax tree. A test fails the build if `eval`, `new Function` or `node:vm` ever appears in `src/lib/studio/validator/`.
 
-**Stage 2 (runtime)** runs only when the section's professor asks for it in the publish dialog, and only after Stage 1 passed for the same content. If Stage 1 has no usable result (never ran, or errored), asking runs Stage 1 again first. Asking is refused while Studio is paused, when the school isn't entitled, for an archived installation, and for a minute after a run of that stage ended in error (`STUDIO_VALIDATOR_RETRY_COOLDOWN_MS`), since each retry can spend browser time and an AI call. A runner loads the plugin into the real frame document, Content Security Policy and sandbox that students get, in Chromium, and reports what it measured. The runner never decides a verdict: the server does, from the measurements.
+**Stage 2 (runtime)** starts on its own after "Add to this course" or "Use this version in the course", and when the professor presses "Run browser checks", always after Stage 1 passed for the same content. Revalidation asks for it too (see [Ruleset and revalidation](#ruleset-and-revalidation)). If Stage 1 has no usable result (never ran, errored, or ran under a ruleset below the minimum), asking runs Stage 1 again first. Asking is refused while Studio is paused, when the school isn't entitled, for an archived installation, for a minute after a run of that stage ended in error (`STUDIO_VALIDATOR_RETRY_COOLDOWN_MS`), and outside the quotas in [Limits](#limits). A runner loads the plugin into the real frame document, Content Security Policy and sandbox that students get, in Chromium, and reports what it measured. The runner never decides a verdict: the server does, from the measurements.
 
 **Runner modes** (`src/lib/studio/validator/runtime-runner.ts`):
 
 | Mode | When | What happens |
 |---|---|---|
-| `unavailable` | The default, and always in production | The run is recorded as `error` with the reason "Browser checks can't run in this environment yet". The tool stays blocked |
-| `local` | `STUDIO_VALIDATOR_RUNNER=local` and `NODE_ENV` isn't `production` | `validator-runtime/cli.mjs` runs as a child process with an environment holding only `PATH`, temp and home paths, and `PLAYWRIGHT_BROWSERS_PATH`. No Scholera secret is in its environment, and Chromium's own OS sandbox stays on. It reports back through the same token check a production runner would use. A developer machine isn't an isolated environment: the runner could still read files such as `.env.local`, so this mode is for development only |
+| `unavailable` | The default | The run is recorded as `error` with the reason "Browser checks can't run in this environment yet". The tool stays blocked |
+| `local` | `STUDIO_VALIDATOR_RUNNER=local` and `NODE_ENV` isn't `production` | `validator-runtime/cli.mjs` runs as a child process with an environment holding only `PATH`, temp and home paths, and `PLAYWRIGHT_BROWSERS_PATH`. It reads the payload on stdin and prints the envelope. No Scholera secret is in its environment, and Chromium's own OS sandbox stays on. A developer machine isn't an isolated environment: the runner could still read files such as `.env.local`, so this mode is for development only |
+| `cloud` | `STUDIO_VALIDATOR_RUNNER=cloud` and all five `STUDIO_VALIDATOR_*` settings below | One Cloud Run job execution per run. See [The production runner](#the-production-runner) |
+
+## The production runner
+
+`infra/validator-runner/` holds the job, its image and `deploy.sh`; its README says which isolation properties are verified and which wait on a GCP project. The app side is `cloud-runner.ts`, driven by two background jobs in `pipelines.ts`.
+
+1. **Admission.** `studio_runtime_admit` inserts the run `pending` only inside its lane's caps, under an advisory lock, so two requests can't both take the last slot. Its outcomes are `admitted`, `busy`, `daily`, `global_busy` and `exists` (a run for this artifact is already open).
+2. **Dispatch** (the `studio_validator_runtime` job, params `{validationId}` only). It reads the job's deployed image and refuses to dispatch unless it ends in `@` plus `STUDIO_VALIDATOR_RUNNER_DIGEST`. It creates the run's nonce, builds the payload (`buildPayload`: manifest, both bundles, validation id, nonce), uploads it write-once to `runs/<id>/payload.json`, signs a 15-minute GET for it and a 15-minute PUT for `runs/<id>/report.json` that includes `x-goog-if-generation-match: 0`, and starts one execution with only `VALIDATION_ID`, `PAYLOAD_URL` and `REPORT_URL`. The nonce never appears in a job row or the overrides. `studio_validation_dispatch` then records, once, the runner mode, the payload's SHA-256, the execution name, the image and the nonce's hash, and moves the run to `running`.
+3. **Collect** (that pipeline's `upkeep`, on every jobs kick). For each running cloud run it reads the execution with `executions.get`. Still running: check again next kick. Failed, or succeeded without a report: the run ends `error`. An execution on any image other than the pinned digest, or a different image than dispatch recorded: `error`. A succeeded execution's report goes to `finishRuntimeRun`.
+
+Configuration, all names and none secret: `STUDIO_VALIDATOR_RUNNER=cloud`, `STUDIO_VALIDATOR_GCP_PROJECT`, `STUDIO_VALIDATOR_REGION`, `STUDIO_VALIDATOR_JOB`, `STUDIO_VALIDATOR_BUCKET`, `STUDIO_VALIDATOR_RUNNER_DIGEST` (`sha256:` plus 64 hex digits). The app reaches Google Cloud with its own service account through `google-auth-library` and signs URLs through IAM `signBlob`, with no key file.
 
 ## Checks
 
@@ -136,25 +147,32 @@ Check metadata is held to 3,500 bytes (`boundedMetadata` in the service), trimmi
 |---|---|---|
 | `passed` | | Nothing blocks on the validator |
 | `failed` | `static_failed`, `runtime_failed`, `review_rejected`, `artifact_mismatch` | "This tool didn't pass Studio's automatic checks for student use." |
-| `needs_review` | | "A Scholera reviewer needs to look at this tool before students can see it." |
+| `needs_review` | | "Waiting for a Scholera reviewer. You don't need to do anything; this page updates when they decide." |
 | `unavailable` | `runtime_not_checked` | "Run the browser checks before students can see this tool." |
 | `unavailable` | `runtime_error` | "The browser checks didn't finish. Run them again." |
 | `unavailable` | `checking` | "Studio's automatic checks are still running." |
-| `unavailable` | `not_checked`, `validator_error`, `below_minimum_ruleset`, `settings_unavailable` | "Studio's automatic checks haven't passed for this version yet." |
+| `unavailable` | `below_minimum_ruleset` | "Studio's checks were updated. This tool is being re-checked." |
+| `unavailable` | `not_checked`, `validator_error`, `settings_unavailable` | "Studio's automatic checks haven't passed for this version yet." |
 
 An identical artifact, stage and ruleset reuses the earlier result, so republishing the same code doesn't pay for the browser or the AI again. An `error` is never reused.
 
 ## Ruleset and revalidation
 
-Every run records the ruleset it ran under. `STUDIO_VALIDATOR_RULESET` in `ruleset.ts` is raised whenever a check is added or tightened. `min_accepted_ruleset` in `studio_validator_settings` is the oldest ruleset whose verdicts still count. Raising it withdraws every older verdict at once: those versions become `unavailable` (`below_minimum_ruleset`) until they're checked again. Tools already visible to students are **not** hidden automatically (decision D4). The gate stops new showing and new activation. Tools already live stay until their professor hides them. A super admin's only lever today is the global Studio kill switch; there is no per-tool super-admin hide yet.
+Every run records the ruleset it ran under. `STUDIO_VALIDATOR_RULESET` in `ruleset.ts` is raised whenever a check is added or tightened. `min_accepted_ruleset` in `studio_validator_settings` is the oldest ruleset whose verdicts still count. Raising it withdraws every older verdict at once: those versions become `unavailable` (`below_minimum_ruleset`) until they're checked again. Tools already visible to students are **not** hidden automatically (decision D4). The gate stops new showing and version switches; tools already live stay until their professor hides them or a super admin engages the Studio kill switch.
 
-`revalidateCurrentVersions(limit, offset)` re-runs Stage 1 under the current ruleset for one page (up to 200) of active installations' current versions, and returns the offset of the next page, or null after the last. It's super-admin only. It has no caller yet: no admin page, no scheduled job. Stage 2 is re-run when the professor asks again.
+**Raising the minimum.** The "Studio validator" card on the super-admin AI Controls page shows this release's ruleset, the accepted minimum, how many schools are being re-checked (and how many wait on browser-check capacity), and how many checks wait for a reviewer. Its one action raises the minimum one step toward this release's ruleset, after a confirmation. `raiseValidatorRuleset` calls `studio_set_min_accepted_ruleset` through the signed-in user's own client: the function checks `is_super_admin()`, refuses a decrease, a value past the release's ruleset the app passes in, and any jump of more than one step, and records `updated_by`. The release's ruleset comes from the app, so a super admin calling the function directly is bounded only by the one-step rule: one ruleset per deliberate call, and the minimum can't be lowered again. If the re-checks couldn't all be queued, the confirmation offers to queue them again (`queueRevalidationAgain`). Only after it succeeds does the admin client queue one `studio_validator_revalidate` job per institution with active tools, with that super admin as the actor.
+
+**Each revalidation job** pages through its institution's active installations (`revalidateInstitutionPage`, 25 at a time). For a version whose verdict was withdrawn it re-runs Stage 1 as `ruleset_change`, reusing the version's earlier purpose answer under the same rubric instead of calling the classifier (a version never changes, so neither does its purpose). For tools students can see it then asks for Stage 2 through the **system lane**. When the system lane or the classifier quota is full it stops, keeping its place, and records nothing as a failure or as `needs_review`. The job ends with where to resume, and the pipeline's upkeep queues the continuation on a later kick, inserted without a kick of its own so a full lane can't spin a drain. If the minimum rises again while a job runs, it starts over from the first installation.
 
 ## Manual review
 
-A check marked reviewable (`data.answer_key`, `edtech.purpose`) can end as `needs_review` instead of failing. Only a Scholera super admin can resolve it, and never the professor who published the version (decision D6). The database enforces both. `resolveValidationReview` records the decision and logs it.
+A check marked reviewable (`data.answer_key`, `edtech.purpose`) can end as `needs_review` instead of failing. Only a Scholera super admin can resolve it, and never the professor who published the version (decision D6). The database enforces both and refuses a second review of the same check.
 
-There is no review queue or review page yet. Until there is, `needs_review` blocks the tool, and resolving one needs a super admin calling the service directly.
+**The review queue** is `/super-admin/studio-reviews`, linked from the super-admin landing page's waiting count and the AI Controls card. It lists each waiting check, oldest first (`studio_review_queue` filters out decided checks in SQL, so they can't crowd out new ones): school, course, tool and version, whether it's a re-check after a raise, the check and its findings, the manifest's purpose text, and the flagged view's source as read-only text (React escapes it; it is never rendered or run). Approve and Reject take a reason, which the professor reads. `resolveValidationReview` binds the decision to the validation, the check and the artifact hash the reviewer saw, and refuses if the content changed or the check was already decided. A reviewer who published the version sees why they can't decide it.
+
+**What the professor sees.** `validationSummary` shows the runs the verdict used and joins their reviews. A flagged check reads "Approved by a Scholera reviewer" or "Rejected by a Scholera reviewer", with the reviewer's note, and the stage follows the effective result. While a check waits, the dialog re-reads every 30 seconds.
+
+**Email.** When a static run closes as `needs_review`, Scholera's super admins get one email naming the tool and school (`sendStudioReviewWaiting`), never its code. The run's close is a guarded write that succeeds once, so only the call that closed it sends: one email per validation.
 
 ## Purpose check
 
@@ -172,10 +190,12 @@ A version declares skill slots; each installation binds them to its own section'
 
 ## The publication gate
 
-Two places read the verdict, and both fail closed:
+Every path to students runs one review of the version, `reviewVersionForStudents` in `student-visibility.ts`, and fails closed:
 
-- **Showing a tool to students** (`student-visibility.ts`, through `prepublish.ts`). The validator's verdict is one blocker among several. A `prepublish.ts` that can't read the verdict returns `unavailable`.
-- **Changing the active version while students can see the tool** (`lifecycle.ts`). An upgrade or rollback to a version that hasn't passed is refused, so a visible tool can't be swapped for unchecked code. While the tool is hidden, any version can be activated for preview.
+- **Showing a tool to students** runs it together with the installation's own checks (kill switch, release gate, entitlement, archived, quota, newer version, duplicate name).
+- **Changing the active version while students can see the tool** (Use this version, Roll back) runs it alone, in `lifecycle.ts`. While the tool is hidden, any version can be activated for preview.
+
+The version review blocks on a missing or mismatched version, an unparseable manifest, a version 1 manifest (`manifest_v1`, explicit), an unsupported bridge version, a missing student bundle, any verdict but `passed`, and an unbound skill slot. It warns with `unreleased_material` when the course material the version's builder read (its stored provenance, read as it is now) includes something students can't see yet; the warning names each source and its opening date, and says so when the list was cut short or couldn't be read. Warnings need the professor to acknowledge them, on Show and on a version switch alike.
 
 Each check and its write are one decision. Showing and activating each read the installation, check, then write. A second request in between could otherwise activate an unchecked version just as the tool is shown. So `studio_set_student_visibility` takes the version whose verdict was checked, and `studio_activate_version` takes the visibility the check saw. Each refuses under the installation's row lock if that changed, and the professor is asked to try again.
 
@@ -195,15 +215,21 @@ The validator is not the only gate. Students reach a tool only when all of these
 | Stage 1 time | 10 s | Deadline checked during the walk; running out is an error, never a pass |
 | Findings per check / quote length | 20 / 80 characters | Quotes are stripped of control characters and angle brackets |
 | Stage 2 per view / whole run | 30 s / 180 s | The runner |
-| Callback token lifetime | 15 min | The report endpoint; then the run is an error. A run still open after this is marked `error` the next time the version is checked |
+| Run window | 15 min | Signed URLs expire, the collector and `finishRuntimeRun` end a later run as `error`, and a run still open is marked `error` the next time the version is checked |
+| Stage 2, professor lane | 2 at once and 30 a day per institution | `studio_runtime_admit`. The day counts runs that reached a verdict, and dispatched runs that ended in error for any reason but the platform's own (`runner_unavailable`, `runner_image_mismatch`, `callback_expired`). An outage doesn't use the cap up, and a plugin built to crash can't run past it |
+| Stage 2, system lane | 1 at a time per institution | `studio_runtime_admit`. Revalidation only, outside the daily cap |
+| Stage 2, global | 10 at once | `studio_runtime_admit` |
+| Purpose classifier | 100 calls a day per institution | `studio_purpose_admit`, counting the AI ledger plus Stage 1 runs in flight. Over it, the purpose check goes to review, never a pass |
 | Retry after an error | 1 min | `requestRuntimeValidation` |
 | Check metadata | 3,500 bytes | `boundedMetadata`; the database refuses more than 4,096 |
 | Purpose text | 8 KiB | `purpose.ts` |
-| Runner memory, log lines and bytes, kept artifacts | 2048 MB, 200, 32 KiB, 0 | Declared for the production container. The local runner doesn't enforce them |
+| Runner task | 2 vCPU, 2 GiB, 240 s, 200 log lines, 32 KiB of logs | The Cloud Run job (`deploy.sh`) and the runner. Unverified until deployed |
 
 ## Reporting from a runner
 
-A runner reports to `POST /api/studio/validator/runtime-report` with `Authorization: Bearer <token>` and `{ validationId, report }`. The token is minted per run, and only its SHA-256 hash is stored. The report is accepted once, only with that run's token (compared in constant time), only while the run is open and within 15 minutes. The body is capped at 64 KiB and must match a strict schema: unknown fields, unknown checks and long text are refused. Every refusal gets the same answer. The local runner submits through the same function in-process.
+Every runner returns an envelope, `{ binding, report }`, and `finishRuntimeRun` accepts it once, only while the run is open and within 15 minutes, and only when the binding matches what the server recorded: the run's id, the nonce whose SHA-256 is on the run, the SHA-256 of the exact payload bytes, and the runtime version (hashes compared in constant time). A mismatch ends the run as `error`, so a forged or replayed report can only fail a run, never pass it. The report must match a strict schema; the server decides the verdict from its measurements.
+
+The cloud runner's report is collected from its write-once object (above). The HTTP route `POST /api/studio/validator/runtime-report` exists only for the local runner and tests: it answers 404 unless the runner mode is `local`, which `runnerMode()` refuses under `NODE_ENV=production`. There it takes the nonce as `Authorization: Bearer <nonce>` and the envelope as the body (64 KiB at most), and `submitRuntimeReport` refuses any run not dispatched locally. Every refusal gets the same answer.
 
 ## What the validator can't see
 
@@ -215,10 +241,8 @@ A runner reports to `POST /api/studio/validator/runtime-report` with `Authorizat
 
 ## Pending before students can use Studio
 
-These are not built or not verified here:
+These are written but not verified, or not built:
 
-- **A production Stage 2 runner.** An isolated container per run (a Cloud Run Job fits): pinned image, non-root, Chromium's sandbox on (never `--no-sandbox`), no credentials, no network egress except the report callback, CPU, memory and time limits, logs capped and scrubbed. Until it exists, production records every runtime run as `error`, and no version passes. None of these container properties has been verified, because the container doesn't exist.
-- **A review page and queue** for super admins, so `needs_review` can be resolved.
-- **A revalidation trigger** (admin page or scheduled job) for ruleset changes.
-- **Real-Supabase acceptance** of the migration: see [studio-supabase-acceptance.md](./studio-supabase-acceptance.md).
+- **Deploying the runner job** (`infra/validator-runner/deploy.sh --apply`, which needs approval), then verifying on GCP what this machine can't: the image build, the no-egress network (VPC, DNS, route, firewall), Chromium's sandbox on Cloud Run gen2 as `pwuser`, the job limits, and the real `executions.get` and signing calls. A VPC Service Controls perimeter is a recorded follow-up.
+- **Real-Supabase acceptance** of the migrations: see [studio-supabase-acceptance.md](./studio-supabase-acceptance.md).
 - **Opening the release gate**, `STUDIO_STUDENT_ACCESS`, which is a separate decision.

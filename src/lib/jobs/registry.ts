@@ -8,6 +8,7 @@ import { embedMaterialPipeline } from './pipelines/embed-material'
 import { nodeCheckPoolPipeline } from './pipelines/node-check-pool'
 import { regenerateStudentInsightsPipeline } from './pipelines/regenerate-student-insights'
 import { builderSlicePipeline } from '@/lib/studio/builder/harness'
+import { validatorRevalidatePipeline, validatorRuntimePipeline } from '@/lib/studio/validator/pipelines'
 
 // The pipeline registry: a static map of job `type` → pipeline. New background
 // features register here (Slice 2 adds 'outcome_alignment'). Keeping it a plain
@@ -37,6 +38,10 @@ registerPipeline(regenerateStudentInsightsPipeline)
 // the harness checks the studio-builder switch itself before every model call, and
 // that map's skip would mark the slice failed without letting the run end cleanly.
 registerPipeline(builderSlicePipeline)
+// Studio validator: cloud Stage 2 dispatch (its upkeep collects finished executions) and
+// per-institution revalidation after the minimum ruleset is raised.
+registerPipeline(validatorRuntimePipeline)
+registerPipeline(validatorRevalidatePipeline)
 
 // The test-noop pipeline is registered ONLY outside production so unit tests
 // and local E2E can drive a real job through the worker without shipping a

@@ -23,7 +23,6 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
-import { build } from 'esbuild'
 import { chromium } from '@playwright/test'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -37,10 +36,18 @@ const VIEWS = ['student', 'professor']
 const PHONE = { width: 375, height: 812 }
 const TARGET_PX = 44
 const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']
-const axeSource = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8')
+// True only in the container bundle: build.mjs defines it and puts the prebuilt host
+// script, runtime assets and axe next to the bundle in dist/. From source it is
+// undeclared, and the host script is built with esbuild on first use.
+const PREBUILT = typeof __STUDIO_VALIDATOR_PREBUILT__ !== 'undefined'
+const assetDir = PREBUILT ? join(here, 'studio-runtime', 'v1') : join(repo, 'public', 'studio-runtime', 'v1')
+const axeSource = readFileSync(PREBUILT ? join(here, 'axe.min.js') : require.resolve('axe-core/axe.min.js'), 'utf8')
 
 let hostBundle
-async function hostScript() {
+/** The validator host page's script: the real host controller, bundled for the browser. */
+export async function hostScript() {
+  if (PREBUILT) return (hostBundle ??= readFileSync(join(here, 'host.js'), 'utf8'))
+  const { build } = await import('esbuild')
   hostBundle ??= (
     await build({
       entryPoints: [join(here, 'host-entry.ts')],
@@ -100,7 +107,7 @@ async function startServers(artifact) {
     const asset = /^\/studio-runtime\/v1\/(runtime\.js|vendor\.js|kit\.css)$/.exec(path)?.[1]
     if (asset) {
       res.writeHead(200, { 'Content-Type': asset.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' })
-      return res.end(readFileSync(join(repo, 'public', 'studio-runtime', 'v1', asset)))
+      return res.end(readFileSync(join(assetDir, asset)))
     }
     res.writeHead(404)
     res.end()

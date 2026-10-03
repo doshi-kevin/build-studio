@@ -97,6 +97,20 @@ export const STUDIO_VALIDATOR_CALLBACK_TTL_MS = 15 * 60_000
 /** After a stage of a version ends in error, how long before the professor can run it
  * again. Each retry may spend browser time and an AI call. */
 export const STUDIO_VALIDATOR_RETRY_COOLDOWN_MS = 60_000
+/** Stage 2 runs (studio_runtime_admit enforces these under a lock). Professor lane, per
+ * institution: at once, and per rolling day counting only runs that reached a verdict.
+ * System lane (revalidation), per institution, at once. Everywhere, at once. */
+export const STUDIO_VALIDATOR_STAGE2_INSTITUTION_CONCURRENT = 2
+export const STUDIO_VALIDATOR_STAGE2_INSTITUTION_DAILY = 30
+export const STUDIO_VALIDATOR_STAGE2_SYSTEM_CONCURRENT = 1
+export const STUDIO_VALIDATOR_STAGE2_GLOBAL_CONCURRENT = 10
+/** Purpose-classifier calls per institution per rolling day; over it the purpose check goes to review. */
+export const STUDIO_PURPOSE_DAILY_PER_INSTITUTION = 100
+/** Installations one revalidation job re-checks before handing off to the next. */
+export const STUDIO_REVALIDATE_PAGE = 25
+/** Checks the super admin's review queue lists at once. */
+export const STUDIO_REVIEW_QUEUE_LISTED = 100
+
 /** Bytes of metadata stored per check; the database refuses more than 4096. */
 export const STUDIO_VALIDATOR_CHECK_METADATA_MAX_BYTES = 3500
 /** Text sent to the purpose classifier: the manifest's own words, never code. */

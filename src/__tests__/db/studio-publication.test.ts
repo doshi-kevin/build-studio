@@ -17,11 +17,22 @@
 import { randomBytes } from 'node:crypto'
 import { Client } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import exitTicket from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
+import exitTicketV1 from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
 import { STUDIO_VALIDATOR_RULESET } from '@/lib/studio/validator/ruleset'
 import { dbEnv } from './env'
 import { FIXTURE } from './fixture'
 import { grantStudio } from './studio-entitlement'
+
+// The exit ticket in the current manifest format: a version 1 manifest can never pass
+// Studio's checks, and the version review refuses it (manifest_v1).
+const exitTicket = {
+  ...exitTicketV1,
+  manifestVersion: 2,
+  purpose: { category: 'reflection', summary: 'Students answer a few short questions at the end of class and rate their confidence; the professor reads the answers.', audience: 'both' },
+  signals: [],
+  skillSlots: [],
+  aiFallback: 'not-applicable',
+}
 
 const session: { userId: string | null } = { userId: null }
 
@@ -748,7 +759,7 @@ describe('student access', () => {
     )
     const upgrade = { sectionId: section, installationId: shown.installation, versionId: next }
     // Students can see this tool: a version the validator hasn't cleared can't reach them.
-    expect(await lifecycle.approveAndActivateVersion(upgrade)).toMatchObject({ ok: false, error: expect.stringMatching(/automatic checks/) })
+    expect(await lifecycle.approveAndActivateVersion(upgrade)).toMatchObject({ ok: false, blockers: expect.arrayContaining([expect.objectContaining({ code: expect.stringMatching(/^validator_/) })]) })
     expect(await status(STUDENT, shown)).toBe('available')
     await clearedByValidator(next)
     session.userId = PROFESSOR

@@ -33,13 +33,15 @@ import type { MaterialSourceEntry } from './builder/course-material'
 import { loadGuardSources } from './builder/course-retriever'
 import type { PluginPath } from './builder/paths'
 import { snapshotHash } from './builder/snapshot'
-import { skillBindingIssues } from './skill-bindings'
+import { reviewVersionForStudents, type BlockerCode, type Issue, type WarningCode } from './student-visibility'
 import { artifactHash, canonicalJson } from './validator/artifact'
-import { currentVerdict, validateAfterPublish } from './validator/service'
+import { validateAfterPublish } from './validator/service'
 
 export const LIFECYCLE_NOT_AVAILABLE = 'This isn’t available.'
 
-export type LifecycleResult<T> = { ok: true; value: T } | { ok: false; error: string; issues?: string[] }
+export type LifecycleResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; issues?: string[]; blockers?: Issue<BlockerCode>[]; warnings?: Issue<WarningCode>[] }
 
 const denied = (): { ok: false; error: string } => ({ ok: false, error: LIFECYCLE_NOT_AVAILABLE })
 
@@ -262,7 +264,7 @@ export async function installPlugin(input: z.input<typeof installInput>): Promis
   return { ok: true, value: installed.value }
 }
 
-const activateInput = z.strictObject({ sectionId: z.uuid(), installationId: z.uuid(), versionId: z.uuid() })
+const activateInput = z.strictObject({ sectionId: z.uuid(), installationId: z.uuid(), versionId: z.uuid(), acknowledgeWarnings: z.boolean().optional() })
 
 async function activate(
   input: z.input<typeof activateInput>,
@@ -278,11 +280,21 @@ async function activate(
   const refused = await newWorkRefused(professor)
   if (refused) return refused
 
-  // Students can see this tool, so the version it moves to reaches them at once: it must
-  // clear the same gates as showing a tool (validator verdict, skill bindings).
+  // Students can see this tool, so the version it moves to reaches them at once: it gets
+  // the same version review as showing a tool, warnings included.
   if (installation.studentVisibility === 'visible') {
-    const gate = await visibleActivationGate(installation, parsed.data.versionId)
-    if (gate) return gate
+    const review = await reviewVersionForStudents(installation, parsed.data.versionId, professor.userId)
+    if (review.blockers.length > 0) {
+      return {
+        ok: false,
+        error: 'Students can see this tool, so this version has to clear the same checks as showing it.',
+        blockers: review.blockers,
+        warnings: review.warnings,
+      }
+    }
+    if (review.warnings.length > 0 && !parsed.data.acknowledgeWarnings) {
+      return { ok: false, error: 'Read the warnings before students see this version.', warnings: review.warnings }
+    }
   }
 
   // The database refuses if the tool was shown or hidden since the check above.
@@ -290,23 +302,6 @@ async function activate(
   if (!done.ok) return { ok: false, error: explain(done.error) }
   audit(professor, eventType, { installationId: installation.id, versionId: parsed.data.versionId })
   return { ok: true, value: null }
-}
-
-/** Why a version can't become active in an installation students can see, or null. */
-async function visibleActivationGate(installation: db.InstallationRow, versionId: string): Promise<{ ok: false; error: string } | null> {
-  const verdict = await currentVerdict(versionId)
-  if (verdict.status !== 'passed') {
-    return {
-      ok: false,
-      error: 'Students can see this tool, so this version has to pass Studio’s automatic checks first. Hide the tool from students to switch versions for preview.',
-    }
-  }
-  const version = await db.loadVersion(versionId)
-  const manifest = version ? parseManifest(version.manifest) : null
-  if (!manifest?.ok) return { ok: false, error: 'That version can’t be used.' }
-  const bindings = await skillBindingIssues(installation, manifest.manifest)
-  if (!bindings.ok) return { ok: false, error: 'Link each of this version’s skill slots to a course skill first.' }
-  return null
 }
 
 /** Upgrade: the professor has seen and approved this version's plugin card (rule 8.2). */
@@ -317,6 +312,59 @@ export function approveAndActivateVersion(input: z.input<typeof activateInput>) 
 /** Roll back to a version this installation already approved (rule 8.5). */
 export function rollbackVersion(input: z.input<typeof activateInput>) {
   return activate(input, false, 'studio.version.rolled_back')
+}
+
+const addToCourseInput = z.strictObject({ sectionId: z.uuid(), versionId: z.uuid(), acknowledgeWarnings: z.boolean().optional() })
+
+/**
+ * The builder's next step after Save: install the version in this course if the course
+ * doesn't have the tool yet (Add to this course), or make it the course's version (Use
+ * this version in the course). The professor has seen the version's plugin card on the
+ * Save card (rule 8.2). A tool students already see gets the full version review, with
+ * its warnings acknowledged, as in approveAndActivateVersion.
+ */
+export async function addVersionToCourse(
+  input: z.input<typeof addToCourseInput>,
+): Promise<LifecycleResult<{ installationId: string; added: boolean; changed: boolean }>> {
+  const parsed = addToCourseInput.safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const version = await db.loadVersion(parsed.data.versionId)
+  if (!version || !(await ownedProject(professor, version.projectId))) return denied()
+  const existing = await db.findActiveInstallation(professor.sectionId, version.projectId)
+  if (existing === 'error') return { ok: false, error: 'Something went wrong. Try again.' }
+  if (!existing) {
+    const installed = await installPlugin({ sectionId: professor.sectionId, versionId: version.id })
+    return installed.ok ? { ok: true, value: { installationId: installed.value, added: true, changed: true } } : installed
+  }
+  if (existing.currentVersionId === version.id) return { ok: true, value: { installationId: existing.id, added: false, changed: false } }
+  const used = await approveAndActivateVersion({
+    sectionId: professor.sectionId,
+    installationId: existing.id,
+    versionId: version.id,
+    acknowledgeWarnings: parsed.data.acknowledgeWarnings,
+  })
+  return used.ok ? { ok: true, value: { installationId: existing.id, added: false, changed: true } } : used
+}
+
+/** Where a saved version stands in the professor's course, for the Save card. */
+export async function versionPlacement(input: { sectionId: string; versionId: string }): Promise<
+  { ok: true; value: { mode: 'add' | 'use' | 'current'; installationId: string | null; visible: boolean } } | { ok: false; error: string }
+> {
+  const parsed = z.strictObject({ sectionId: z.uuid(), versionId: z.uuid() }).safeParse(input)
+  if (!parsed.success) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const version = await db.loadVersion(parsed.data.versionId)
+  if (!version || !(await ownedProject(professor, version.projectId))) return denied()
+  const existing = await db.findActiveInstallation(professor.sectionId, version.projectId)
+  if (existing === 'error') return { ok: false, error: 'Something went wrong. Try again.' }
+  if (!existing) return { ok: true, value: { mode: 'add', installationId: null, visible: false } }
+  return {
+    ok: true,
+    value: { mode: existing.currentVersionId === version.id ? 'current' : 'use', installationId: existing.id, visible: existing.studentVisibility === 'visible' },
+  }
 }
 
 const archiveInstallationInput = z.strictObject({ sectionId: z.uuid(), installationId: z.uuid() })

@@ -21,7 +21,10 @@ vi.mock('@/lib/studio/access', () => ({
 }))
 vi.mock('@/lib/studio/prepublish', () => ({ prePublishVerdict: vi.fn() }))
 vi.mock('@/lib/studio/validator/service', () => ({ currentVerdict: vi.fn(), validationSummary: vi.fn() }))
+vi.mock('@/lib/studio/builder/course-retriever', () => ({ loadGuardSources: vi.fn() }))
 vi.mock('@/lib/studio/db', () => ({
+  loadVersionMaterial: vi.fn(),
+  loadOwnerRosterFullNames: vi.fn(),
   loadInstallation: vi.fn(),
   loadVersion: vi.fn(),
   loadVersionBundle: vi.fn(),
@@ -43,7 +46,10 @@ const { studioAccess, studentAccessReleased } = await import('@/lib/studio/acces
 const { prePublishVerdict } = await import('@/lib/studio/prepublish')
 const { currentVerdict, validationSummary } = await import('@/lib/studio/validator/service')
 const db = await import('@/lib/studio/db')
+const { loadGuardSources } = await import('@/lib/studio/builder/course-retriever')
 const { GOOD_MANIFEST } = await import('@/lib/studio/validator/fixtures')
+/** A current-format manifest with nothing to link, so only what a test breaks blocks. */
+const V2 = { ...GOOD_MANIFEST, skillSlots: [] }
 const service = await import('@/lib/studio/student-visibility')
 const realValidator = await vi.importActual<typeof import('@/lib/studio/prepublish')>('@/lib/studio/prepublish')
 const { VISIBILITY_NOT_AVAILABLE } = service
@@ -60,7 +66,7 @@ const INSTALLATION = {
   currentVersionId: VERSION,
   studentVisibility: 'hidden' as const,
 }
-const VERSION_ROW = { id: VERSION, projectId: PROJECT, institutionId: PROFESSOR.institutionId, version: '1.0.0', bridgeVersion: 'v1', manifest: exitTicket }
+const VERSION_ROW = { id: VERSION, projectId: PROJECT, institutionId: PROFESSOR.institutionId, version: '1.0.0', bridgeVersion: 'v1', manifest: V2 as unknown }
 const input = { sectionId: PROFESSOR.sectionId, installationId: INSTALLATION.id }
 
 /** Every check passes, the validator included. Tests then break one thing. */
@@ -95,6 +101,10 @@ beforeEach(() => {
   // A freshly published version: nothing has cleared it yet.
   vi.mocked(currentVerdict).mockResolvedValue({ status: 'unavailable', reason: 'not_checked' })
   vi.mocked(validationSummary).mockResolvedValue(null)
+  // The version's builder read nothing from the course.
+  vi.mocked(db.loadVersionMaterial).mockResolvedValue({ sources: [], incomplete: false })
+  vi.mocked(db.loadOwnerRosterFullNames).mockResolvedValue([])
+  vi.mocked(loadGuardSources).mockResolvedValue([])
 })
 
 const codes = (r: { ok: boolean; blockers?: { code: string }[] }) => (r.ok ? [] : (r.blockers ?? []).map((b) => b.code))
@@ -131,9 +141,9 @@ describe('showing to students: hard blockers', () => {
   it.each([
     [{ status: 'unavailable', reason: 'runtime_not_checked' }, 'validator_unavailable', /Run the browser checks/],
     [{ status: 'unavailable', reason: 'checking' }, 'validator_unavailable', /still running/],
-    [{ status: 'unavailable', reason: 'below_minimum_ruleset' }, 'validator_unavailable', /haven’t passed/],
+    [{ status: 'unavailable', reason: 'below_minimum_ruleset' }, 'validator_unavailable', /being re-checked/],
     [{ status: 'failed', reason: 'artifact_mismatch' }, 'validator_failed', /didn’t pass/],
-    [{ status: 'needs_review', runId: 'r', checkIds: ['edtech.purpose'] }, 'validator_review', /Scholera reviewer/],
+    [{ status: 'needs_review', runId: 'r', checkIds: ['edtech.purpose'] }, 'validator_review', /Waiting for a Scholera reviewer\. You don’t need to do anything/],
   ] satisfies [VersionVerdict, string, RegExp][])('a %o verdict blocks as %s', async (verdict, code, message) => {
     vi.mocked(currentVerdict).mockResolvedValue(verdict)
     const result = await service.showToStudents({ ...input, acknowledgeWarnings: true })
@@ -228,6 +238,50 @@ describe('showing to students: warnings', () => {
       { id: INSTALLATION.id, status: 'active', studentVisibility: 'visible', currentVersionId: VERSION, name: exitTicket.name },
     ])
     expect(await service.showToStudents(input)).toEqual({ ok: true, value: { changed: true } })
+  })
+})
+
+describe('the version review: Step 10 checks', () => {
+  beforeEach(allClear)
+  const scheduled = { key: 'item:1', label: 'Week 6: Midterm review (slides)', disclosure: 'scheduled' as const, opensAt: '2026-10-09T13:00:00Z', text: 'x' }
+
+  it('an older-format (v1) manifest blocks explicitly', async () => {
+    vi.mocked(db.loadVersion).mockResolvedValue({ ...VERSION_ROW, manifest: exitTicket })
+    expect(await service.showToStudents({ ...input, acknowledgeWarnings: true })).toMatchObject({
+      ok: false,
+      blockers: [{ code: 'manifest_v1', message: expect.stringMatching(/older Studio format/) }],
+    })
+  })
+
+  it('names each source the builder read that students can’t see yet, with its date, and holds until acknowledged', async () => {
+    vi.mocked(db.loadVersionMaterial).mockResolvedValue({ sources: [{ k: 'item:1', s: PROFESSOR.sectionId }, { k: 'item:2', s: PROFESSOR.sectionId }], incomplete: false })
+    vi.mocked(loadGuardSources).mockResolvedValue([scheduled, { ...scheduled, key: 'item:2', label: 'Week 1: Syllabus', disclosure: 'released', opensAt: null }])
+    const first = await service.showToStudents(input)
+    expect(first).toMatchObject({
+      ok: false,
+      warnings: [{ code: 'unreleased_material', sources: [{ label: 'Week 6: Midterm review (slides)', opensAt: '2026-10-09T13:00:00Z', note: expect.stringMatching(/^not visible to students yet/) }] }],
+    })
+    expect(loadGuardSources).toHaveBeenCalledWith(PROFESSOR.institutionId, expect.any(Array), [], PROFESSOR.userId)
+    expect(db.setStudentVisibility).not.toHaveBeenCalled()
+    expect(await service.showToStudents({ ...input, acknowledgeWarnings: true })).toEqual({ ok: true, value: { changed: true } })
+  })
+
+  it('material released since the version was saved no longer warns', async () => {
+    vi.mocked(db.loadVersionMaterial).mockResolvedValue({ sources: [{ k: 'item:1', s: PROFESSOR.sectionId }], incomplete: false })
+    vi.mocked(loadGuardSources).mockResolvedValue([{ ...scheduled, disclosure: 'released', opensAt: null }])
+    expect(await service.showToStudents(input)).toEqual({ ok: true, value: { changed: true } })
+  })
+
+  it.each([
+    ['the provenance can’t be read', () => vi.mocked(db.loadVersionMaterial).mockResolvedValue(null)],
+    ['the material can’t be read', () => {
+      vi.mocked(db.loadVersionMaterial).mockResolvedValue({ sources: [{ k: 'item:1', s: PROFESSOR.sectionId }], incomplete: false })
+      vi.mocked(loadGuardSources).mockResolvedValue(null)
+    }],
+    ['the list was cut short at Save', () => vi.mocked(db.loadVersionMaterial).mockResolvedValue({ sources: [], incomplete: true })],
+  ])('warns rather than staying silent when %s', async (_label, arrange) => {
+    arrange()
+    expect(await service.showToStudents(input)).toMatchObject({ ok: false, warnings: [{ code: 'unreleased_material' }] })
   })
 })
 

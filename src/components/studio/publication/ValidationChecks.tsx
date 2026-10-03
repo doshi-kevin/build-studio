@@ -10,7 +10,7 @@ import { requestRuntimeChecksAction } from '@/app/(dashboard)/professor/courses/
 const STATUS: Record<string, string> = {
   passed: 'Passed',
   failed: 'Didn’t pass',
-  needs_review: 'Waiting for a Scholera reviewer',
+  needs_review: 'Waiting for a Scholera reviewer. You don’t need to do anything; this page updates when they decide.',
   error: 'Couldn’t finish',
   running: 'Running',
   pending: 'Running',
@@ -27,6 +27,7 @@ const FINDING: Record<string, { label: string; rank: number }> = {
 const MAX_SHOWN = 6
 /** How often the page re-reads the checks while one is running. */
 const POLL_MS = 5000
+const REVIEW_POLL_MS = 30_000
 
 type Stage = ValidationSummary['stages']['static']
 
@@ -43,8 +44,16 @@ function StageLine({ label, value }: { label: string; value: Stage }) {
         <ul className="list-disc space-y-1 pl-5">
           {shown.map((f) => (
             <li key={f.checkId}>
-              {FINDING[f.status] && <span className="font-medium text-foreground">{FINDING[f.status].label}: </span>}
+              {f.review ? (
+                <span className="font-medium text-foreground">
+                  {f.review.decision === 'approved' ? 'Approved by a Scholera reviewer: ' : 'Rejected by a Scholera reviewer: '}
+                </span>
+              ) : (
+                FINDING[f.status] && <span className="font-medium text-foreground">{FINDING[f.status].label}: </span>
+              )}
               {f.message}
+              {/* The reviewer wrote this for the professor; React escapes it. */}
+              {f.review && <span className="block">Reviewer’s note: {f.review.reason}</span>}
             </li>
           ))}
         </ul>
@@ -71,14 +80,17 @@ export function ValidationChecks({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const running = [validation?.stages.static, validation?.stages.runtime].some((s) => s?.status === 'running' || s?.status === 'pending')
+  const stages = [validation?.stages.static, validation?.stages.runtime]
+  const running = stages.some((s) => s?.status === 'running' || s?.status === 'pending')
+  const awaitingReview = stages.some((s) => s?.status === 'needs_review')
 
-  // A run finishes in the background: re-read the page until it does.
+  // A run finishes in the background, and a reviewer decides in theirs: re-read the page
+  // until it does (a review takes longer, so less often).
   useEffect(() => {
-    if (!running) return
-    const timer = setInterval(() => router.refresh(), POLL_MS)
+    if (!running && !awaitingReview) return
+    const timer = setInterval(() => router.refresh(), running ? POLL_MS : REVIEW_POLL_MS)
     return () => clearInterval(timer)
-  }, [running, router])
+  }, [running, awaitingReview, router])
 
   if (!validation) return <p>Couldn’t load the checks just now. Close this and open it again.</p>
 

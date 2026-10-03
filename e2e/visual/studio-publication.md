@@ -14,7 +14,7 @@
 ## A. The plugin card can be read but not confirmed
 
 1. As the professor, open `/professor/courses/<CS101>/studio/<installation>`. Expect "Hidden from students" with an eye-off icon.
-2. Press **Show to students…**. Expect the card: name and version, what students can do, what staff can do, the data it saves, storage, and "None." lines for AI, grading and tracking.
+2. Press **Show to students…**. Expect the card: name and version, what students can do, what staff can do, the data it saves, storage, and lines saying the tool doesn't use AI, grade, or record activity.
 3. Expect a calm "Not ready for students yet" box with the automatic-checks message, and **Show to students** absent. Directly under it, expect "Studio's automatic checks": a failing test plugin lists what didn't pass, each labelled "Didn't pass".
 4. Close it. Expect nothing changed: still "Hidden from students", no new student tab.
 

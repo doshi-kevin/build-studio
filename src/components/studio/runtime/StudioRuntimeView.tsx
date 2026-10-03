@@ -9,6 +9,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import type { StudioManifest } from '@/lib/studio/manifest'
 import type { PluginView } from '@/lib/studio/runtime/protocol'
 import { PublicationControls, type PublicationState } from '../publication/PublicationControls'
+import { UseVersionPanel } from '../publication/UseVersionPanel'
 import { VersionPreviewPicker } from '../publication/VersionPreviewPicker'
 import { PluginHost } from './PluginHost'
 
@@ -32,6 +33,8 @@ interface StudioRuntimeViewProps {
   activeVersionId: string
   /** Why the tool is read-only, in a sentence. */
   readOnlyNotice?: string
+  /** Set while previewing another version of an active tool the professor can change. */
+  useVersion?: { older: boolean; visible: boolean; added: string[] }
 }
 
 /** The minimal page body for running one plugin. Studio's real UX comes later. */
@@ -50,6 +53,7 @@ export function StudioRuntimeView({
   versions,
   activeVersionId,
   readOnlyNotice,
+  useVersion,
 }: StudioRuntimeViewProps) {
   const router = useRouter()
   const [reloading, startReload] = useTransition()
@@ -107,6 +111,24 @@ export function StudioRuntimeView({
               ? `Sample data. Your course still uses ${activeVersion ? `v${activeVersion}` : 'the active version'}.`
               : 'Sample data. Students don’t see this.'}
           </p>
+        )}
+        {publication?.status === 'active' &&
+          publication.validation?.verdict.status === 'unavailable' &&
+          publication.validation.verdict.reason === 'below_minimum_ruleset' && (
+            <p className="w-full text-sm text-muted-foreground" role="status">
+              Studio’s checks were updated. This tool is being re-checked.
+              {publication.visibility === 'visible' && ' Students can still use it in the meantime.'}
+            </p>
+          )}
+        {candidate && useVersion && (
+          <UseVersionPanel
+            sectionId={sectionId}
+            installationId={installationId}
+            versionId={candidate.versionId}
+            version={candidate.version}
+            basePath={base}
+            {...useVersion}
+          />
         )}
       </header>
 

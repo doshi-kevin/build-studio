@@ -10,7 +10,8 @@
  *     lives on each institution's detail page.
  *
  * Also: the global Studio kill switch (StudioKillSwitchCard), the same kind of
- * platform-wide stop for Studio plugins.
+ * platform-wide stop for Studio plugins, and the Studio validator's accepted checks
+ * (StudioValidatorCard).
  *
  * Type: Server Component
  * Route: /super-admin/ai-controls
@@ -23,6 +24,8 @@ import { parseAiPolicyLayer, parseInstitutionAiPolicy, type AiFeatureKey } from 
 import { AiPolicyEditor } from '@/components/shared/AiPolicyEditor'
 import { AiBulkKillTable, type BulkInstitutionRow } from '@/components/super-admin/AiBulkKillTable'
 import { StudioKillSwitchCard } from '@/components/super-admin/StudioKillSwitchCard'
+import { StudioValidatorCard } from '@/components/super-admin/StudioValidatorCard'
+import { getValidatorPanel } from '@/lib/studio/validator/service'
 import { readStudioKillSwitch } from '@/lib/studio/access'
 import { updateGlobalAiPolicy } from '../institutions/ai-actions'
 import { logger } from '@/lib/logger'
@@ -41,10 +44,11 @@ export default async function AiControlsPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const adminDb = createAdminClient() as any
-  const [platformRes, institutionsRes, studioState] = await Promise.all([
+  const [platformRes, institutionsRes, studioState, validatorPanel] = await Promise.all([
     adminDb.from('platform_settings').select('settings').eq('id', true).maybeSingle(),
     adminDb.from('institutions').select('id, name, settings').eq('status', 'active').order('name'),
     readStudioKillSwitch(),
+    getValidatorPanel(),
   ])
   const globalLayer = parseAiPolicyLayer(
     (platformRes?.data?.settings as Record<string, unknown> | null | undefined)?.ai,
@@ -95,6 +99,7 @@ export default async function AiControlsPage() {
       {/* Studio's own switch: tools, not AI, but the same "stop it everywhere" control.
           Above the per-institution table, which grows with every institution. */}
       <StudioKillSwitchCard state={studioState} />
+      {validatorPanel && <StudioValidatorCard panel={validatorPanel} />}
 
       <div>
         <h2 className="text-sm font-semibold text-foreground mb-1">Per-institution kill switch</h2>

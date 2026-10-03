@@ -25,7 +25,10 @@ import { STUDIO_PAUSED, studioAccess } from '../access'
 import { allowedBridgeMethods } from '../bridge/catalog'
 import { requireProfessor, sessionUserId, type StudioProfessor } from '../context'
 import * as db from '../db'
-import { publishDraft } from '../lifecycle'
+import { addVersionToCourse, publishDraft, versionPlacement } from '../lifecycle'
+import { buildPluginCard, cardAdditions, type PluginCard } from '../plugin-card'
+import type { BlockerCode, Issue, WarningCode } from '../student-visibility'
+import { currentVerdict, requestRuntimeValidation } from '../validator/service'
 import {
   STUDIO_BUILDER_ANSWER_MAX_CHARS,
   STUDIO_BUILDER_DAILY_RUNS_PER_PROFESSOR,
@@ -526,6 +529,69 @@ export async function issueDraftPreview(
 export async function saveDraftAsVersion(input: { sectionId: string; pluginProjectId: string; snapshotHash: string }): Promise<ServiceResult<{ versionId: string; version: string }>> {
   const r = await publishDraft({ sectionId: input.sectionId, projectId: input.pluginProjectId, snapshotHash: input.snapshotHash })
   return r.ok ? r : { ok: false, error: r.error }
+}
+
+/** What the Save card offers next for a saved version. */
+export interface VersionRelease {
+  /** add: the course doesn't have this tool. use: it has another version. current: it already uses this one. */
+  mode: 'add' | 'use' | 'current'
+  /** Students can see the tool, so a switch reaches them at once. */
+  visible: boolean
+  /** The course's installation of this tool, when it has one: the blocked card links to it. */
+  installationId: string | null
+  card: PluginCard
+  /** use only: what this version can do that the course's version can't (rule 8.2). */
+  added: string[]
+}
+
+/** The saved version's place in the course and its plugin card. Owner only. */
+export async function versionRelease(input: { sectionId: string; versionId: string }): Promise<ServiceResult<VersionRelease>> {
+  const placement = await versionPlacement(input)
+  if (!placement.ok) return placement
+  const { mode, installationId, visible } = placement.value
+  const installation = installationId ? await db.loadInstallation(installationId) : null
+  const [version, current] = await Promise.all([db.loadVersion(input.versionId), installation ? db.loadVersion(installation.currentVersionId) : null])
+  const manifest = version ? parseManifest(version.manifest) : null
+  if (!manifest?.ok) return { ok: false, error: 'This version can’t be used.' }
+  const card = buildPluginCard(manifest.manifest, null)
+  const previous = current ? parseManifest(current.manifest) : null
+  return { ok: true, value: { mode, visible, installationId, card, added: mode === 'use' && previous?.ok ? cardAdditions(card, buildPluginCard(previous.manifest, null)) : [] } }
+}
+
+export type AddToCourseResult =
+  | { ok: true; value: { installationId: string; added: boolean; checks: string } }
+  | { ok: false; error: string; blockers?: Issue<BlockerCode>[]; warnings?: Issue<WarningCode>[] }
+
+/**
+ * Add to this course / Use this version in the course, then start Studio's browser checks
+ * on their own (within quota). The checks' answer never undoes the step: when they can't
+ * start, the professor is told why and the tool page keeps its "Run browser checks" button.
+ */
+export async function addSavedVersionToCourse(input: { sectionId: string; versionId: string; acknowledgeWarnings?: boolean }): Promise<AddToCourseResult> {
+  const placed = await addVersionToCourse(input)
+  if (!placed.ok) return { ok: false, error: placed.error, blockers: placed.blockers, warnings: placed.warnings }
+  const checks = await requestRuntimeValidation({ sectionId: input.sectionId, installationId: placed.value.installationId })
+  const said = !checks.ok
+    ? await whyChecksDidNotStart(input.versionId, checks.error)
+    : checks.status === 'running'
+      ? 'Studio’s automatic checks are running. This can take a few minutes.'
+      : checks.status === 'passed'
+        ? 'Studio’s automatic checks have passed.'
+        : 'Studio’s automatic checks didn’t finish. You can run them again from the tool’s page.'
+  return { ok: true, value: { installationId: placed.value.installationId, added: placed.value.added, checks: said } }
+}
+
+/** When the browser checks can't start, the reason in terms of what the professor waits for. */
+async function whyChecksDidNotStart(versionId: string, refusal: string): Promise<string> {
+  const verdict = await currentVerdict(versionId)
+  if (verdict.status === 'needs_review') return 'Studio’s checks are waiting for a Scholera reviewer. You don’t need to do anything until they decide.'
+  if (verdict.status === 'failed') return 'This version didn’t pass Studio’s automatic checks. The tool’s page lists what to fix.'
+  // Stage 1 still to finish or to run again: not something to retry from here. Quota and
+  // cooldown refusals keep their own words, which say when to try.
+  if (verdict.status === 'unavailable' && ['checking', 'not_checked', 'validator_error', 'below_minimum_ruleset'].includes(verdict.reason)) {
+    return 'Studio’s checks haven’t finished yet. The tool’s page shows where they are.'
+  }
+  return refusal
 }
 
 export interface DraftHistoryEntry {

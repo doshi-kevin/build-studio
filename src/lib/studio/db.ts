@@ -74,14 +74,17 @@ export interface InstallationRow {
   studentVisibility: 'hidden' | 'visible'
 }
 
-export async function loadInstallation(id: string): Promise<InstallationRow | null> {
-  const { data, error } = await createAdminClient()
-    .from(INSTALLATIONS)
-    .select('id, institution_id, section_id, project_id, status, current_version_id, student_visibility')
-    .eq('id', id)
-    .maybeSingle()
-  if (error) logger.error('studio/db.loadInstallation', error, { id })
-  if (!data) return null
+const INSTALLATION_COLUMNS = 'id, institution_id, section_id, project_id, status, current_version_id, student_visibility'
+
+function toInstallation(data: {
+  id: string
+  institution_id: string
+  section_id: string
+  project_id: string
+  status: InstallationRow['status']
+  current_version_id: string
+  student_visibility: InstallationRow['studentVisibility']
+}): InstallationRow {
   return {
     id: data.id,
     institutionId: data.institution_id,
@@ -91,6 +94,28 @@ export async function loadInstallation(id: string): Promise<InstallationRow | nu
     currentVersionId: data.current_version_id,
     studentVisibility: data.student_visibility,
   }
+}
+
+export async function loadInstallation(id: string): Promise<InstallationRow | null> {
+  const { data, error } = await createAdminClient().from(INSTALLATIONS).select(INSTALLATION_COLUMNS).eq('id', id).maybeSingle()
+  if (error) logger.error('studio/db.loadInstallation', error, { id })
+  return data ? toInstallation(data) : null
+}
+
+/** The section's active installation of a project (at most one exists). `error` when unreadable. */
+export async function findActiveInstallation(sectionId: string, projectId: string): Promise<InstallationRow | null | 'error'> {
+  const { data, error } = await createAdminClient()
+    .from(INSTALLATIONS)
+    .select(INSTALLATION_COLUMNS)
+    .eq('section_id', sectionId)
+    .eq('project_id', projectId)
+    .eq('status', 'active')
+    .maybeSingle()
+  if (error) {
+    logger.error('studio/db.findActiveInstallation', safeError(error), { sectionId })
+    return 'error'
+  }
+  return data ? toInstallation(data) : null
 }
 
 export interface VersionRow {
@@ -783,9 +808,17 @@ export interface ValidationRunRow {
   callbackSha256: string | null
   startedAt: string | null
   createdAt: string
+  runtimeVersion: string
+  trigger: string
+  /** How a runtime run was dispatched, once it was: 'local' or 'cloud'. */
+  runnerMode: 'local' | 'cloud' | null
+  payloadSha256: string | null
+  executionName: string | null
+  runnerImage: string | null
 }
 
-const RUN_COLUMNS = 'id, version_id, institution_id, stage, status, artifact_sha256, ruleset_version, callback_sha256, started_at, created_at'
+const RUN_COLUMNS =
+  'id, version_id, institution_id, stage, status, artifact_sha256, ruleset_version, callback_sha256, started_at, created_at, runtime_version, trigger, runner_mode, payload_sha256, execution_name, runner_image'
 
 const toRun = (r: Record<string, unknown>): ValidationRunRow => ({
   id: r.id as string,
@@ -798,6 +831,12 @@ const toRun = (r: Record<string, unknown>): ValidationRunRow => ({
   callbackSha256: (r.callback_sha256 as string | null) ?? null,
   startedAt: (r.started_at as string | null) ?? null,
   createdAt: r.created_at as string,
+  runtimeVersion: r.runtime_version as string,
+  trigger: r.trigger as string,
+  runnerMode: (r.runner_mode as 'local' | 'cloud' | null) ?? null,
+  payloadSha256: (r.payload_sha256 as string | null) ?? null,
+  executionName: (r.execution_name as string | null) ?? null,
+  runnerImage: (r.runner_image as string | null) ?? null,
 })
 
 /** A version's most recent runs, newest first. Bounded. */
@@ -870,31 +909,6 @@ export async function insertValidationReview(row: {
     reason: row.reason,
   })
   return error ? failed('insertValidationReview', error) : { ok: true, value: null }
-}
-
-/** Current versions of active installations, for re-checking after a ruleset change. */
-/** One page of active installations' current versions, oldest installation first.
- * `installations` is how many installation rows the page covered, for the next offset. */
-export async function listActiveCurrentVersions(
-  limit: number,
-  offset = 0,
-): Promise<{ versions: { versionId: string; institutionId: string }[]; installations: number }> {
-  const { data, error } = await createAdminClient()
-    .from(INSTALLATIONS)
-    .select('current_version_id, institution_id')
-    .eq('status', 'active')
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .range(offset, offset + limit - 1)
-  if (error) {
-    logger.error('studio/db.listActiveCurrentVersions', error)
-    return { versions: [], installations: 0 }
-  }
-  const seen = new Set<string>()
-  const versions = (data ?? [])
-    .filter((r) => !seen.has(r.current_version_id) && seen.add(r.current_version_id))
-    .map((r) => ({ versionId: r.current_version_id, institutionId: r.institution_id }))
-  return { versions, installations: (data ?? []).length }
 }
 
 // ── Skill slot bindings ──────────────────────────────────────────────
@@ -1775,4 +1789,326 @@ export async function loadSectionFocus(
       isPublished: m.is_published === true,
     })),
   }
+}
+
+// ── Stage 2 dispatch, quotas and the review queue (Step 10) ─────────────
+
+export type AdmitOutcome = { outcome: 'admitted'; id: string } | { outcome: 'busy' | 'daily' | 'global_busy' | 'exists' }
+
+/** Inserts a runtime run inside its lane's caps, under the database's lock. Null on failure. */
+export async function admitRuntimeRun(row: {
+  versionId: string
+  institutionId: string
+  artifactSha256: string
+  validatorVersion: string
+  rulesetVersion: number
+  runtimeVersion: string
+  trigger: 'professor' | 'retry' | 'ruleset_change'
+  requestedBy: string | null
+  callbackSha256: string | null
+  lane: 'professor' | 'system'
+  caps: { global_concurrent: number; institution_concurrent: number; institution_daily: number; system_concurrent: number }
+}): Promise<AdmitOutcome | null> {
+  const { data, error } = await createAdminClient().rpc('studio_runtime_admit', {
+    p_version: row.versionId,
+    p_institution: row.institutionId,
+    p_artifact_sha256: row.artifactSha256,
+    p_validator_version: row.validatorVersion,
+    p_ruleset: row.rulesetVersion,
+    p_runtime_version: row.runtimeVersion,
+    p_trigger: row.trigger,
+    p_requested_by: row.requestedBy,
+    p_callback_sha256: row.callbackSha256,
+    p_lane: row.lane,
+    p_caps: row.caps,
+  })
+  if (error || !data || typeof (data as { outcome?: unknown }).outcome !== 'string') {
+    logger.error('studio/db.admitRuntimeRun', safeError(error ?? { message: 'unexpected result' }))
+    return null
+  }
+  return data as AdmitOutcome
+}
+
+/** Records a pending runtime run's dispatch once and moves it to running. */
+export async function dispatchValidation(
+  id: string,
+  mode: 'local' | 'cloud',
+  payloadSha256: string,
+  execution: string | null,
+  image: string | null,
+  callbackSha256: string | null,
+): Promise<boolean> {
+  const { data, error } = await createAdminClient().rpc('studio_validation_dispatch', {
+    p_validation: id,
+    p_mode: mode,
+    p_payload_sha256: payloadSha256,
+    p_execution: execution,
+    p_image: image,
+    p_callback_sha256: callbackSha256,
+  })
+  if (error) {
+    logger.error('studio/db.dispatchValidation', safeError(error), { id })
+    return false
+  }
+  return data === true
+}
+
+/** Cloud runs dispatched and not finished, oldest first: what the collector reads. */
+export async function listDispatchedCloudRuns(limit: number): Promise<{ id: string; createdAt: string; executionName: string | null; runnerImage: string | null }[]> {
+  const { data, error } = await createAdminClient()
+    .from(VALIDATIONS)
+    .select('id, created_at, execution_name, runner_image')
+    .eq('stage', 'runtime')
+    .eq('status', 'running')
+    .eq('runner_mode', 'cloud')
+    .order('created_at', { ascending: true })
+    .limit(limit)
+  if (error) {
+    logger.error('studio/db.listDispatchedCloudRuns', safeError(error))
+    return []
+  }
+  return (data ?? []).map((r) => ({ id: r.id as string, createdAt: r.created_at as string, executionName: (r.execution_name as string | null) ?? null, runnerImage: (r.runner_image as string | null) ?? null }))
+}
+
+/** Whether the institution's purpose-classifier calls in the last day are within the cap. Null when unreadable. */
+export async function purposeAdmit(institutionId: string, cap: number): Promise<boolean | null> {
+  const { data, error } = await createAdminClient().rpc('studio_purpose_admit', { p_institution: institutionId, p_cap: cap })
+  if (error) {
+    logger.error('studio/db.purposeAdmit', safeError(error))
+    return null
+  }
+  return data === true
+}
+
+/** The newest earlier edtech.purpose outcome for a version with the same purpose input, for revalidation reuse. */
+export async function loadLatestPurposeOutcome(
+  versionId: string,
+  rubricVersion: string,
+): Promise<{ status: string; message: string; metadata: Record<string, unknown> | null; aiModel: string | null } | null> {
+  const { data, error } = await createAdminClient()
+    .from(VALIDATION_CHECKS)
+    .select('status, message, metadata, studio_plugin_validations!inner(version_id, stage, status, ai_model, ai_rubric_version, created_at)')
+    .eq('check_id', 'edtech.purpose')
+    .eq('studio_plugin_validations.version_id', versionId)
+    .eq('studio_plugin_validations.stage', 'static')
+    .eq('studio_plugin_validations.ai_rubric_version', rubricVersion)
+    .in('status', ['passed', 'failed', 'needs_review'])
+    // The check row's own time: ordering by the embedded run would not order these rows.
+    .order('created_at', { ascending: false })
+    .limit(1)
+  if (error) {
+    logger.error('studio/db.loadLatestPurposeOutcome', safeError(error), { versionId })
+    return null
+  }
+  const row = (data ?? [])[0] as { status: string; message: string; metadata: Record<string, unknown> | null; studio_plugin_validations: unknown } | undefined
+  if (!row) return null
+  const run = (Array.isArray(row.studio_plugin_validations) ? row.studio_plugin_validations[0] : row.studio_plugin_validations) as { ai_model?: string | null } | null
+  return { status: row.status, message: row.message, metadata: row.metadata, aiModel: run?.ai_model ?? null }
+}
+
+/** One page of an institution's active installations' current versions, with whether students can see each. */
+export async function listInstitutionCurrentVersions(
+  institutionId: string,
+  limit: number,
+  offset: number,
+): Promise<{ rows: { installationId: string; versionId: string; visible: boolean }[]; installations: number } | null> {
+  const { data, error } = await createAdminClient()
+    .from(INSTALLATIONS)
+    .select('id, current_version_id, student_visibility')
+    .eq('institution_id', institutionId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .range(offset, offset + limit - 1)
+  if (error) {
+    logger.error('studio/db.listInstitutionCurrentVersions', safeError(error))
+    return null
+  }
+  return {
+    rows: (data ?? []).map((r) => ({ installationId: r.id as string, versionId: r.current_version_id as string, visible: r.student_visibility === 'visible' })),
+    installations: (data ?? []).length,
+  }
+}
+
+/** Institutions with at least one active installation: one revalidation job each. */
+export async function listInstitutionsWithInstallations(): Promise<string[] | null> {
+  const { data, error } = await createAdminClient().from(INSTALLATIONS).select('institution_id').eq('status', 'active').limit(5000)
+  if (error) {
+    logger.error('studio/db.listInstitutionsWithInstallations', safeError(error))
+    return null
+  }
+  return [...new Set((data ?? []).map((r) => r.institution_id as string))]
+}
+
+export interface ReviewQueueItem {
+  validationId: string
+  checkId: string
+  message: string
+  findings: { view?: string; detail?: string }[]
+  stage: 'static' | 'runtime'
+  /** What started the run: a Save, the professor, a retry, or revalidation (`ruleset_change`). */
+  trigger: string
+  createdAt: string
+  versionId: string
+  version: string
+  artifactSha256: string
+  manifest: unknown
+  publishedBy: string | null
+  institutionId: string
+  projectId: string
+}
+
+/** Checks waiting for a Scholera reviewer: needs_review, in a needs_review run, with no review yet. Oldest first. */
+export async function listReviewQueue(limit: number): Promise<ReviewQueueItem[] | null> {
+  // Which checks wait: studio_review_queue filters out reviewed ones in SQL, oldest first.
+  const { data: waiting, error: queueError } = await createAdminClient().rpc('studio_review_queue', { p_limit: limit })
+  if (queueError) {
+    logger.error('studio/db.listReviewQueue', safeError(queueError))
+    return null
+  }
+  const keys = ((waiting ?? []) as { validation_id: string; check_id: string }[]).map((w) => `${w.validation_id}|${w.check_id}`)
+  if (keys.length === 0) return []
+  const { data, error } = await createAdminClient()
+    .from(VALIDATION_CHECKS)
+    .select(
+      'validation_id, check_id, message, metadata, studio_plugin_validations!inner(id, stage, status, trigger, created_at, institution_id, version_id, artifact_sha256, studio_plugin_versions(project_id, version, manifest, published_by, artifact_sha256))',
+    )
+    .in('validation_id', [...new Set(keys.map((k) => k.split('|')[0]))])
+    .eq('status', 'needs_review')
+  if (error) {
+    logger.error('studio/db.listReviewQueue', safeError(error))
+    return null
+  }
+  const wanted = new Set(keys)
+  const rows = ((data ?? []) as Record<string, unknown>[]).filter((r) => wanted.has(`${r.validation_id}|${r.check_id}`))
+  const one = <T>(v: unknown) => (Array.isArray(v) ? v[0] : v) as T
+  return rows
+    .map((r) => {
+      const run = one<{ stage: 'static' | 'runtime'; trigger: string; created_at: string; institution_id: string; version_id: string; artifact_sha256: string; studio_plugin_versions: unknown }>(r.studio_plugin_validations)
+      const version = one<{ project_id: string; version: string; manifest: unknown; published_by: string | null }>(run.studio_plugin_versions)
+      const metadata = (r.metadata ?? {}) as { findings?: { view?: string; detail?: string }[] }
+      return {
+        validationId: r.validation_id as string,
+        checkId: r.check_id as string,
+        message: r.message as string,
+        findings: Array.isArray(metadata.findings) ? metadata.findings.slice(0, 20) : [],
+        stage: run.stage,
+        trigger: run.trigger,
+        createdAt: run.created_at,
+        versionId: run.version_id,
+        version: version?.version ?? '',
+        artifactSha256: run.artifact_sha256,
+        manifest: version?.manifest ?? null,
+        publishedBy: version?.published_by ?? null,
+        institutionId: run.institution_id,
+        projectId: version?.project_id ?? '',
+      }
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(0, limit)
+}
+
+/** How many checks are waiting for a reviewer, for the super-admin landing page. Null when unreadable. */
+export async function countReviewQueue(): Promise<number | null> {
+  const { data, error } = await createAdminClient().rpc('studio_review_queue', { p_limit: 500 })
+  if (error) {
+    logger.error('studio/db.countReviewQueue', safeError(error))
+    return null
+  }
+  return (data ?? []).length
+}
+
+/** Reviews with their reasons, for the professor's view of a decision. */
+export async function listValidationReviewDetails(validationIds: string[]): Promise<{ validationId: string; checkId: string; decision: 'approved' | 'rejected'; reason: string }[] | null> {
+  if (validationIds.length === 0) return []
+  const { data, error } = await createAdminClient().from(VALIDATION_REVIEWS).select('validation_id, check_id, decision, reason').in('validation_id', validationIds)
+  if (error) {
+    logger.error('studio/db.listValidationReviewDetails', safeError(error))
+    return null
+  }
+  return (data ?? []).map((r) => ({ validationId: r.validation_id, checkId: r.check_id, decision: r.decision, reason: r.reason }))
+}
+
+/** A version's material provenance, for the release review. */
+export async function loadVersionMaterial(versionId: string): Promise<{ sources: MaterialSourceEntry[]; incomplete: boolean } | null> {
+  const { data, error } = await createAdminClient().from(VERSIONS).select('material_sources, material_incomplete').eq('id', versionId).maybeSingle()
+  if (error || !data) {
+    if (error) logger.error('studio/db.loadVersionMaterial', safeError(error), { versionId })
+    return null
+  }
+  return { sources: toMaterialSources(data.material_sources), incomplete: data.material_incomplete === true }
+}
+
+/** The courses each project is installed in (active installations), as "CODE: Title", for the review queue. Null when unreadable. */
+export async function loadProjectCourses(projectIds: string[]): Promise<Record<string, string[]> | null> {
+  if (projectIds.length === 0) return {}
+  const { data, error } = await createAdminClient()
+    .from(INSTALLATIONS)
+    .select('project_id, course_sections(section_code, courses(code, title))')
+    .in('project_id', projectIds)
+    .eq('status', 'active')
+    .limit(1000)
+  if (error) {
+    logger.error('studio/db.loadProjectCourses', safeError(error))
+    return null
+  }
+  const out: Record<string, string[]> = {}
+  const one = <T>(v: unknown) => (Array.isArray(v) ? v[0] : v) as T | undefined
+  for (const r of data ?? []) {
+    const section = one<{ section_code: string | null; courses: unknown }>(r.course_sections)
+    const course = one<{ code: string | null; title: string | null }>(section?.courses)
+    const label = [course?.code, course?.title].filter(Boolean).join(': ') || section?.section_code || 'A course'
+    const list = (out[r.project_id as string] ??= [])
+    if (!list.includes(label)) list.push(label)
+  }
+  return out
+}
+
+/** Institution display names by id, for the super admin's review queue. Null when unreadable. */
+export async function loadInstitutionNames(ids: string[]): Promise<Record<string, string> | null> {
+  if (ids.length === 0) return {}
+  const { data, error } = await createAdminClient().from('institutions').select('id, name').in('id', ids)
+  if (error) {
+    logger.error('studio/db.loadInstitutionNames', safeError(error))
+    return null
+  }
+  return Object.fromEntries((data ?? []).map((r) => [r.id as string, r.name as string]))
+}
+
+/** Scholera's super admins' email addresses, for the review-queue email. Null when unreadable. */
+export async function listSuperAdminEmails(): Promise<string[] | null> {
+  const { data, error } = await createAdminClient().from('profiles').select('email').eq('role', 'super_admin').limit(50)
+  if (error) {
+    logger.error('studio/db.listSuperAdminEmails', safeError(error))
+    return null
+  }
+  return (data ?? []).map((r) => r.email as string | null).filter((e): e is string => typeof e === 'string' && e.includes('@'))
+}
+
+/**
+ * Revalidation progress from the newest job of `type` per institution: still active
+ * (queued, running, or ended with more to do), and of those, waiting on capacity.
+ */
+export async function revalidationProgress(type: string): Promise<{ active: number; waiting: number } | null> {
+  const { data, error } = await createAdminClient()
+    .from('background_jobs')
+    .select('institution_id, status, result')
+    .eq('type', type)
+    .order('created_at', { ascending: false })
+    .limit(500)
+  if (error) {
+    logger.error('studio/db.revalidationProgress', safeError(error))
+    return null
+  }
+  const newest = new Map<string, { status: string; result: unknown }>()
+  for (const row of data ?? []) if (!newest.has(row.institution_id)) newest.set(row.institution_id, row)
+  let active = 0
+  let waiting = 0
+  for (const job of newest.values()) {
+    const r = job.result as { next?: unknown; waiting?: unknown } | null
+    const continuing = job.status === 'done' && typeof r?.next === 'number'
+    if (job.status === 'pending' || job.status === 'running' || continuing) active += 1
+    if (continuing && r?.waiting === true) waiting += 1
+  }
+  return { active, waiting }
 }

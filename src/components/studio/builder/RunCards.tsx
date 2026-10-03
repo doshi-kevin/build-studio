@@ -232,13 +232,14 @@ const NEXT_STEP: Partial<Record<ProgressRead['status'], string>> = {
 // progress read has no reason code, so they are matched by their copy.
 
 /** How the build ended: fixed copy first, then Athena's note, then what to do next. */
-export function EndingCard({ progress, canSave, savesOtherDraft = false, onPreview, onSave, onRetry, retrying = false, onDecideMemory }: {
+export function EndingCard({ progress, canSave, savesOtherDraft = false, onPreview, onSave, afterSave, onRetry, retrying = false, onDecideMemory }: {
   progress: ProgressRead
   canSave: boolean
   /** This build's draft was undone, so Save keeps the current draft instead. */
   savesOtherDraft?: boolean
   onPreview: () => void
-  onSave: () => Promise<{ ok: boolean; message: string }>
+  onSave: () => Promise<{ ok: boolean; message: string; saved?: { versionId: string; version: string } }>
+  afterSave?: (saved: { versionId: string; version: string }) => React.ReactNode
   /** Send the same request again. Offered after a stop or a failure. */
   onRetry?: () => void
   retrying?: boolean
@@ -246,7 +247,7 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
   onDecideMemory?: (memoryId: string, approve: boolean) => Promise<string | null>
 }) {
   const [saving, start] = useTransition()
-  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null)
+  const [saved, setSaved] = useState<{ ok: boolean; message: string; saved?: { versionId: string; version: string } } | null>(null)
   const materialListId = useId()
   const result = progress.result
   const success = progress.status === 'preview_ready' || progress.status === 'completed'
@@ -314,6 +315,7 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
       {result?.previewHash && savesOtherDraft && <p className="text-sm text-muted-foreground">Your current draft isn’t the one this build made. Saving keeps your current draft.</p>}
       {/* No live role: the conversation log around this card announces it. */}
       {saved && <p className={saved.ok ? 'text-sm text-muted-foreground' : 'text-sm text-destructive'}>{saved.message}</p>}
+      {saved?.ok && saved.saved && afterSave?.(saved.saved)}
       {/* Below the main next step: Save stays the one filled button. */}
       {onDecideMemory && <MemoryProposals proposals={progress.memory.proposals} onDecide={onDecideMemory} />}
       {progress.memory.applied > 0 && (
