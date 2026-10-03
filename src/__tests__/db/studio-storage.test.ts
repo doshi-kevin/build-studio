@@ -62,7 +62,7 @@ async function publish(projectId: string, slug: string, version: string, extraCo
 }
 
 /** A fresh project in tenant A with 1.0.0 and 1.1.0 published. 1.1.0 adds a `hints` collection. */
-async function newPlugin() {
+async function newPlugin(extraCollections: Collections = {}) {
   const slug = `p-${run}-${slugs++}`
   const [{ id }] = await sql<{ id: string }>(
     `insert into public.studio_plugin_projects (institution_id, owner_id, slug, name)
@@ -70,8 +70,8 @@ async function newPlugin() {
     [A.institution, A.users.professor.id, slug],
   )
   projects.push(id)
-  const v1 = await publish(id, slug, '1.0.0')
-  const v2 = await publish(id, slug, '1.1.0', { hints: { access: 'shared', fields: { text: 'text' } } })
+  const v1 = await publish(id, slug, '1.0.0', extraCollections)
+  const v2 = await publish(id, slug, '1.1.0', { ...extraCollections, hints: { access: 'shared', fields: { text: 'text' } } })
   return { id, slug, v1, v2 }
 }
 
@@ -95,6 +95,7 @@ interface RecordInput {
   section?: string
   collection?: string
   owner?: string | null
+  author?: string
   data?: Record<string, unknown>
 }
 
@@ -110,7 +111,7 @@ async function write(r: RecordInput) {
       r.version,
       r.collection ?? 'questions',
       r.owner ?? null,
-      A.users.professor.id,
+      r.author ?? A.users.professor.id,
       r.data ?? { prompt: 'What was unclear today?', skill: 'recursion', open: true },
     ],
   )
@@ -184,6 +185,118 @@ describe('one version in two sections (rule 2.4)', () => {
       CHECK_VIOLATION,
       /enrolled/,
     )
+  })
+})
+
+// ── Step 11 (supabase/migrations/20261003120000_studio_builder_quality.sql) ──
+
+const ATTENDANCE = { attendance: { access: 'staffPerStudent', fields: { status: 'text' } } }
+const PRESENT = { status: 'present' }
+const ANSWER = { questionId: 'q1', answer: 'The base case', confidence: 3 }
+
+describe('staffPerStudent records', () => {
+  it('accepts one the professor or a TA writes about an enrolled student', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const about = { installation: inA, version: p.v1, collection: 'attendance', owner: A.users.student.id, data: PRESENT }
+    await write(about)
+    await write({ ...about, author: A.users.ta.id })
+    const rows = await sql('select owner_id, author_id from public.studio_plugin_records where installation_id = $1 order by created_at', [inA])
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.owner_id === A.users.student.id)).toBe(true)
+  })
+
+  it('refuses one about no one, or about someone who isn’t a student of the section', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const about = { installation: inA, version: p.v1, collection: 'attendance', data: PRESENT }
+    for (const owner of [null, A.users.professor.id, A.users.ta.id, B.users.student.id]) {
+      await refused(write({ ...about, owner }), CHECK_VIOLATION, /staffPerStudent record must belong to a student enrolled/)
+    }
+  })
+
+  it('refuses one written by a grader or by the student themself', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const about = { installation: inA, version: p.v1, collection: 'attendance', owner: A.users.student.id, data: PRESENT }
+    for (const author of [A.users.grader.id, A.users.student.id]) {
+      await refused(write({ ...about, author }), CHECK_VIOLATION, /professor or a TA/)
+    }
+  })
+
+  it('lets anyone the server allows edit a record a TA wrote: the author check is for new records only', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const id = await write({ installation: inA, version: p.v1, collection: 'attendance', owner: A.users.student.id, author: A.users.ta.id, data: PRESENT })
+    await sql(`update public.studio_plugin_records set data = '{"status": "late"}'::jsonb where id = $1`, [id])
+    const [row] = await sql<{ data: unknown }>('select data from public.studio_plugin_records where id = $1', [id])
+    expect(row.data).toEqual({ status: 'late' })
+  })
+})
+
+describe('a student’s storage counts only what they wrote', () => {
+  async function counters(installation: string) {
+    const [inst] = await sql<{ n: string }>('select record_count as n from public.studio_plugin_usage where installation_id = $1', [installation])
+    const [student] = await sql<{ n: string }>(
+      'select record_count as n from public.studio_plugin_student_usage where installation_id = $1 and student_id = $2',
+      [installation, A.users.student.id],
+    )
+    return { installation: Number(inst.n), student: student ? Number(student.n) : null }
+  }
+
+  it('a record staff write about a student counts toward the installation only, on insert and on delete', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const before = await counters(inA)
+
+    const staffRecord = await write({ installation: inA, version: p.v1, collection: 'attendance', owner: A.users.student.id, data: PRESENT })
+    expect(await counters(inA)).toEqual({ installation: before.installation + 1, student: null })
+
+    const own = await write({ installation: inA, version: p.v1, collection: 'responses', owner: A.users.student.id, author: A.users.student.id, data: ANSWER })
+    expect(await counters(inA)).toEqual({ installation: before.installation + 2, student: 1 })
+
+    // Deleting the staff record leaves the student's count alone: both branches use owner = author.
+    await sql('delete from public.studio_plugin_records where id = $1', [staffRecord])
+    expect(await counters(inA)).toEqual({ installation: before.installation + 1, student: 1 })
+    await sql('delete from public.studio_plugin_records where id = $1', [own])
+    expect(await counters(inA)).toEqual({ installation: before.installation, student: 0 })
+  })
+})
+
+describe('handle salts', () => {
+  it('each installation gets its own, and it never changes', async () => {
+    const p = await newPlugin()
+    const inA = await install(A.section, p.v1)
+    const inA2 = await install(sectionA2, p.v1)
+    const rows = await sql<{ handle_salt: string }>('select handle_salt from public.studio_plugin_installations where id = any($1)', [[inA, inA2]])
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => /^[0-9a-f]{64}$/.test(r.handle_salt))).toBe(true)
+    expect(rows[0].handle_salt).not.toBe(rows[1].handle_salt)
+    await refused(
+      sql(`update public.studio_plugin_installations set handle_salt = repeat('0', 64) where id = $1`, [inA]),
+      CHECK_VIOLATION,
+      /salt can't change/,
+    )
+  })
+})
+
+describe('bridge versions', () => {
+  async function publishOn(projectId: string, slug: string, version: string, bridge: string) {
+    const manifest = { ...manifestFor(slug, version, { hints: { access: 'shared', fields: { text: 'text' } } }), bridgeVersion: bridge }
+    const bundle = `/* ${slug} ${version} */`
+    return sql(
+      `insert into public.studio_plugin_versions
+         (project_id, institution_id, version, manifest, bridge_version, source, student_bundle, professor_bundle,
+          bundle_sha256, published_by)
+       values ($1, $2, $3, $4, $5, '{}'::jsonb, $6, $6, $7, $8)`,
+      [projectId, A.institution, version, manifest, bridge, bundle, createHash('sha256').update(bundle).digest('hex'), A.users.professor.id],
+    )
+  }
+
+  it('accepts v2 next to v1, and nothing else', async () => {
+    const p = await newPlugin()
+    await publishOn(p.id, p.slug, '1.2.0', 'v2')
+    await refused(publishOn(p.id, p.slug, '1.3.0', 'v3'), CHECK_VIOLATION)
   })
 })
 

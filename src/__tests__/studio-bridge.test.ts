@@ -18,6 +18,9 @@ vi.mock('@/lib/studio/db', () => ({
   loadSectionSkills: vi.fn(),
   listSkillBindings: vi.fn(),
   listBindableSkills: vi.fn(),
+  loadReleasedAssignments: vi.fn(),
+  loadInstallationHandleSalt: vi.fn(),
+  loadSectionRoster: vi.fn(),
 }))
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 vi.mock('@/lib/studio/records', async (importOriginal) => {
@@ -32,11 +35,13 @@ vi.mock('@/lib/studio/records', async (importOriginal) => {
     createRecord: vi.fn(),
     updateRecord: vi.fn(),
     deleteRecord: vi.fn(),
+    batchRecords: vi.fn(),
   }
 })
 
 const { resolveViewer, sessionUserId } = await import('@/lib/studio/context')
-const { loadSectionCourse, loadSectionSkills, listSkillBindings, listBindableSkills } = await import('@/lib/studio/db')
+const { loadSectionCourse, loadSectionSkills, listSkillBindings, listBindableSkills, loadReleasedAssignments, loadInstallationHandleSalt, loadSectionRoster } =
+  await import('@/lib/studio/db')
 const { logEvent } = await import('@/lib/supabase/event-logger')
 const records = await import('@/lib/studio/records')
 const { readBodyCapped } = await import('@/lib/studio/bridge/read-body')
@@ -177,11 +182,14 @@ describe('method catalog and server handlers', () => {
     ).toEqual({
       'context.get': ['server', 'context.get', 'read'],
       'course.skills': ['server', 'course.skills', 'read'],
+      'course.roster': ['server', 'course.roster', 'read'],
+      'course.assignments': ['server', 'course.assignments', 'read'],
       'records.list': ['server', null, 'read'],
       'records.get': ['server', null, 'read'],
       'records.create': ['server', null, 'write'],
       'records.update': ['server', null, 'write'],
       'records.delete': ['server', null, 'write'],
+      'records.batch': ['server', null, 'write'],
       'ui.resize': ['host', 'ui.resize', 'read'],
       'ui.toast': ['host', 'ui.toast', 'read'],
     })
@@ -285,6 +293,119 @@ describe('course.skills', () => {
       code: 'failed',
       message: 'Something went wrong. Try again.',
     })
+  })
+})
+
+describe('course.roster', () => {
+  const withRoster = { ...MANIFEST, views: { ...MANIFEST.views, professor: { ...MANIFEST.views.professor, capabilities: ['course.roster' as const] } } }
+  const STUDENTS = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()]
+
+  beforeEach(() => {
+    vi.mocked(loadInstallationHandleSalt).mockResolvedValue('a'.repeat(64))
+    vi.mocked(loadSectionRoster).mockResolvedValue(
+      STUDENTS.map((id, i) => ({ id, firstName: `First${i}`, lastName: `Last${i}`, name: `Name${i}` })),
+    )
+  })
+
+  it.each(['professor', 'ta', 'grader'] as const)('gives the %s handles only, sorted by handle: no IDs, no names', async (role) => {
+    const result = await dispatch(viewer(role, 'active', withRoster), { method: 'course.roster', args: null, host: HOST })
+    expect(result.ok).toBe(true)
+    const { students } = (result as { data: { students: { handle: string }[] } }).data
+    const handles = students.map((s) => s.handle)
+    expect(handles).toHaveLength(3)
+    expect(handles.every((h) => /^st_[0-9a-v]{20}$/.test(h))).toBe(true)
+    expect(handles).toEqual([...handles].sort())
+    expect(students.every((s) => Object.keys(s).join() === 'handle')).toBe(true)
+    expect(JSON.stringify(result)).not.toMatch(UUID)
+    expect(JSON.stringify(result)).not.toMatch(/First|Last|Name/)
+  })
+
+  it('is refused to a student view, whatever the manifest says', async () => {
+    const studentRoster = { ...withRoster, views: { ...withRoster.views, student: { ...withRoster.views.student, capabilities: ['course.roster' as const] } } }
+    const result = await dispatch(viewer('student', 'active', studentRoster), { method: 'course.roster', args: null, host: HOST })
+    expect(result).toMatchObject({ ok: false, code: 'not_available' })
+    expect(loadSectionRoster).not.toHaveBeenCalled()
+  })
+
+  it('needs the capability declared, and fails closed when the roster can’t be read', async () => {
+    expect(await dispatch(viewer('professor'), { method: 'course.roster', args: null, host: HOST })).toMatchObject({ ok: false, code: 'not_available' })
+    vi.mocked(loadSectionRoster).mockResolvedValue(null)
+    expect(await dispatch(viewer('professor', 'active', withRoster), { method: 'course.roster', args: null, host: HOST })).toMatchObject({
+      ok: false,
+      code: 'failed',
+    })
+  })
+})
+
+describe('course.assignments', () => {
+  const withAssignments = {
+    ...MANIFEST,
+    views: { ...MANIFEST.views, student: { ...MANIFEST.views.student, capabilities: ['course.assignments' as const] } },
+  }
+  const ASSIGNMENTS = [
+    { title: 'Problem set 1', dueAt: '2026-10-10T23:59:00Z', points: 10 },
+    { title: 'Reading notes', dueAt: null, points: null },
+  ]
+
+  it('gives a student view titles, due dates and points, with no identifier anywhere', async () => {
+    vi.mocked(loadReleasedAssignments).mockResolvedValue(ASSIGNMENTS)
+    const v = viewer('student', 'active', withAssignments)
+    const result = await dispatch(v, { method: 'course.assignments', args: null, host: HOST })
+    expect(result).toEqual({ ok: true, data: { assignments: ASSIGNMENTS } })
+    expect(loadReleasedAssignments).toHaveBeenCalledWith(v.sectionId)
+    expect(JSON.stringify(result)).not.toMatch(UUID)
+  })
+
+  it('needs the capability declared in the view', async () => {
+    expect(await dispatch(viewer('student'), { method: 'course.assignments', args: null, host: HOST })).toMatchObject({
+      ok: false,
+      code: 'not_available',
+    })
+    expect(loadReleasedAssignments).not.toHaveBeenCalled()
+  })
+})
+
+describe('records.batch', () => {
+  const record = { id: crypto.randomUUID(), data: {}, mine: true, createdAt: '', updatedAt: '' }
+
+  it('routes to Step 3 with the verified installation, and reports each item in order by code only', async () => {
+    vi.mocked(records.batchRecords).mockResolvedValue({
+      ok: true,
+      value: [
+        { ok: true, value: record },
+        { ok: false, error: records.RECORD_NOT_AVAILABLE },
+        { ok: false, error: 'This record doesn’t match its collection.', issues: ['answer: Invalid input'] },
+        { ok: false, error: records.RECORD_FULL_STUDENT },
+        { ok: true, value: null },
+      ],
+    })
+    const items = [{ op: 'create', data: {} }, { op: 'delete', recordId: crypto.randomUUID() }]
+    const result = await dispatch(viewer('student'), { method: 'records.batch', args: { collection: 'responses', items }, host: HOST })
+    expect(records.batchRecords).toHaveBeenCalledWith({ collection: 'responses', items, installationId: INSTALLATION })
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        results: [
+          { ok: true, record },
+          { ok: false, code: 'not_available' },
+          { ok: false, code: 'invalid' },
+          { ok: false, code: 'full' },
+          { ok: true, record: null },
+        ],
+      },
+    })
+  })
+
+  it.each([
+    ['no items', []],
+    ['more than 50 items', Array.from({ length: 51 }, () => ({ op: 'create', data: {} }))],
+    ['an item naming an owner', [{ op: 'create', data: {}, ownerId: crypto.randomUUID() }]],
+    ['an item with a student ID instead of a handle', [{ op: 'create', data: {}, student: crypto.randomUUID() }]],
+    ['an unknown op', [{ op: 'upsert', data: {} }]],
+  ])('refuses %s before Step 3', async (_label, items) => {
+    const result = await dispatch(viewer('professor'), { method: 'records.batch', args: { collection: 'responses', items }, host: HOST })
+    expect(result).toMatchObject({ ok: false, code: 'invalid' })
+    expect(records.batchRecords).not.toHaveBeenCalled()
   })
 })
 
@@ -554,6 +675,15 @@ describe('POST /api/studio/bridge', () => {
     expect((await post(CALL)).status).toBe(200)
   })
 
+  it('counts a whole batch as one write', async () => {
+    vi.mocked(records.batchRecords).mockResolvedValue({ ok: true, value: [] })
+    const items = Array.from({ length: 50 }, () => ({ op: 'create', data: {} }))
+    const batch = { ...CALL, method: 'records.batch', args: { collection: 'responses', items } }
+    for (let i = 0; i < 30; i++) expect((await post(batch)).status).toBe(200)
+    expect((await post(batch)).status).toBe(429)
+    expect(records.batchRecords).toHaveBeenCalledTimes(30)
+  })
+
   it('logs a runtime stop with identifiers and the reason only', async () => {
     const res = await post({ v: 1, type: 'event', installationId: INSTALLATION, reason: 'navigated' })
     expect(await res.json()).toEqual({ ok: true, data: null })
@@ -662,5 +792,119 @@ describe('preview bridge', () => {
     expect(await preview.handleRequest('records.create', { collection: 'responses', data: { answer: 1 } })).toMatchObject({ ok: false, code: 'invalid' })
     expect(await preview.handleRequest('context.get', null)).toMatchObject({ ok: true, data: { preview: true, view: 'student' } })
     expect(await preview.handleRequest('course.skills', null)).toMatchObject({ ok: false, code: 'unsupported' })
+  })
+})
+
+// ── The preview bridge, Step 11: the synthetic class, staffPerStudent, batch, sample data ──
+
+const { PREVIEW_ROSTER } = await import('@/lib/studio/runtime/preview-roster')
+
+describe('preview bridge with the synthetic class', () => {
+  const parsedClass = parseManifest({
+    ...exitTicket,
+    views: {
+      student: { ...exitTicket.views.student, capabilities: ['context.get', 'course.assignments'] },
+      professor: { ...exitTicket.views.professor, capabilities: ['context.get', 'course.roster', 'course.assignments'] },
+    },
+    collections: {
+      ...exitTicket.collections,
+      attendance: { access: 'staffPerStudent', fields: { date: 'text', status: 'text', note: 'text' } },
+    },
+  })
+  if (!parsedClass.ok) throw new Error('class manifest is invalid')
+  const CLASS = parsedClass.manifest
+  const [FIRST, SECOND] = PREVIEW_ROSTER.map((s) => s.handle)
+  const today = { date: '2026-10-03', status: 'present', note: '' }
+  const listOf = async (preview: { handleRequest: (m: string, a: unknown) => Promise<unknown> }, collection: string) =>
+    ((await preview.handleRequest('records.list', { collection })) as { data: Record<string, unknown>[] }).data
+
+  it('gives a professor view the twelve synthetic handles, sorted by handle, and a student view none', async () => {
+    const roster = await createPreviewBridge(CLASS, 'professor').handleRequest('course.roster', null)
+    expect(roster).toEqual({ ok: true, data: { students: [...PREVIEW_ROSTER].map((s) => ({ handle: s.handle })).sort((a, b) => a.handle.localeCompare(b.handle)) } })
+    expect(JSON.stringify(roster)).not.toContain(PREVIEW_ROSTER[0].name)
+    expect(await createPreviewBridge(CLASS, 'student').handleRequest('course.roster', null)).toMatchObject({ ok: false, code: 'not_available' })
+  })
+
+  it('lists synthetic released assignments by due date, with no IDs', async () => {
+    const result = (await createPreviewBridge(CLASS, 'student').handleRequest('course.assignments', null)) as { ok: true; data: { assignments: Record<string, unknown>[] } }
+    expect(result.ok).toBe(true)
+    for (const a of result.data.assignments) expect(Object.keys(a).sort()).toEqual(['dueAt', 'points', 'title'])
+    const dated = result.data.assignments.map((a) => a.dueAt).filter((d): d is string => d !== null)
+    expect(dated).toEqual([...dated].sort())
+  })
+
+  it('a professor records something about one student by handle; that student sees it as theirs, without a handle', async () => {
+    const professor = createPreviewBridge(CLASS, 'professor', { sample: { attendance: [] } })
+    expect(await professor.handleRequest('records.create', { collection: 'attendance', data: today })).toMatchObject({ ok: false, code: 'invalid' })
+    expect(await professor.handleRequest('records.create', { collection: 'attendance', data: today, student: `st_${'0'.repeat(20)}` })).toMatchObject({ ok: false, code: 'not_available' })
+    const made = await professor.handleRequest('records.create', { collection: 'attendance', data: today, student: SECOND })
+    expect(made).toMatchObject({ ok: true, data: { student: SECOND, mine: false, data: today } })
+    // `student` is for staffPerStudent only.
+    expect(await professor.handleRequest('records.create', { collection: 'questions', data: { prompt: 'p', skill: 's', open: true }, student: SECOND })).toMatchObject({ ok: false, code: 'invalid' })
+
+    const student = createPreviewBridge(CLASS, 'student', { sample: { attendance: [{ student: 0, data: today }, { student: 1, data: { ...today, status: 'absent' } }] } })
+    const own = await listOf(student, 'attendance')
+    expect(own).toEqual([expect.objectContaining({ mine: true, data: today })])
+    expect(own[0]).not.toHaveProperty('student')
+    expect(await student.handleRequest('records.create', { collection: 'attendance', data: today })).toMatchObject({ ok: false, code: 'not_available' })
+    expect(await student.handleRequest('records.create', { collection: 'responses', data: { questionId: 'q', answer: 'a', confidence: 1 }, student: FIRST })).toMatchObject({ ok: false, code: 'invalid' })
+  })
+
+  it('staff see whose perStudent and staffPerStudent records are whose, as handles', async () => {
+    const professor = createPreviewBridge(CLASS, 'professor', { sample: { responses: [{ student: 3, data: { questionId: 'q1', answer: 'Light', confidence: 4 } }] } })
+    expect(await listOf(professor, 'responses')).toEqual([expect.objectContaining({ student: PREVIEW_ROSTER[3].handle, mine: false })])
+  })
+
+  it('runs a batch item by item, in order, reporting each refusal by code only', async () => {
+    const professor = createPreviewBridge(CLASS, 'professor', { sample: { attendance: [] } })
+    const result = await professor.handleRequest('records.batch', {
+      collection: 'attendance',
+      items: [
+        { op: 'create', data: today, student: FIRST },
+        { op: 'create', data: { status: 'present' }, student: SECOND },
+        { op: 'delete', recordId: crypto.randomUUID() },
+        { op: 'create', data: { ...today, status: 'late' }, student: SECOND },
+      ],
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        results: [
+          { ok: true, record: { student: FIRST } },
+          { ok: false, code: 'invalid' },
+          { ok: false, code: 'not_available' },
+          { ok: true, record: { student: SECOND, data: { status: 'late' } } },
+        ],
+      },
+    })
+    expect(JSON.stringify(result)).not.toContain('doesn’t match')
+    expect(await listOf(professor, 'attendance')).toHaveLength(2)
+  })
+
+  it('shows the draft’s sample data and nothing else when there is some', async () => {
+    const professor = createPreviewBridge(CLASS, 'professor', {
+      sample: { questions: [{ data: { prompt: 'What limits photosynthesis?', skill: 'Light', open: true } }], unknownCollection: [{ data: {} }] },
+    })
+    expect(await listOf(professor, 'questions')).toEqual([expect.objectContaining({ mine: true, data: { prompt: 'What limits photosynthesis?', skill: 'Light', open: true } })])
+    expect(await listOf(professor, 'attendance')).toEqual([])
+  })
+
+  it('without sample data, writes placeholders that fit each field, never “Sample text”', async () => {
+    const records = await listOf(createPreviewBridge(CLASS, 'professor'), 'attendance')
+    expect(records).toHaveLength(3)
+    for (const r of records) {
+      const data = r.data as Record<string, string>
+      expect(data.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(['present', 'late', 'absent']).toContain(data.status)
+      expect(JSON.stringify(data)).not.toMatch(/Sample text/)
+    }
+  })
+
+  it('pages records.list with limit and offset, like the server', async () => {
+    const professor = createPreviewBridge(CLASS, 'professor')
+    const all = await listOf(professor, 'attendance')
+    const page = ((await professor.handleRequest('records.list', { collection: 'attendance', limit: 1, offset: 1 })) as { data: unknown[] }).data
+    expect(page).toEqual([all[1]])
+    expect(await professor.handleRequest('records.list', { collection: 'attendance', extra: true })).toMatchObject({ ok: false, code: 'invalid' })
   })
 })

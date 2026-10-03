@@ -519,3 +519,159 @@ describe('status heartbeat', () => {
     expect(m.frame.snapshot().status).toBe('ready')
   })
 })
+
+// ── Runtime v2: auto height and the host-drawn roster (studio-builder-quality.md 3.4) ──
+
+describe('runtime v2', () => {
+  const HANDLE_A = `st_${'a'.repeat(20)}`
+  const HANDLE_B = `st_${'b'.repeat(20)}`
+  const NAMES = { [HANDLE_A]: 'Zoe Quinlan-Ford', [HANDLE_B]: 'Arjun Mehra-Castillo' }
+  const roster = (session: string, op: string, extra: Record<string, unknown> = {}) => ({ scholera: 'bridge', v: 1, type: 'roster', session, op, slot: 'r1', ...extra })
+  const payload = (rows = [HANDLE_A, HANDLE_B]) => ({
+    label: 'Attendance',
+    sort: 'name',
+    searchable: false,
+    columns: [{ key: 'status', header: 'Today' }],
+    rows: rows.map((student) => ({
+      student,
+      cells: { status: { kind: 'choice', value: null, options: [{ value: 'present', label: 'Present', tone: 'success' }, { value: 'absent', label: 'Absent', tone: 'danger' }] } },
+    })),
+    emptyText: 'No students yet.',
+  })
+  const ROSTER_OPTIONS: Partial<PluginFrameOptions> = {
+    view: 'professor',
+    allowedMethods: ['course.roster'],
+    rosterNames: async () => NAMES,
+  }
+  const readyV2 = (m: Mounted) => {
+    m.send(hello('v2'))
+    m.load()
+    return sessionOf(m.frame.snapshot())!
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+
+  it('welcomes a v2 runtime as v2, and a v1 runtime as v1', () => {
+    const v2 = mount()
+    readyV2(v2)
+    expect(v2.posted[0]).toMatchObject({ type: 'welcome', context: { runtime: 'v2' } })
+    const v1 = mount()
+    v1.ready()
+    expect(v1.posted[0]).toMatchObject({ type: 'welcome', context: { runtime: 'v1' } })
+  })
+
+  it('fits the frame to the height a v2 runtime reports, clamped like ui.resize', () => {
+    const m = mount()
+    const session = readyV2(m)
+    m.send({ scholera: 'bridge', v: 1, type: 'size', session, height: 731.4 })
+    expect(m.iframe.style.height).toBe('731px')
+    m.send({ scholera: 'bridge', v: 1, type: 'size', session, height: 90_000 })
+    expect(m.iframe.style.height).toBe(`${STUDIO_FRAME_MAX_HEIGHT_PX}px`)
+    expect(m.frame.snapshot().strikes).toBe(0)
+  })
+
+  it('drops size reports over its per-second bound, without a strike', () => {
+    const m = mount({ limits: { startTimeoutMs: 1000, helloTimeoutMs: 500, malformedMax: 3, sizePerSecond: 2 } })
+    const session = readyV2(m)
+    for (const height of [300, 400, 500]) m.send({ scholera: 'bridge', v: 1, type: 'size', session, height })
+    expect(m.iframe.style.height).toBe('400px')
+    expect(m.frame.snapshot().strikes).toBe(0)
+  })
+
+  it('treats v2 messages from a v1 runtime as junk', () => {
+    const m = mount(ROSTER_OPTIONS)
+    const session = m.ready()
+    m.send({ scholera: 'bridge', v: 1, type: 'size', session, height: 700 })
+    m.send(roster(session, 'render', { payload: payload() }))
+    expect(m.frame.snapshot().strikes).toBe(2)
+    expect(m.iframe.style.height).toBe('')
+    expect(m.container.querySelector('[data-studio-roster]')).toBeNull()
+  })
+
+  it.each([
+    ['a student view', { ...ROSTER_OPTIONS, view: 'student' as const }],
+    ['a professor view without course.roster', { ...ROSTER_OPTIONS, allowedMethods: ['records.list'] }],
+    ['a professor view with no allowed methods', { ...ROSTER_OPTIONS, allowedMethods: undefined }],
+  ])('strikes roster messages from %s and draws nothing', async (_label, options) => {
+    const rosterNames = vi.fn(async () => NAMES)
+    const m = mount({ ...options, rosterNames })
+    const session = readyV2(m)
+    m.send(roster(session, 'render', { payload: payload() }))
+    await settle()
+    expect(m.frame.snapshot().strikes).toBe(1)
+    expect(m.container.querySelector('[data-studio-roster]')).toBeNull()
+    expect(rosterNames).not.toHaveBeenCalled()
+  })
+
+  it('strikes a payload that fails the strict parse', () => {
+    const m = mount(ROSTER_OPTIONS)
+    const session = readyV2(m)
+    m.send(roster(session, 'render', { payload: { ...payload(), rows: [{ student: 'Arjun', cells: {} }] } }))
+    expect(m.frame.snapshot().strikes).toBe(1)
+    expect(m.container.querySelector('[data-studio-roster]')).toBeNull()
+  })
+
+  it('draws names over the frame, sends the plugin only handles and values, and never a name', async () => {
+    const m = mount(ROSTER_OPTIONS)
+    const session = readyV2(m)
+    m.send(roster(session, 'render', { payload: payload() }))
+    m.send(roster(session, 'place', { rect: { x: 16, y: 80, width: 600, height: 160 } }))
+    await settle()
+    const table = m.container.querySelector('table')!
+    expect([...table.querySelectorAll('tbody th')].map((th) => th.textContent)).toEqual(['Arjun Mehra-Castillo', 'Zoe Quinlan-Ford'])
+    const box = m.container.querySelector<HTMLElement>('[data-studio-roster="r1"]')!
+    expect(box.style).toMatchObject({ left: '16px', top: '80px', width: '600px', height: '160px' })
+
+    table.querySelector<HTMLButtonElement>('[aria-label="Mark Zoe Quinlan-Ford Absent"]')!.click()
+    expect(m.posted.at(-1)).toEqual({
+      scholera: 'bridge',
+      v: 1,
+      type: 'event',
+      session,
+      name: 'roster.action',
+      data: { slot: 'r1', student: HANDLE_A, column: 'status', value: 'absent' },
+    })
+    const everything = JSON.stringify(m.posted)
+    for (const name of Object.values(NAMES)) expect(everything).not.toContain(name)
+  })
+
+  it('asks for names once per frame, however many renders', async () => {
+    const rosterNames = vi.fn(async () => NAMES)
+    const m = mount({ ...ROSTER_OPTIONS, rosterNames })
+    const session = readyV2(m)
+    for (let i = 0; i < 3; i++) m.send(roster(session, 'render', { payload: payload() }))
+    await settle()
+    expect(rosterNames).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops roster messages over its own per-second bound, outside the call budget', async () => {
+    const handleRequest = vi.fn(async () => ({ ok: true as const, data: null }))
+    const m = mount({
+      ...ROSTER_OPTIONS,
+      allowedMethods: ['course.roster', 'records.list'],
+      handleRequest,
+      limits: { startTimeoutMs: 1000, helloTimeoutMs: 500, malformedMax: 3, rosterPerSecond: 1, callsPerMinute: 1 },
+    })
+    const session = readyV2(m)
+    m.send(roster(session, 'render', { payload: payload([HANDLE_A]) }))
+    m.send(roster(session, 'render', { payload: payload([HANDLE_A, HANDLE_B]) }))
+    await settle()
+    expect(m.container.querySelectorAll('tbody tr')).toHaveLength(1)
+    expect(m.frame.snapshot().strikes).toBe(0)
+    // The roster used none of the one call this frame has.
+    m.send(request(session, 'q1', 'records.list', { collection: 'x' }))
+    await settle()
+    expect(handleRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('removes a table on remove, and the whole layer when the frame stops', async () => {
+    const m = mount(ROSTER_OPTIONS)
+    const session = readyV2(m)
+    m.send(roster(session, 'render', { payload: payload() }))
+    await settle()
+    m.send(roster(session, 'remove'))
+    expect(m.container.querySelector('[data-studio-roster="r1"]')).toBeNull()
+    m.send(roster(session, 'render', { payload: payload() }))
+    m.frame.destroy()
+    expect(m.container.querySelector('[data-studio-roster]')).toBeNull()
+  })
+})

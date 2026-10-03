@@ -91,6 +91,7 @@ type Access = StudioManifestV2['collections'][string]['access']
 /** Fixed plain words for each access mode. The modes form no order, so every change needs approval. */
 const ACCESS_LABEL: Record<Access, string> = {
   perStudent: 'each student sees only their own, staff see all',
+  staffPerStudent: 'staff record something for each student, each student sees only their own',
   shared: 'staff write, everyone in the section reads',
   staffOnly: 'staff only, never sent to a student’s screen',
 }
@@ -130,7 +131,7 @@ export function proposeManifest(manifestJson: string, ctx: ProposalContext): Pro
   // 3. Stamp. Rebuilt into a fresh object; a "__proto__" key is an own key after
   // JSON.parse and parseManifest's raw-key checks see it.
   const input = raw as Record<string, unknown>
-  const owned: Record<string, unknown> = { manifestVersion: 2, id: ctx.slug, version: DRAFT_VERSION, bridgeVersion: 'v1' }
+  const owned: Record<string, unknown> = { manifestVersion: 2, id: ctx.slug, version: DRAFT_VERSION, bridgeVersion: 'v2' }
   const stamped = Object.keys(owned).filter((k) => Object.hasOwn(input, k) && !sameJson(input[k], owned[k]))
   const views = (input.views && typeof input.views === 'object' && !Array.isArray(input.views) ? input.views : {}) as Record<string, unknown>
   const stampedViews: Record<string, unknown> = {}

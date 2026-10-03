@@ -50,6 +50,7 @@ describe('Studio storage tables', () => {
       'src/lib/studio/builder/harness.ts',
       'src/lib/studio/builder/service.ts',
       'src/lib/studio/context.ts',
+      'src/lib/studio/handles.ts',
       'src/lib/studio/lifecycle.ts',
       'src/lib/studio/navigation.ts',
       'src/lib/studio/records.ts',
@@ -64,7 +65,7 @@ describe('Studio storage tables', () => {
 
 describe('Studio service modules', () => {
   const SERVICE = [
-    'context', 'db', 'lifecycle', 'publication', 'records', 'runtime/frame', 'runtime/frame-ticket',
+    'context', 'db', 'handles', 'lifecycle', 'publication', 'records', 'runtime/frame', 'runtime/frame-ticket',
     'bridge/registry', 'bridge/dispatch', 'bridge/context-get', 'bridge/rate-limit',
     'access', 'navigation', 'prepublish', 'student-visibility', 'skill-bindings',
     'validator/service', 'validator/purpose-ai', 'validator/runtime-runner', 'validator/cloud-runner', 'validator/pipelines',

@@ -7,8 +7,8 @@ The only code allowed to read or write Studio plugin storage, and the rules it a
 | **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)). Its first caller is the Scholera Bridge (`POST /api/studio/bridge`, Step 4C), through `dispatch()`; see [studio-plugin-runtime.md](./studio-plugin-runtime.md#the-bridge). Lifecycle operations still have no endpoint |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
-| **Code** | `src/lib/studio/` (`context.ts`, `policy.ts`, `record-schema.ts`, `db.ts`, `records.ts`, `lifecycle.ts`, `publication.ts`, `access.ts`, `student-visibility.ts`). Student visibility and access are documented in [studio-plugin-publication.md](./studio-plugin-publication.md) |
-| **Tests** | `src/__tests__/studio-{policy,record-schema,records,context,lifecycle,table-access}.test.ts`, and `src/__tests__/db/studio-server-path.test.ts` end to end |
+| **Code** | `src/lib/studio/` (`context.ts`, `policy.ts`, `record-schema.ts`, `db.ts`, `records.ts`, `handles.ts`, `lifecycle.ts`, `publication.ts`, `access.ts`, `student-visibility.ts`). Student visibility and access are documented in [studio-plugin-publication.md](./studio-plugin-publication.md) |
+| **Tests** | `src/__tests__/studio-{policy,record-schema,records,handles,roster,context,lifecycle,table-access}.test.ts`, and `src/__tests__/db/studio-server-path.test.ts` end to end |
 
 ## Why it exists
 
@@ -28,7 +28,7 @@ The database refuses structural mistakes on its own: a cross-institution referen
 
 ## The record request flow
 
-A request carries only an installation ID, a collection name, a record ID (for get, update and delete), data (for create and update), and paging (for list). Inputs are strict, so a request that names a user, owner, author, version, institution, section or role is refused before anything runs.
+A request carries only an installation ID, a collection name, a record ID (for get, update and delete), data (for create and update), paging (for list), and for a create on a `staffPerStudent` collection the handle of the student it is about (`student`, see [Student handles](#student-handles)). Inputs are strict, so a request that names a user, owner, author, version, institution, section or role is refused before anything runs.
 
 1. Check the input's shape.
 2. Read the session user.
@@ -41,13 +41,26 @@ A request carries only an installation ID, a collection name, a record ID (for g
 6. Work out whether the viewer may write (`writable`, below).
 7. The collection must be the manifest's own property, so a name like `constructor` can't resolve through the prototype.
 8. `decide(role, access, operation, writable ? 'writable' : 'readOnly')`.
-9. For writes, validate the data.
-10. Query through `db.ts` with the policy's owner filter. Stamps come only from steps 2 to 8. A write the storage quota refuses returns "This tool has run out of storage space" (the Bridge's `full`).
-11. Audit writes.
+9. For writes, validate the data. A create on a `staffPerStudent` collection must name a student; any other create that names one is invalid.
+10. For a `staffPerStudent` create, resolve the handle against the installation's own section. A handle that names no one there is refused like everything else.
+11. Query through `db.ts` with the policy's owner filter. Stamps come only from steps 2 to 10. A write the storage quota refuses returns "This tool has run out of storage space" (the Bridge's `full`).
+12. Audit writes.
 
-Every refusal before the database answers, and a record that doesn't match, returns the same message: "This isn't available." A caller can't tell a missing installation or record from one they may not see. Validation failures return field issues, but only after authorization has passed.
+Every refusal before the database answers, a record that doesn't match, and an unknown student handle return the same message: "This isn't available." A caller can't tell a missing installation, record or student from one they may not see. Validation failures return field issues, but only after authorization has passed.
 
-Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `mine`. They carry no user IDs (rule 2.1).
+Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `mine`. They carry no user IDs (rule 2.1). A staff viewer's records of a `perStudent` or `staffPerStudent` collection also carry `student`, the owner's handle. A student's records never do.
+
+### Batches
+
+`batchRecords` (the Bridge's `records.batch`) takes one collection and 1 to 50 items (`STUDIO_RECORD_BATCH_MAX`), each a create, update or delete. The viewer is resolved once. Each item then runs exactly as its single function would: the same policy, validation, quota and audit. Items run in order and each gets its own result, so one refused item doesn't stop the rest; a batch is not a transaction. The Bridge counts a batch as one write for its rate limits.
+
+## Student handles
+
+A staff view refers to a student by a handle, never a user ID or a name (rule 2.5): `st_` and the first 20 base32hex characters of `HMAC-SHA256(salt, student ID)`. The salt is `studio_plugin_installations.handle_salt`, one random value per installation that never changes and never leaves the server. So a handle is stable for the installation's lifetime and means nothing in any other installation.
+
+- **Where handles appear.** `course.roster` (the professor view's list of students) and the `student` field on staff viewers' records. Student views never see one.
+- **Resolving one.** `handles.ts` recomputes handles over the section's `enrolled` and `completed` students, at most `STUDIO_ROSTER_MAX` (500) in student ID order, and compares. No lookup takes a handle as a key. A section larger than the cap gives its later students no handle.
+- **Names.** The professor's page draws names over the plugin frame. It gets them from `rosterNamesAction`, which needs a staff viewer of the installation and a professor view that declares `course.roster`. Names go to Scholera's own page, never to the frame, and are never logged.
 
 ## Access rules
 
@@ -57,6 +70,8 @@ Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `m
 |---|---|---|---|---|---|
 | `perStudent` | list, get | Own | All | All | All |
 | `perStudent` | create, update, delete | Own | Refused | Refused | Refused |
+| `staffPerStudent` | list, get | Own | All | All | All |
+| `staffPerStudent` | create, update, delete | Refused | About a student | About a student | Refused |
 | `shared` | list, get | All | All | All | All |
 | `shared` | create, update, delete | Refused | All | All | Refused |
 | `staffOnly` | list, get | **Refused** | All | All | All |
@@ -65,9 +80,10 @@ Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `m
 - **Read-only.** Every create, update and delete is refused for every role when `writable` is false. Reads follow the table above. `writable` is true only when the installation is active, the section isn't archived, Studio access is full (the school has the `studio` entitlement and the kill switch is off), and the viewer is staff or a student whose enrollment is `enrolled`. So a `completed` student keeps reading their own work.
 - **Staff writes** follow `canWriteAsStaff`. Graders are read-only until plugin grading exists.
 - **Staff don't write students' `perStudent` records** in V1. Feedback belongs to grading.
+- **`staffPerStudent` is for records staff keep about a student**, such as attendance. "About a student" means a create is owned by the student its handle names and authored by the staff writer; updates and deletes reach every record in the collection. Such a record counts toward the installation's storage, not the student's: the student allowance counts only records a student wrote themselves (`owner_id = author_id`).
 - **Students** reach an installation only once its professor has shown it to them, and only while `STUDIO_STUDENT_ACCESS` is on (rule 8.6, [studio-plugin-publication.md](./studio-plugin-publication.md)). That gate is off in production.
 
-`src/__tests__/studio-policy.test.ts` holds this table cell by cell, writable and read-only: 120 cases.
+`src/__tests__/studio-policy.test.ts` holds this table cell by cell, writable and read-only: 160 cases.
 
 ## Record validation
 
@@ -108,7 +124,7 @@ Every successful record write, and every lifecycle operation, calls `logEvent` w
 
 The admin client bypasses row-level security, so these rules are what stop new code from reading plugin data directly:
 
-- **Only `db.ts` names a `studio_plugin_*` table**, and only `context.ts`, `records.ts` and `lifecycle.ts` import `db.ts`. `studio-table-access.test.ts` fails otherwise.
+- **Only `db.ts` names a `studio_plugin_*` table**, and only the trusted service modules (`context.ts`, `records.ts`, `handles.ts`, `lifecycle.ts` and the others listed in `studio-table-access.test.ts`) import `db.ts`. That test fails otherwise.
 - **The service modules are `server-only` and none is `'use server'`**, so none of them is a network endpoint. The same test checks both.
 - **Contexts are branded types** that only `context.ts` builds from the session. The public functions take request-shaped input and resolve the context themselves, so no caller passes one in.
 - **The database still refuses** cross-tenant, unapproved and archived writes if all of the above fail.

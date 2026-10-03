@@ -9,7 +9,8 @@
 //   v9       http://127.0.0.1:4313   a runtime origin whose runtime claims bridge "v9"
 //
 // The frame documents are built by the real src/lib/studio/runtime/frame-document.ts, the
-// runtime is the real public/studio-runtime/v1/runtime.js, and the host page runs the real
+// runtime is the real public/studio-runtime/v1/runtime.js (or v2's, for frames under
+// /studio-frame/v1/probe-v2/), and the host page runs the real
 // host.ts, bridge-client.ts and preview-bridge.ts (bundled from host-entry.ts). Replaced:
 // the Next.js route glue (tickets, bundle lookup, middleware) and the bridge's server side.
 // The stub bridge proves what the HOST lets through; server authorization is proven by the
@@ -127,10 +128,10 @@ const BUNDLES = {
       document.body.setAttribute('data-codes', first.code + ',' + second.code)))`,
 }
 
-function serveFrame(res, runtimeOrigin, variant) {
+function serveFrame(res, runtimeOrigin, variant, runtime) {
   const bundle = BUNDLES[variant]
   if (!bundle) return notFound(res)
-  const input = { appOrigin: APP, runtimeOrigin, nonce: randomBytes(18).toString('base64'), bundle, title: `Probe ${variant}` }
+  const input = { appOrigin: APP, runtimeOrigin, nonce: randomBytes(18).toString('base64'), bundle, title: `Probe ${variant}`, runtime }
   res.writeHead(200, frameHeaders(input))
   res.end(frameHtml(input))
 }
@@ -161,14 +162,15 @@ function runtimeServer(origin, version) {
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' })
       return res.end(runtimeJs(version))
     }
-    // The pinned vendor file and kit stylesheet the frame document also loads (Step 6).
-    if (url.pathname === '/studio-runtime/v1/vendor.js' || url.pathname === '/studio-runtime/v1/kit.css') {
+    // The pinned vendor file and kit stylesheet the frame document also loads (Step 6), and
+    // bridge v2's files, all served as they are.
+    if (/^\/studio-runtime\/(v1\/(vendor\.js|kit\.css)|v2\/(runtime\.js|vendor\.js|kit\.css))$/.test(url.pathname)) {
       const css = url.pathname.endsWith('.css')
       res.writeHead(200, { 'Content-Type': css ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' })
       return res.end(readFileSync(join(repo, 'public', url.pathname)))
     }
-    const frame = /^\/studio-frame\/v1\/probe\/([a-z]+)$/.exec(url.pathname)
-    if (frame) return serveFrame(res, origin, frame[1])
+    const frame = /^\/studio-frame\/v1\/(probe|probe-v2)\/([a-z]+)$/.exec(url.pathname)
+    if (frame) return serveFrame(res, origin, frame[2], frame[1] === 'probe-v2' ? 'v2' : 'v1')
     if (url.pathname === '/impostor.html') {
       res.writeHead(200, { 'Content-Type': 'text/html' })
       return res.end(IMPOSTOR)

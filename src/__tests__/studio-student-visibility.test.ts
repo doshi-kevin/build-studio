@@ -83,7 +83,7 @@ beforeEach(() => {
   vi.mocked(studentAccessReleased).mockReturnValue(true)
   vi.mocked(db.loadInstallation).mockResolvedValue(INSTALLATION)
   vi.mocked(db.loadVersion).mockResolvedValue(VERSION_ROW)
-  vi.mocked(db.loadVersionBundle).mockResolvedValue({ code: 'student()', name: 'Exit ticket' })
+  vi.mocked(db.loadVersionBundle).mockResolvedValue({ code: 'student()', name: 'Exit ticket', bridgeVersion: 'v1' })
   vi.mocked(db.loadSectionState).mockResolvedValue({ institutionId: PROFESSOR.institutionId, archived: false })
   vi.mocked(db.loadUsage).mockResolvedValue({ records: 0, bytes: 0 })
   vi.mocked(db.loadQuotaLimits).mockResolvedValue({
@@ -184,7 +184,7 @@ describe('showing to students: hard blockers', () => {
     ['version_mismatch', () => vi.mocked(db.loadVersion).mockResolvedValue({ ...VERSION_ROW, projectId: crypto.randomUUID() })],
     ['manifest_invalid', () => vi.mocked(db.loadVersion).mockResolvedValue({ ...VERSION_ROW, manifest: { ...exitTicket, views: {} } })],
     ['bridge_unsupported', () => vi.mocked(db.loadVersion).mockResolvedValue({ ...VERSION_ROW, bridgeVersion: 'v0' })],
-    ['student_bundle_missing', () => vi.mocked(db.loadVersionBundle).mockResolvedValue({ code: '   ', name: 'Exit ticket' })],
+    ['student_bundle_missing', () => vi.mocked(db.loadVersionBundle).mockResolvedValue({ code: '   ', name: 'Exit ticket', bridgeVersion: 'v1' })],
     ['over_quota', () => vi.mocked(db.loadUsage).mockResolvedValue({ records: 50_000, bytes: 0 })],
     ['quota_unavailable', () => vi.mocked(db.loadQuotaLimits).mockResolvedValue(null)],
   ])('%s blocks, writes nothing, and is logged by code only', async (code, arrange) => {

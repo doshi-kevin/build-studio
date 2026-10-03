@@ -18,6 +18,12 @@ const REGISTRY = {
   'context.get': { label: 'See this course’s name and whether the person using it is a student or staff', views: ['student', 'professor'] },
   'course.skills': { label: 'Read this course’s skill list', views: ['student', 'professor'] },
   'course.weakSpots': { label: 'See which skills the class is struggling with', views: ['professor'] },
+  // Handles only. Names are drawn by Scholera's page over the frame (rule 2.5).
+  'course.roster': {
+    label: 'See which students are in this course. Names are shown by Scholera and never given to the tool.',
+    views: ['professor'],
+  },
+  'course.assignments': { label: 'Read this course’s published assignments and due dates.', views: ['student', 'professor'] },
   'ui.resize': { label: 'Fit itself to the page', views: ['student', 'professor'] },
   'ui.toast': { label: 'Show short notifications', views: ['student', 'professor'] },
 } satisfies Record<string, Capability>

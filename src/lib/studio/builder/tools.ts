@@ -1,5 +1,5 @@
 /**
- * The builder's tool registry: the eleven tools, and nothing else, that the model may call
+ * The builder's tool registry: the twelve tools, and nothing else, that the model may call
  * (approved decision 1.6, plus propose_memory in Step 8B and search_course_material in
  * Step 9). Each entry defines its name,
  * schema, what it may change and what is recorded about it. No tool takes an id, a path
@@ -38,10 +38,12 @@ import {
   STUDIO_MEMORY_MAX_ACTIVE,
   STUDIO_MEMORY_PROPOSALS_PER_RUN,
   STUDIO_MEMORY_STATEMENT_MAX_CHARS,
+  STUDIO_BUILDER_SAMPLE_MAX_BYTES,
 } from '../limits'
 import type { StudioManifest } from '../manifest'
 import { blockingKeys, type DraftCheckResult } from './checks'
 import { CheckFault, CheckTimeout } from './check-worker-errors'
+import { checkSample } from './sample-data'
 import { cleanQuery, FOCUS_PATTERN, withSources, type MaterialFocus } from './course-material'
 import type { SearchOutcome } from './course-retriever'
 import { evidenceProblem, isSlotOf, MEMORY_KINDS, MEMORY_SLOT_KEYS, MEMORY_SLOTS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemorySlot, type MemoryTopic } from './memory'
@@ -53,7 +55,7 @@ import { planSchema, type Plan, type ValidationCode, type Work } from './work'
 
 export const TOOL_NAMES = [
   'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change',
-  'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'finish',
+  'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'write_sample_data', 'finish',
 ] as const
 export type ToolName = (typeof TOOL_NAMES)[number]
 
@@ -63,6 +65,7 @@ export type RefusalCode =
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit' | 'search_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
   | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
+  | 'sample_invalid'
 
 /** The refusals a memory proposal can come back with from the database. */
 export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_replaces', 'memory_duplicate', 'memory_full', 'memory_unavailable'] as const satisfies readonly RefusalCode[]
@@ -99,13 +102,14 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   memory_duplicate: 'That decision is already saved.',
   memory_full: `This tool already has ${STUDIO_MEMORY_MAX_ACTIVE} saved decisions. Replace one (set replaces), or leave it.`,
   memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
+  sample_invalid: 'Fix the sample data issues listed and write it again. Each record is { "student"?: number, "data": { ...every field } }; student only for perStudent and staffPerStudent collections.',
 }
 
 /** Progress labels, chosen by the harness when it records a step. */
 export type LabelCode =
   | 'plan.submitted' | 'file.read' | 'kit.read' | 'file.written' | 'file.edited' | 'manifest.applied'
   | 'approval.waiting' | 'check.passed' | 'check.failed' | 'check.cached' | 'question.asked' | 'memory.proposed' | 'run.finishing'
-  | 'material.searched' | 'material.unavailable'
+  | 'material.searched' | 'material.unavailable' | 'sample.written'
   | 'step.refused' | 'step.interrupted'
 
 export interface ToolState {
@@ -217,7 +221,7 @@ function withFile(work: Work, p: PluginPath, text: string): Work {
  * finding has survived STUDIO_BUILDER_SAME_FINDING_LIMIT repairs.
  */
 export async function checkStep(state: ToolState, args: Summary): Promise<ToolOutcome & { cached?: boolean }> {
-  const hash = workHash(state.work.manifest, state.work.files)
+  const hash = workHash(state.work.manifest, state.work.files, state.work.sample)
   const last = state.work.last_check
   // A result whose roster or course-material check couldn't run is never reused: checking
   // again is how a transient read failure clears.
@@ -423,7 +427,12 @@ const TOOL_LIST: ToolSpec[] = [
     execute: (_state, args: Plan) => ({
       kind: 'done',
       label: 'plan.submitted',
-      args: { files_to_change: args.files_to_change, capabilities: args.capabilities_needed.length, manifest_changes: args.manifest_changes.length },
+      args: {
+        files_to_change: args.files_to_change,
+        capabilities: args.capabilities_needed.length,
+        manifest_changes: args.manifest_changes.length,
+        requirements: args.requirements.length,
+      },
       result: { recorded: true },
       plan: args,
       phase: 'planning',
@@ -538,6 +547,36 @@ const TOOL_LIST: ToolSpec[] = [
     },
   },
   {
+    name: 'write_sample_data',
+    kind: 'write',
+    description:
+      'Replace the synthetic records the preview and the design review show, as a JSON string: { "<collection>": [ { "student"?: 0-11, "data": { ...every field } } ] }. student picks one of the preview’s 12 invented students and is required exactly for perStudent and staffPerStudent collections. Write realistic, clearly invented content that exercises the screens (several students, dates and states), never a real person’s name. Students never see it.',
+    schema: z.strictObject({ data_json: z.string().min(2).max(STUDIO_BUILDER_SAMPLE_MAX_BYTES) }),
+    execute: (state, args: { data_json: string }) => {
+      const summary: Summary = { bytes: utf8Bytes(args.data_json), sha16: sha16(args.data_json) }
+      if (!state.work.manifest) return refused('sample_invalid', summary, ['Propose the manifest first: sample data follows its collections.'])
+      let raw: unknown
+      try {
+        raw = JSON.parse(args.data_json)
+      } catch {
+        return refused('sample_invalid', summary, ['data_json is not valid JSON'])
+      }
+      const checked = checkSample(raw, state.work.manifest)
+      if (!checked.ok) return refused('sample_invalid', summary, checked.issues)
+      const over = budgetRefusal(state, utf8Bytes(args.data_json), summary)
+      if (over) return over
+      return {
+        kind: 'done',
+        label: 'sample.written',
+        args: summary,
+        result: { collections: Object.keys(checked.sample).length, records: checked.records },
+        work: { ...state.work, work_rev: state.work.work_rev + 1, sample: checked.sample },
+        phase: 'editing',
+        delta: { writes: 1, bytes_written: utf8Bytes(args.data_json) },
+      }
+    },
+  },
+  {
     name: 'finish',
     kind: 'control',
     description:
@@ -565,7 +604,7 @@ export function isToolName(name: string): name is ToolName {
   return (TOOL_NAMES as readonly string[]).includes(name)
 }
 
-/** What the model is told exists: the same eleven tools on every turn. */
+/** What the model is told exists: the same twelve tools on every turn. */
 export function toolDeclarations(): ModelToolDecl[] {
   return TOOL_NAMES.map((name) => ({ name, description: TOOLS[name].description, inputSchema: TOOLS[name].schema }))
 }

@@ -46,12 +46,16 @@ import {
   STUDIO_BUILDER_MAX_QUESTIONS,
   STUDIO_BUILDER_MAX_REPAIR_ROUNDS,
   STUDIO_BUILDER_MAX_RESUMES,
+  STUDIO_BUILDER_MAX_REVIEW_ROUNDS,
   STUDIO_BUILDER_MAX_SLICES,
   STUDIO_BUILDER_MAX_TOOL_CALLS,
   STUDIO_BUILDER_MAX_TOOL_CALLS_PER_TURN,
   STUDIO_BUILDER_MAX_WRITES,
   STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS,
   STUDIO_BUILDER_RUN_MAX_ACTIVE_MS,
+  STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES,
+  STUDIO_BUILDER_REVIEW_IMAGE_TOKENS,
+  STUDIO_BUILDER_REVIEW_IMAGES_MAX,
   STUDIO_BUILDER_RUN_MAX_COST_USD,
   STUDIO_BUILDER_SLICE_CUSHION_MS,
   STUDIO_BUILDER_SLICE_MAX_MS,
@@ -67,11 +71,13 @@ import {
 import { parseManifest, type StudioManifest, type StudioManifestV2 } from '../manifest'
 import { runDraftChecks, type DraftCheckResult } from './checks'
 import { runWorkerCheck } from './check-worker'
-import { buildTurnContext, skillsWanted, type HistoryEntry, type StepView } from './context-builder'
+import { buildTurnContext, estimateTokens, skillsWanted, type HistoryEntry, type StepView } from './context-builder'
 import { emptyMaterial, provenanceEntries, withSources, type MaterialFocus, type MaterialSearch, type MaterialSourceEntry, type RenderedSearch } from './course-material'
 import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome } from './course-retriever'
 import { professorTextsOf, type ProjectMemory } from './memory'
-import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelUsage } from './model'
+import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
+import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
+import { buildReviewPrompt, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
 import { snapshotHash, workHash } from './snapshot'
 import {
@@ -89,7 +95,7 @@ import {
   type ToolOutcome,
   type ToolState,
 } from './tools'
-import { initialWork, planSchema, type BuildResult, type Plan, type RunErrorCode, type TerminalStatus, type Work } from './work'
+import { initialWork, readPlan, type BuildResult, type Plan, type ReviewRecord, type RunErrorCode, type SampleData, type TerminalStatus, type Work } from './work'
 
 export const BUILDER_JOB_TYPE = 'studio_builder_slice'
 export const BUILDER_LEDGER_FEATURE = 'studio_builder'
@@ -115,7 +121,7 @@ export interface SliceData {
   slug: string
   published: StudioManifest | null
   publishedVersions: string[]
-  base: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>> } | null
+  base: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample?: SampleData | null } | null
   course: { code: string; title: string } | null
   skills: string[] | null
   history: HistoryEntry[]
@@ -155,6 +161,9 @@ export interface HarnessDeps {
   /** The run's searches re-read for this turn. Null when they can't be: the build goes on without them. */
   rehydrateMaterial(run: db.BuilderRunRow, searches: readonly MaterialSearch[]): Promise<RenderedSearch[] | null>
   recordUsage(run: db.BuilderRunRow, usage: ModelUsage, modelId: string, turn: number): Promise<void>
+  /** Screenshots of the draft on its sample data, for the design review. Never throws for a
+   * render outcome; `unavailable` where no renderer runs (production, by design, for now). */
+  renderPreview(input: RenderInput): Promise<RenderOutcome>
   /** A milestone for the audit trail: ids and counters only. */
   audit(run: db.BuilderRunRow, event: string, metadata: Record<string, string | number>): void
   kick(jobId: string): Promise<unknown> | void
@@ -188,6 +197,9 @@ function parseWork(raw: Record<string, unknown> | null): Work | null {
     ...initialWork(null),
     ...(raw as unknown as Work),
     manifest: manifest?.ok && manifest.manifest.manifestVersion === 2 ? manifest.manifest : null,
+    // Runs from before Step 11 have no sample or review.
+    sample: (raw.sample as SampleData | null | undefined) ?? null,
+    review: (raw.review as Work['review'] | undefined) ?? { rounds: 0, last: null },
     // Runs from before Step 9 have no material.
     material:
       material && Array.isArray(material.searches) && Array.isArray(material.sources)
@@ -197,8 +209,7 @@ function parseWork(raw: Record<string, unknown> | null): Work | null {
 }
 
 function parsePlan(raw: Record<string, unknown> | null): Plan | null {
-  const parsed = raw ? planSchema.safeParse(raw) : null
-  return parsed?.success ? parsed.data : null
+  return raw ? readPlan(raw) : null
 }
 
 function buildResult(
@@ -243,6 +254,7 @@ function buildResult(
     open_questions: extra.openQuestions ?? [],
     memory_applied: extra.memoryApplied ?? 0,
     material_read: materialRead(extra.material ?? []),
+    review: { rounds: work?.review.rounds ?? 0, rendered: work?.review.last?.rendered ?? false, verdict: work?.review.last?.verdict ?? null },
   }
   // The database refuses a result over 8 KiB (jsonb's text form adds a space after each
   // separator, so the margin is generous); trim the listed items, then the model's prose,
@@ -478,7 +490,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         phase: run.phase ?? 'understanding',
         firstBuild: run.baseHash === null,
         baseHash: run.baseHash,
-        baseWorkHash: data.base ? workHash(data.base.manifest, data.base.files) : null,
+        baseWorkHash: data.base ? workHash(data.base.manifest, data.base.files, data.base.sample) : null,
         publishedVersions: data.publishedVersions,
         frozen: data.published?.collections ?? null,
         course: data.course,
@@ -539,7 +551,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       const turn = await deps.store.recordTurn(
         runId,
         token,
-        step('model_turn', `turn:${turnNo}:${run.counters.toolCalls}`, turnRefusal ? 'refused' : 'done', turnNo === 1 ? 'turn.understanding' : run.phase === 'repairing' ? 'repair.round' : 'turn.next', {
+        step('model_turn', `turn:${turnNo}:${run.counters.toolCalls}`, turnRefusal ? 'refused' : 'done', turnNo === 1 ? 'turn.understanding' : run.phase === 'repairing' ? 'repair.round' : run.phase === 'improving' ? 'improve.round' : 'turn.next', {
           args: { proposed: proposed.map((c) => (isToolName(c.name) ? c.name : 'unknown')), count: proposed.length, instructions: ctx.instructionsVersion, trims: ctx.trims, memories: ctx.memory.length },
           result: { model: reply.modelId, finish: reply.finishReason.slice(0, 20), timed_out: reply.timedOut, reasoning_tokens: reply.usage.reasoning, cached_tokens: reply.usage.cachedInput, ...(turnRefusal ? { reason: turnRefusal, hint: REFUSAL_HINTS[turnRefusal] } : {}) },
           ms: deps.now() - callStart,
@@ -820,7 +832,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       return await end(run, work, plan, 'failed', gate.code)
     }
     if (gate.kind !== 'done') return await end(run, work, plan, 'failed', 'internal')
-    let gateWork = work
+    let gateWork: Work = work
     if (!('cached' in gate && gate.cached)) {
       const r = await deps.store.apply({
         runId, token, step: step('check', `${id}.gate`, 'done', gate.label, { tool: 'run_checks', args: { gate: true, call: `${id}.gate` }, result: gate.result }),
@@ -841,10 +853,10 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       return (await stopFor(r)) ?? 'continue'
     }
 
-    if (await stopFor(await record('done', 'run.finishing', { status: 'completed' }, { error: false }))) return 'stop'
     const manifest = gateWork.manifest!
     const files = gateWork.files as Record<PluginPath, string>
-    if (data!.base && workHash(data!.base.manifest, data!.base.files) === workHash(manifest, files)) {
+    if (data!.base && workHash(data!.base.manifest, data!.base.files, data!.base.sample) === workHash(manifest, files, gateWork.sample)) {
+      if (await stopFor(await record('done', 'run.finishing', { status: 'completed' }, { error: false }))) return 'stop'
       return await end(run, gateWork, plan, 'completed', null, { summary: outcome.summary, openQuestions: outcome.openQuestions, passed: true })
     }
     // Commit: the bundles come from the trusted compiler, on exactly these files.
@@ -852,7 +864,15 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     if (!fresh.passed || !fresh.bundles || !fresh.compiler || fresh.workHash !== check.work_hash) {
       return await end(run, gateWork, plan, 'failed', 'internal')
     }
-    const hash = snapshotHash(fresh.compiler, manifest, files)
+
+    // The design review, before anything is committed.
+    const reviewed = await designReview(id, gateWork, plan, run, fresh.bundles)
+    if (reviewed === 'stop') return 'stop'
+    if (reviewed === 'improve') return 'continue'
+    gateWork = reviewed
+
+    if (await stopFor(await record('done', 'run.finishing', { status: 'completed' }, { error: false }))) return 'stop'
+    const hash = snapshotHash(fresh.compiler, manifest, files, gateWork.sample)
     return await end(run, gateWork, plan, 'preview_ready', null, {
       summary: outcome.summary,
       openQuestions: outcome.openQuestions,
@@ -866,8 +886,147 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         student_bundle: fresh.bundles.student,
         professor_bundle: fresh.bundles.professor,
         check_summary: fresh.summary,
+        ...(gateWork.sample ? { sample_data: gateWork.sample } : {}),
       },
     })
+  }
+
+  /**
+   * Renders the draft, asks the model to review it against the plan and the rubric, and
+   * records what it found. 'improve' sends the builder back for another round (the finish
+   * call is recorded as that outcome); otherwise the work comes back, with the review on it,
+   * ready to commit. A review that can't happen (no budget, no renderer, a model failure)
+   * never fails the build: it is recorded and the draft commits as checked.
+   */
+  async function designReview(
+    id: string,
+    work: Work,
+    plan: Plan | null,
+    run: db.BuilderRunRow,
+    bundles: { student: string; professor: string },
+  ): Promise<Work | 'improve' | 'stop'> {
+    const files = work.files as Record<PluginPath, string>
+    const current = workHash(work.manifest, files, work.sample)
+    if (work.review.rounds >= STUDIO_BUILDER_MAX_REVIEW_ROUNDS || work.review.last?.work_hash === current) return work
+    const round = work.review.rounds + 1
+
+    const stopIf = async (r: Outcome): Promise<boolean> => {
+      if (r?.ok) return false
+      if (r?.reason === 'cancelled') await end(run, work, plan, 'cancelled', null)
+      else if (typeof r?.reason === 'string' && r.reason.startsWith('limit_')) await end(run, work, plan, 'budget_exhausted', r.reason as RunErrorCode)
+      return true
+    }
+    const system = (suffix: string, label: string, result: Summary, phase: 'reviewing' | null = null) =>
+      deps.store.apply({
+        runId, token, step: step('system', `${id}.${suffix}`, 'done', label, { args: { event: 'design_review', round }, result }),
+        expectedWorkRev: work.work_rev, work: null, plan: null, phase, delta: {}, caps: CAPS, activeMs: takeActive(),
+      })
+    const skip = async (reason: string): Promise<Work | 'stop'> => ((await stopIf(await system('review', 'review.skipped', { reason }))) ? 'stop' : work)
+    const cancelled = async (): Promise<'stop' | null> => {
+      if (flags.cancel) {
+        await end(run, work, plan, 'cancelled', null)
+        return 'stop'
+      }
+      return flags.fenceLost ? 'stop' : null
+    }
+
+    // Room for this call and one more turn to act on it, under every budget.
+    const latest = (await deps.store.loadRun(runId)) ?? run
+    const c = latest.counters
+    if (c.costUsd + 2 * WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD || c.modelTurns + 2 > STUDIO_BUILDER_MAX_MODEL_TURNS) return skip('budget')
+    if ((await deps.gate(latest)) !== null) return skip('gate')
+    if (await cancelled()) return 'stop'
+
+    // ── Render ──
+    let render: RenderOutcome
+    try {
+      render = await deps.renderPreview({ manifest: work.manifest!, bundles, sample: work.sample })
+    } catch {
+      render = { ok: false, reason: 'failed' }
+    }
+    const images: ModelImage[] = render.ok
+      ? render.images
+          .filter((img) => img.bytes.byteLength > 0 && img.bytes.byteLength <= STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES)
+          .slice(0, STUDIO_BUILDER_REVIEW_IMAGES_MAX)
+          .map((img) => ({ label: img.label, mediaType: img.mediaType, bytes: img.bytes }))
+      : []
+    if (await stopIf(await system('render', 'preview.rendered', { images: images.length, renderer: render.ok ? 'ok' : render.reason }, 'reviewing'))) return 'stop'
+
+    // ── One review call ──
+    const prompt = buildReviewPrompt({ nonce: nonce(), request: run.request ?? '', plan, manifest: work.manifest!, files, sample: work.sample, round, images: images.map((i) => i.label) })
+    if (estimateTokens(REVIEW_INSTRUCTIONS + prompt) + images.length * STUDIO_BUILDER_REVIEW_IMAGE_TOKENS > STUDIO_BUILDER_CONTEXT_MAX_TOKENS) return skip('too_large')
+    if (await cancelled()) return 'stop'
+    const callStart = deps.now()
+    let reply
+    try {
+      reply = await deps.model.step({
+        system: REVIEW_INSTRUCTIONS,
+        prompt,
+        images,
+        tools: [REVIEW_TOOL],
+        maxOutputTokens: STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
+        abortSignal: controller.signal,
+        timeoutMs: STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS,
+      })
+    } catch (error) {
+      if (error instanceof BuilderAbort) {
+        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+        if (flags.cancel) await end(run, work, plan, 'cancelled', null)
+        return 'stop'
+      }
+      if (error instanceof ModelUnavailable) {
+        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+        logger.warn('studio.builder.review: model unavailable, committing unreviewed', { runId, round })
+        return skip('model_unavailable')
+      }
+      throw error
+    }
+    const turnNo = c.modelTurns + 1
+    const costUsd = reply.timedOut
+      ? WORST_CASE_CALL_USD
+      : computeCostUsd(reply.modelId, { inputTokens: reply.usage.input, cachedInputTokens: reply.usage.cachedInput, outputTokens: reply.usage.output, reasoningTokens: reply.usage.reasoning })
+    await deps.recordUsage(run, reply.usage, reply.modelId, turnNo)
+    await deps.store.addCost(runId, { input: reply.usage.input, cached: reply.usage.cachedInput, output: reply.usage.output, costUsd })
+    const findings = reply.timedOut ? null : parseReview(reply.toolCalls)
+    const turn = await deps.store.recordTurn(
+      runId,
+      token,
+      step('model_turn', `review:${turnNo}:${c.toolCalls}`, 'done', 'review.turn', {
+        args: { review: round, images: images.length, instructions: REVIEW_INSTRUCTIONS_VERSION, count: 0 },
+        result: { model: reply.modelId, finish: reply.finishReason.slice(0, 20), timed_out: reply.timedOut, verdict: findings?.verdict ?? null },
+        ms: deps.now() - callStart,
+        input_tokens: reply.usage.input,
+        output_tokens: reply.usage.output,
+        cost_usd: costUsd,
+      }),
+      takeActive(),
+      false,
+    )
+    if (!turn?.ok) {
+      if (turn?.reason === 'cancelled') await end(run, work, plan, 'cancelled', null)
+      return 'stop'
+    }
+    if (!findings) return skip(reply.timedOut ? 'timeout' : 'no_review')
+
+    const record: ReviewRecord = { round, work_hash: current, rendered: images.length > 0, ...findings }
+    const next: Work = { ...work, review: { rounds: round, last: record } }
+    const counts = { unmet: findings.unmet_requirements.length, major: findings.major_issues.length, minor: findings.minor_issues.length, rendered: record.rendered }
+    // Counts only: the findings are model text and stay in the run's working copy.
+    deps.audit(run, 'studio.build.design_review', { runId, round, verdict: findings.verdict, unmet: counts.unmet, major: counts.major })
+    if (findings.verdict === 'improve') {
+      // The finish call becomes this outcome: the builder improves, then finishes again.
+      const r = await deps.store.apply({
+        runId, token, step: step('tool', id, 'done', 'review.changes', { tool: 'finish', args: { call: id, round }, result: { call: id, ...counts } }),
+        expectedWorkRev: work.work_rev, work: next as unknown as Record<string, unknown>, plan: null, phase: 'improving',
+        delta: { tool_calls: 1, error: false }, caps: CAPS, activeMs: takeActive(),
+      })
+      return (await stopIf(r)) ? 'stop' : 'improve'
+    }
+    const r = await deps.store.apply({
+      runId, token, step: step('system', `${id}.verdict`, 'done', 'review.ready', { args: { event: 'design_review', round }, result: counts }),
+      expectedWorkRev: work.work_rev, work: next as unknown as Record<string, unknown>, plan: null, phase: null, delta: {}, caps: CAPS, activeMs: takeActive(),
+    })
+    return (await stopIf(r)) ? 'stop' : next
   }
 }
 
@@ -912,7 +1071,11 @@ async function loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null> {
     published: published?.ok ? published.manifest : null,
     publishedVersions: versions.map((v) => v.version).slice(0, 5),
     base: base
-      ? { manifest: baseManifest?.ok && baseManifest.manifest.manifestVersion === 2 ? baseManifest.manifest : null, files: base.files as Partial<Record<PluginPath, string>> }
+      ? {
+          manifest: baseManifest?.ok && baseManifest.manifest.manifestVersion === 2 ? baseManifest.manifest : null,
+          files: base.files as Partial<Record<PluginPath, string>>,
+          sample: (base.sampleData as SampleData | null | undefined) ?? null,
+        }
       : null,
     course,
     skills: skills ? skills.map((s) => s.name) : null,
@@ -987,6 +1150,7 @@ export function realHarnessDeps(model: AgentModel = createGeminiModel()): Harnes
       }),
     audit: (run, event, metadata) =>
       logEvent({ userId: run.ownerId, eventType: event, eventCategory: 'studio', sectionId: run.sectionId ?? undefined, metadata }),
+    renderPreview,
     kick: (jobId) => kickWorker(jobId),
     now: () => Date.now(),
     heartbeatMs: STUDIO_BUILDER_HEARTBEAT_MS,

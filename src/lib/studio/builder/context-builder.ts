@@ -46,6 +46,7 @@ import { BUILDER_INSTRUCTIONS, BUILDER_INSTRUCTIONS_VERSION } from './instructio
 import { AVAILABLE_CAPABILITIES } from './manifest-delta'
 import { memoryLine, selectMemories, type ProjectMemory, type ShownMemory } from './memory'
 import { PLUGIN_PATHS, utf8Bytes } from './paths'
+import { reviewFeedback } from './review'
 import { workHash } from './snapshot'
 import type { Plan, Work } from './work'
 
@@ -203,7 +204,7 @@ export function buildTurnContext(input: TurnInput): TurnContext {
     // are the model's own.
     project.push('The current manifest, to change and propose whole:', block('manifest', 'model-authored', JSON.stringify(m, null, 1), STUDIO_BUILDER_MANIFEST_MAX_BYTES))
   }
-  const current = workHash(work.manifest, work.files)
+  const current = workHash(work.manifest, work.files, work.sample)
   project.push(
     'Files:',
     ...PLUGIN_PATHS.map((p) => {
@@ -211,6 +212,12 @@ export function buildTurnContext(input: TurnInput): TurnContext {
       if (typeof text !== 'string') return `- ${p}: not created`
       return `- ${p}: ${utf8Bytes(text)} bytes, ${text.split('\n').length} lines${work.changed.includes(p) ? ', changed in this build' : ''}${work.working_set.includes(p) ? ', shown below' : ', call read_file to see it'}`
     }),
+  )
+  const sampleCount = work.sample ? Object.values(work.sample).reduce((n, list) => n + list.length, 0) : 0
+  project.push(
+    work.sample
+      ? `- sample data: ${sampleCount} record${sampleCount === 1 ? '' : 's'} (${Object.entries(work.sample).map(([n, l]) => `${n}: ${l.length}`).join(', ')}), shown below`
+      : '- sample data: none yet; write it with write_sample_data so the preview shows realistic, invented records',
   )
   project.push(
     input.baseHash ? `Draft: this build started from the saved draft${input.baseWorkHash === current ? '; nothing has changed yet' : ''}.` : 'Draft: empty (a first build).',
@@ -288,6 +295,9 @@ export function buildTurnContext(input: TurnInput): TurnContext {
       parts.push('', '# Files you can edit (line numbers are not part of the file)')
       for (const p of shown) parts.push(block('file', 'plugin-code', numbered(work.files[p]!), STUDIO_BUILDER_FILE_MAX_BYTES + 8 * 1024, { path: p }))
     }
+    if (work.sample) {
+      parts.push('', '# Sample data (yours: invented records the preview shows; rewrite it whole with write_sample_data)', block('sample', 'model-authored', JSON.stringify(work.sample), 6144))
+    }
     const check = work.last_check
     if (check && findings.length > 0) {
       const stale = check.work_hash !== current
@@ -296,6 +306,17 @@ export function buildTurnContext(input: TurnInput): TurnContext {
       )
       if (check.total > findings.length) lines.push(`(${check.total - findings.length} more not shown)`)
       parts.push('', `# Findings from the last check${stale ? ' (stale: they describe an earlier version of your files)' : ''}`, block('findings', 'check-output', lines.join('\n'), 12_288))
+    }
+
+    const review = work.review.last
+    if (review && review.verdict === 'improve') {
+      const stale = review.work_hash !== current
+      parts.push(
+        '',
+        `# Design review${stale ? ' (you have changed the tool since)' : ''}`,
+        'A reviewer looked at the rendered tool and its code against your plan. Fix every unmet requirement and major issue, and the minor ones that are cheap, without rebuilding what works; then run_checks and finish again.',
+        block('review', 'check-output', reviewFeedback(review), 6144),
+      )
     }
 
     // ── Run state ──

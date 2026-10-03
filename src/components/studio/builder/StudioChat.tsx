@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
-import { ApprovalCard, EndingCard, ProgressLines, QuestionCard } from './RunCards'
+import { ApprovalCard, EndingCard, PlanCard, ProgressLines, QuestionCard, RunTimeline } from './RunCards'
 import { ACTIVE_STATUSES, type ConversationTurn, type ProgressRead } from './types'
 
 interface StudioChatProps {
@@ -149,6 +149,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
 
         {current && (
           <Athena>
+            {progress?.plan && <PlanCard plan={progress.plan} />}
             {(!progress || active) && (
               <ProgressLines events={current.events} loaded={!!progress} unreachable={current.unreachable} working={working} phase={progress?.phase ?? null} queuedMs={progress?.queuedMs ?? null} stopping={stopping} onStop={stop} />
             )}
@@ -172,6 +173,8 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
                 retrying={sending}
               />
             )}
+            {/* The steps stay, closed, under how the run ended. */}
+            {progress && !active && <RunTimeline events={current.events} />}
           </Athena>
         )}
         <div ref={end} />

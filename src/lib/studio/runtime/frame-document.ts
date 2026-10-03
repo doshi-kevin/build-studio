@@ -1,7 +1,7 @@
 /**
- * The plugin frame document: its HTML and its security headers. Pure and import-free,
- * so the Next.js route and the browser isolation tests (e2e/studio-runtime) run exactly
- * the same code. docs/reference/studio-plugin-runtime.md explains each directive.
+ * The plugin frame document: its HTML and its security headers. Pure, with a type-only
+ * import, so the Next.js route and the browser isolation tests (e2e/studio-runtime) run
+ * exactly the same code. docs/reference/studio-plugin-runtime.md explains each directive.
  *
  * The plugin bundle is placed in the document as inert text (type="text/plain"). The
  * runtime executes it only after the host's welcome, which the host sends only after the
@@ -11,10 +11,16 @@
  * Load order: runtime.js first (it removes channels the policy can't cover before any
  * other code exists), then vendor.js (React and the plugin kit, Scholera's own pinned
  * code), then, after the welcome, the plugin bundle, which holds only plugin code.
+ *
+ * The runtime files come from the bundle's bridge version: /studio-runtime/{v1,v2}/. The
+ * frame routes stay at /studio-frame/v1/, which versions this document, not the kit.
  */
+import type { RuntimeVersion } from './protocol'
 
-export const RUNTIME_PATH = '/studio-runtime/v1/'
 export const BUNDLE_ELEMENT_ID = 'studio-plugin-bundle'
+
+/** Where a bridge version's runtime.js, vendor.js and kit.css are served. */
+export const runtimePath = (runtime: RuntimeVersion) => `/studio-runtime/${runtime}/`
 
 export interface FrameDocumentInput {
   /** Scholera's origin: the only page allowed to frame this document. */
@@ -25,21 +31,29 @@ export interface FrameDocumentInput {
   nonce: string
   bundle: string
   title: string
+  /** The plugin version's bridgeVersion, from its manifest. */
+  runtime: RuntimeVersion
 }
 
 const ORIGIN = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/
 const NONCE = /^[A-Za-z0-9+/]{16,}={0,2}$/
+// It becomes a path in the policy and the document, so it is checked like the origins.
+// Which versions exist is the manifest's decision (BRIDGE_VERSIONS).
+const RUNTIME = /^v[1-9][0-9]?$/
 
-function check(input: FrameDocumentInput) {
+function check(input: Pick<FrameDocumentInput, 'appOrigin' | 'runtimeOrigin' | 'nonce' | 'runtime'>) {
   if (!ORIGIN.test(input.appOrigin) || !ORIGIN.test(input.runtimeOrigin)) throw new Error('studio frame: invalid origin')
   if (!NONCE.test(input.nonce)) throw new Error('studio frame: invalid nonce')
+  if (!RUNTIME.test(input.runtime)) throw new Error('studio frame: invalid runtime')
 }
 
 /** Deny everything, then allow only the runtime and vendor scripts, the bundle's nonce,
  * and the runtime's own stylesheet and fonts. `sandbox` repeats the iframe attribute, so
  * the document is sandboxed even if opened directly or framed without the attribute. */
-export function frameCsp({ appOrigin, runtimeOrigin, nonce }: Pick<FrameDocumentInput, 'appOrigin' | 'runtimeOrigin' | 'nonce'>) {
-  const runtime = `${runtimeOrigin}${RUNTIME_PATH}`
+export function frameCsp(input: Pick<FrameDocumentInput, 'appOrigin' | 'runtimeOrigin' | 'nonce' | 'runtime'>) {
+  check(input)
+  const { appOrigin, runtimeOrigin, nonce } = input
+  const runtime = `${runtimeOrigin}${runtimePath(input.runtime)}`
   return [
     "default-src 'none'",
     `script-src ${runtime}runtime.js ${runtime}vendor.js 'nonce-${nonce}'`,
@@ -95,14 +109,15 @@ export const escapeScriptText = (code: string) =>
 
 export function frameHtml(input: FrameDocumentInput): string {
   check(input)
+  const runtime = `${input.runtimeOrigin}${runtimePath(input.runtime)}`
   return [
     '<!doctype html><html lang="en"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(input.title)}</title>`,
-    `<link rel="stylesheet" href="${input.runtimeOrigin}${RUNTIME_PATH}kit.css">`,
+    `<link rel="stylesheet" href="${runtime}kit.css">`,
     '</head><body><div id="root"></div>',
-    `<script src="${input.runtimeOrigin}${RUNTIME_PATH}runtime.js"></script>`,
-    `<script src="${input.runtimeOrigin}${RUNTIME_PATH}vendor.js"></script>`,
+    `<script src="${runtime}runtime.js"></script>`,
+    `<script src="${runtime}vendor.js"></script>`,
     `<script type="text/plain" id="${BUNDLE_ELEMENT_ID}" nonce="${input.nonce}">${escapeScriptText(input.bundle)}</script>`,
     '</body></html>',
   ].join('')

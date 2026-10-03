@@ -17,7 +17,7 @@
  */
 import { z } from 'zod'
 import { CAPABILITIES, type CapabilityName } from '../capabilities'
-import { STUDIO_RECORD_PAGE_MAX, STUDIO_TOAST_MAX_CHARS } from '../limits'
+import { STUDIO_RECORD_BATCH_MAX, STUDIO_RECORD_PAGE_MAX, STUDIO_TOAST_MAX_CHARS } from '../limits'
 import type { StudioManifest } from '../manifest'
 import type { PluginView } from '../runtime/protocol'
 
@@ -33,10 +33,24 @@ const BOTH = ['student', 'professor'] as const
 const collection = z.string().regex(/^[a-z][a-zA-Z0-9]{0,39}$/)
 const recordId = z.uuid()
 
+/** A student as a plugin knows them: 'st_' and 20 base32hex characters of an HMAC under
+ * the installation's own salt (handles.ts). Never a user ID, never the same across
+ * installations. */
+export const STUDENT_HANDLE = /^st_[0-9a-v]{20}$/
+const student = z.string().regex(STUDENT_HANDLE)
+
+// A record write without its collection: records.batch names the collection once.
+const createItem = { data: z.unknown(), student: student.optional() }
+const updateItem = { recordId, data: z.unknown(), expectedUpdatedAt: z.string().max(64).optional() }
+const deleteItem = { recordId }
+
 // Record arguments never include the installation: it is the verified viewer's.
 export const METHOD_CATALOG = {
   'context.get': { runs: 'server', capability: 'context.get', views: BOTH, kind: 'read', args: z.strictObject({}) },
   'course.skills': { runs: 'server', capability: 'course.skills', views: BOTH, kind: 'read', args: z.strictObject({}) },
+  // Handles only, sorted by handle so the order says nothing about names.
+  'course.roster': { runs: 'server', capability: 'course.roster', views: ['professor'], kind: 'read', args: z.strictObject({}) },
+  'course.assignments': { runs: 'server', capability: 'course.assignments', views: BOTH, kind: 'read', args: z.strictObject({}) },
   'records.list': {
     runs: 'server',
     capability: null,
@@ -49,21 +63,30 @@ export const METHOD_CATALOG = {
     }),
   },
   'records.get': { runs: 'server', capability: null, views: BOTH, kind: 'read', args: z.strictObject({ collection, recordId }) },
-  'records.create': {
+  // `student` names whom a staffPerStudent record is about; refused on any other collection.
+  'records.create': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...createItem }) },
+  'records.update': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...updateItem }) },
+  'records.delete': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...deleteItem }) },
+  // Each item runs exactly as its single method would. One call for the rate limits.
+  'records.batch': {
     runs: 'server',
     capability: null,
     views: BOTH,
     kind: 'write',
-    args: z.strictObject({ collection, data: z.unknown() }),
+    args: z.strictObject({
+      collection,
+      items: z
+        .array(
+          z.discriminatedUnion('op', [
+            z.strictObject({ op: z.literal('create'), ...createItem }),
+            z.strictObject({ op: z.literal('update'), ...updateItem }),
+            z.strictObject({ op: z.literal('delete'), ...deleteItem }),
+          ]),
+        )
+        .min(1)
+        .max(STUDIO_RECORD_BATCH_MAX),
+    }),
   },
-  'records.update': {
-    runs: 'server',
-    capability: null,
-    views: BOTH,
-    kind: 'write',
-    args: z.strictObject({ collection, recordId, data: z.unknown(), expectedUpdatedAt: z.string().max(64).optional() }),
-  },
-  'records.delete': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, recordId }) },
   // Host only. The host clamps the height to its own limits; the plugin only asks.
   'ui.resize': {
     runs: 'host',

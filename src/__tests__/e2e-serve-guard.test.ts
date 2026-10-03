@@ -63,6 +63,13 @@ describe('what a child process may receive', () => {
     expect(passed).not.toHaveProperty('OPENAI_API_KEY')
   })
 
+  it('the design-review renderer is switched on only by E2E_STUDIO_BUILDER_RENDERER', () => {
+    const source = { STUDIO_BUILDER_RENDERER: 'local', E2E_A_URL: 'http://localhost:3000' }
+    expect(childEnv(source, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env).not.toHaveProperty('STUDIO_BUILDER_RENDERER')
+    const passed: Record<string, string> = childEnv({ ...source, E2E_STUDIO_BUILDER_RENDERER: 'local' }, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env
+    expect(passed.STUDIO_BUILDER_RENDERER).toBe('local')
+  })
+
   it('loopback means 127.0.0.1, localhost or ::1 only', () => {
     expect(isLoopbackUrl('http://localhost:3000')).toBe(true)
     expect(isLoopbackUrl('http://[::1]:3000')).toBe(true)

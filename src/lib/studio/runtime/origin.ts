@@ -62,7 +62,8 @@ export function studioOrigins(env: Env = process.env): StudioOrigins | null {
 
 export type RuntimeRequest = 'continue' | 'serve-runtime' | 'not-found'
 
-const RUNTIME_PREFIXES = ['/studio-frame/v1/', '/studio-runtime/v1/']
+// The frame document is versioned on its own; the runtime files follow each bridge version.
+const RUNTIME_PREFIXES = ['/studio-frame/v1/', '/studio-runtime/v1/', '/studio-runtime/v2/']
 
 /** What middleware does with a request, by host and path:
  *  - runtime origin: only the frame and runtime files exist; everything else is a 404,

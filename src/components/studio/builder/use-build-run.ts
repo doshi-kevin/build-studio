@@ -19,7 +19,7 @@ const isActive = (status: string) => (ACTIVE_STATUSES as readonly string[]).incl
  * Polls one build's progress from its owner-checked route. Durable state is the
  * authority: a closed tab or a reload loses nothing, polling simply picks up again.
  * Faster while the build works and the tab is visible, slower when hidden or waiting for
- * the professor, and not at all once the build has ended.
+ * the professor, and not at all once the build has ended and every step has been read.
  */
 export function useBuildRun(runId: string | null) {
   const [state, setState] = useState<RunState>({ runId, progress: null, events: [], unreachable: false, sawActive: false })
@@ -34,8 +34,9 @@ export function useBuildRun(runId: string | null) {
     const poll = async () => {
       let next: ProgressRead | null = null
       let ok = false
+      const after = lastSeq.current.seq
       try {
-        const res = await fetch(`/api/studio/builder/runs/${runId}?after=${lastSeq.current.seq}`, { cache: 'no-store' })
+        const res = await fetch(`/api/studio/builder/runs/${runId}?after=${after}`, { cache: 'no-store' })
         ok = res.ok
         if (res.ok) next = (await res.json()) as ProgressRead
       } catch {
@@ -52,7 +53,12 @@ export function useBuildRun(runId: string | null) {
         return { runId, progress: fresh, events, unreachable: false, sawActive: base.sawActive || isActive(fresh.status) }
       })
       const status = next?.status
-      if (status && !isActive(status)) return
+      if (status && !isActive(status)) {
+        // One read returns a page of steps, so an ended run's timeline can take a few: read on
+        // until a read brings nothing new.
+        if (next && next.lastSeq > after) timer = setTimeout(poll, 0)
+        return
+      }
       const waiting = status === 'waiting_for_approval' || status === 'waiting_for_professor'
       const delay = waiting ? 10_000 : document.hidden ? 5_000 : STUDIO_BUILDER_PROGRESS_POLL_MS
       timer = setTimeout(poll, delay)

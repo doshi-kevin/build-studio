@@ -65,14 +65,15 @@ const LABELS: Record<string, string | null> = {
   'run.slice': null,
   'run.resumed': 'Picking up where I left off',
   'turn.understanding': 'Understanding your request',
-  'turn.next': 'Working on the next step',
+  'turn.next': null,
   'repair.round': 'Fixing what the checks found',
-  'plan.submitted': 'Planning the changes',
+  'plan.submitted': 'Planning the tool',
   'file.read': 'Reading the {view} view',
   'kit.read': 'Looking up a building block',
-  'file.written': 'Writing the {view} view',
-  'file.edited': 'Editing the {view} view',
-  'manifest.applied': 'Updating what the tool stores and uses',
+  'file.written': 'Building the {view} view',
+  'file.edited': 'Refining the {view} view',
+  'manifest.applied': 'Setting up the tool’s data',
+  'sample.written': 'Adding sample data for the preview',
   'approval.waiting': 'Waiting for your approval',
   'approval.approved': 'You approved the change',
   'approval.declined': 'You declined the change',
@@ -81,9 +82,14 @@ const LABELS: Record<string, string | null> = {
   'check.passed': 'Checks passed',
   'check.failed': 'Found issues to fix',
   'check.cached': null,
-  'run.finishing': 'Wrapping up',
+  'preview.rendered': 'Rendering the preview',
+  'review.ready': 'Design review passed',
+  'review.changes': 'Found improvements to make',
+  'review.skipped': null,
+  'improve.round': 'Improving the interface',
+  'run.finishing': 'Preparing your preview',
   'memory.proposed': null,
-  'material.searched': 'Reading your course material',
+  'material.searched': 'Reading your course',
   'material.unavailable': 'Couldn’t open your course material, so I’m building without it',
   'material.reclassified': null,
   'step.refused': 'That step didn’t work, so I’m trying another way',
@@ -313,8 +319,17 @@ export interface ProgressRead {
   }
   /** Saved decisions: how many the last prompt carried, and the proposals waiting for a yes or no. */
   memory: { applied: number; proposals: MemoryProposalView[] }
+  /** Athena's plan, once submitted: model text, shown as hers. Null before a plan, or for a run that didn't make one. */
+  plan?: PlanSummary | null
   events: ProgressEvent[]
   lastSeq: number
+}
+
+export interface PlanSummary {
+  goal: string
+  /** What each view will offer, in Athena's words. Empty when the plan doesn't say. */
+  professor: string[]
+  student: string[]
 }
 
 export interface MemoryProposalView {
@@ -430,9 +445,19 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
         replaces: m.replacesStatements,
       })),
     },
+    plan: planSummaryOf(run.plan),
     events,
     lastSeq: steps.at(-1)?.seq ?? afterSeq,
   }
+}
+
+/** The stored plan's goal and view features. Read leniently: plans stored before the view
+ * fields existed have none, and anything not text is dropped. */
+function planSummaryOf(raw: Record<string, unknown> | null): PlanSummary | null {
+  const goal = raw?.goal
+  if (typeof goal !== 'string' || goal.trim() === '') return null
+  const features = (v: unknown) => (Array.isArray(v) ? v.filter((f): f is string => typeof f === 'string' && f.trim() !== '').slice(0, 8).map((f) => f.slice(0, 160)) : [])
+  return { goal: goal.slice(0, 500), professor: features(raw?.professor_view), student: features(raw?.student_view) }
 }
 
 /** The result's material_read list, as the ending card shows it. Labels only; at most 8. */

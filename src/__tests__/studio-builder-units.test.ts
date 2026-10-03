@@ -102,7 +102,7 @@ describe('the check cache', () => {
 describe('the manifest pipeline', () => {
   it('stamps the fields Scholera owns and reports the ones the model tried to set', () => {
     const r = ok(proposed({ ...FLASHCARDS_MANIFEST, id: 'evil', version: '9.9.9', manifestVersion: 1, views: { student: { entry: '../../x.tsx', capabilities: [] }, professor: { capabilities: [] } } }))
-    expect(r.manifest).toMatchObject({ id: 'tool-abc12345', version: '0.0.0', manifestVersion: 2, bridgeVersion: 'v1' })
+    expect(r.manifest).toMatchObject({ id: 'tool-abc12345', version: '0.0.0', manifestVersion: 2, bridgeVersion: 'v2' })
     expect(r.manifest.views.student.entry).toBe('views/student.tsx')
     expect(r.stamped).toEqual(expect.arrayContaining(['id', 'version', 'manifestVersion', 'views.student.entry']))
   })
@@ -159,8 +159,8 @@ describe('the manifest pipeline', () => {
 })
 
 describe('the tool registry', () => {
-  it('has exactly the eleven approved tools', () => {
-    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'finish'])
+  it('has exactly the twelve approved tools', () => {
+    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'write_sample_data', 'finish'])
     expect(Object.keys(TOOLS).sort()).toEqual([...TOOL_NAMES].sort())
     expect(toolDeclarations().map((d) => d.name)).toEqual([...TOOL_NAMES])
   })
@@ -197,8 +197,8 @@ describe('the tool registry', () => {
 })
 
 describe('the plugin environment is pinned to the runtime', () => {
-  it('every importable kit name is a member of the frozen ScholeraKit global', () => {
-    const source = readFileSync('src/lib/studio/kit/vendor-entry.tsx', 'utf8')
+  it('every importable kit name is a member of the frozen ScholeraKit global (v2, what drafts build against)', () => {
+    const source = readFileSync('src/lib/studio/kit/v2/vendor-entry.tsx', 'utf8')
     const body = source.slice(source.indexOf('const kit = Object.freeze({'), source.indexOf('})', source.indexOf('const kit = Object.freeze({')))
     for (const name of KIT_IMPORTABLE_NAMES) expect(body).toMatch(new RegExp(`\\b${name}\\b`))
     expect(KIT_IMPORTS.react).not.toContain('render')

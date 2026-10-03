@@ -310,6 +310,7 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
               sectionId={sectionId}
               pluginProjectId={project.pluginProjectId}
               snapshotHash={headHash}
+              building={working || waiting}
               note={
                 working && headHash
                   ? 'Athena is still working. This is your draft from before this request.'

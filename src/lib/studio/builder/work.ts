@@ -38,9 +38,33 @@ export interface Work {
   delta: { approved: DeltaItem[]; declined: DeltaItem[]; direct: DeltaItem[] }
   /** Course-material searches (keys only) and the scheduled sources they showed. */
   material: WorkMaterial
+  /** Synthetic records the preview and the design review show (write_sample_data). Null: the
+   * preview bridge's generated placeholders. */
+  sample: SampleData | null
+  /** Design reviews this run (at most STUDIO_BUILDER_MAX_REVIEW_ROUNDS) and the latest one. */
+  review: { rounds: number; last: ReviewRecord | null }
 }
 
-export function initialWork(base: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>> } | null): Work {
+/** Per collection, the records the preview shows. `student` indexes the synthetic roster
+ * (preview-roster.ts); it is set exactly for perStudent and staffPerStudent collections. */
+export type SampleData = Record<string, { student?: number; data: Record<string, unknown> }[]>
+
+/** One design review: the model's findings as data, fenced when shown back. */
+export interface ReviewRecord {
+  round: number
+  /** The working copy the review looked at. */
+  work_hash: string
+  verdict: 'ready' | 'improve'
+  /** Whether screenshots were part of it, or the code alone. */
+  rendered: boolean
+  unmet_requirements: string[]
+  major_issues: string[]
+  minor_issues: string[]
+}
+
+export function initialWork(
+  base: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample?: SampleData | null } | null,
+): Work {
   return {
     work_rev: 0,
     manifest: base?.manifest ?? null,
@@ -52,22 +76,50 @@ export function initialWork(base: { manifest: StudioManifestV2 | null; files: Pa
     streaks: {},
     delta: { approved: [], declined: [], direct: [] },
     material: emptyMaterial(),
+    sample: base?.sample ?? null,
+    review: { rounds: 0, last: null },
   }
 }
 
 const prose = (max: number) =>
   z.string().min(1).max(max).refine((s) => characterProblem(s) === null, 'contains a control or bidirectional character')
 
+const items = (maxItems: number, maxChars: number) => z.array(prose(maxChars)).max(maxItems)
+
+/** A requirement the design review checks the finished tool against. The fixed openings keep
+ * each one about what a person can do or see, so it can be checked from the screens and code. */
+const REQUIREMENT = /^(Professor can|Professor sees|Student can|Student cannot|Student sees|Tool shows) /
+
+const planFields = {
+  goal: prose(500),
+  files_to_change: z.array(z.enum(PLUGIN_PATHS)).min(1).max(2),
+  manifest_changes: z.array(prose(200)).max(10),
+  capabilities_needed: z.array(z.enum(AVAILABLE_CAPABILITIES as [string, ...string[]])).max(10),
+  checks: z.array(prose(200)).max(5),
+}
+
 /** submit_plan's arguments: professor-safe engineering intent, never reasoning. */
 export const planSchema = z
   .strictObject({
-    goal: prose(500),
-    files_to_change: z.array(z.enum(PLUGIN_PATHS)).min(1).max(2),
-    manifest_changes: z.array(prose(200)).max(10),
-    capabilities_needed: z.array(z.enum(AVAILABLE_CAPABILITIES as [string, ...string[]])).max(10),
-    checks: z.array(prose(200)).max(5),
+    ...planFields,
+    professor_view: items(8, 160),
+    student_view: items(8, 160),
+    data: items(6, 200),
+    requirements: z.array(prose(200).refine((r) => REQUIREMENT.test(r), 'Start with Professor can, Professor sees, Student can, Student cannot, Student sees or Tool shows')).min(2).max(10),
+    enhancements: items(4, 160),
   })
   .refine((p) => utf8Bytes(JSON.stringify(p)) <= STUDIO_BUILDER_PLAN_MAX_BYTES, 'The plan is too long')
+
+/** A plan saved before plan v2 has none of the view, data or requirement lists. */
+const legacyPlanSchema = z.strictObject(planFields)
+
+/** A stored plan, either shape; a legacy one reads with empty lists. Null when neither parses. */
+export function readPlan(raw: unknown): Plan | null {
+  const current = planSchema.safeParse(raw)
+  if (current.success) return current.data
+  const legacy = legacyPlanSchema.safeParse(raw)
+  return legacy.success ? { ...legacy.data, professor_view: [], student_view: [], data: [], requirements: [], enhancements: [] } : null
+}
 
 export type Plan = z.infer<typeof planSchema>
 
@@ -104,4 +156,6 @@ export interface BuildResult {
   memory_applied: number
   /** Course material the builder read, by label; `opens_at` set when students can't see it yet. At most 8. */
   material_read: { label: string; visible: boolean; opens_at: string | null }[]
+  /** Design reviews run, and whether the last one saw screenshots. */
+  review?: { rounds: number; rendered: boolean; verdict: 'ready' | 'improve' | null }
 }

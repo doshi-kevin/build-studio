@@ -58,6 +58,17 @@ describe('buildPluginCard', () => {
     expect(withKeys.data.find((d) => d.name === 'answer keys')?.access).toMatch(/Never sent to a student/)
   })
 
+  it('staffPerStudent: staff record about each student, a student only reads their own', () => {
+    const withAttendance = buildPluginCard(
+      { ...manifest, collections: { attendance: { access: 'staffPerStudent', fields: { status: 'text' } } } },
+      STORAGE,
+    )
+    expect(withAttendance.students).toContain('Read their own attendance')
+    expect(withAttendance.students.some((l) => /Save|write/i.test(l))).toBe(false)
+    expect(withAttendance.professors).toContain('Record and read every student’s attendance')
+    expect(withAttendance.data[0].access).toBe('Staff record something for each student; each student sees only their own')
+  })
+
   it('professors: their view’s capabilities and every collection', () => {
     expect(card.professors).toContain('See which skills the class is struggling with')
     expect(card.professors).toContain('Read every student’s responses')

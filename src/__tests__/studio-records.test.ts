@@ -6,7 +6,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import exitTicket from '@/lib/studio/fixtures/exit-ticket/plugin.manifest.json'
 import { parseManifest } from '@/lib/studio/manifest'
-import { STUDIO_RECORD_PAGE_MAX } from '@/lib/studio/limits'
+import { STUDIO_RECORD_BATCH_MAX, STUDIO_RECORD_PAGE_MAX } from '@/lib/studio/limits'
+import { studentHandle } from '@/lib/studio/handles'
 import type { StudioViewer } from '@/lib/studio/context'
 import type { InstallationState, ViewerRole } from '@/lib/studio/policy'
 
@@ -17,6 +18,8 @@ vi.mock('@/lib/studio/db', () => ({
   insertRecord: vi.fn(),
   updateRecord: vi.fn(),
   deleteRecord: vi.fn(),
+  loadInstallationHandleSalt: vi.fn(),
+  loadSectionRoster: vi.fn(),
 }))
 vi.mock('@/lib/supabase/event-logger', () => ({ logEvent: vi.fn() }))
 
@@ -31,6 +34,7 @@ const parsed = parseManifest({
   collections: {
     ...exitTicket.collections,
     answerKeys: { access: 'staffOnly', fields: { questionId: 'text', correct: 'text' } },
+    attendance: { access: 'staffPerStudent', fields: { status: 'text' } },
   },
 })
 if (!parsed.ok) throw new Error('fixture manifest is invalid')
@@ -48,6 +52,10 @@ const USERS: Record<ViewerRole, string> = {
   grader: crypto.randomUUID(),
 }
 const STAFF: ViewerRole[] = ['professor', 'ta', 'grader']
+const SALT = 'f'.repeat(64)
+// Two enrolled students: the viewing student and a classmate.
+const CLASSMATE = crypto.randomUUID()
+const handleOf = (studentId: string) => studentHandle(SALT, studentId)
 
 function viewAs(role: ViewerRole, state: InstallationState = 'active') {
   const viewer = {
@@ -91,6 +99,10 @@ beforeEach(() => {
   vi.mocked(db.deleteRecord).mockResolvedValue({ ok: true, value: true })
   vi.mocked(db.listRecords).mockResolvedValue([])
   vi.mocked(db.getRecord).mockResolvedValue(null)
+  vi.mocked(db.loadInstallationHandleSalt).mockResolvedValue(SALT)
+  vi.mocked(db.loadSectionRoster).mockResolvedValue(
+    [USERS.student, CLASSMATE].map((id) => ({ id, firstName: 'Ada', lastName: 'Lovelace', name: null })),
+  )
 })
 
 describe('stamps come from the trusted context, never the request', () => {
@@ -217,6 +229,181 @@ describe('staff', () => {
     await records.updateRecord({ ...target(collection), recordId: RECORD, data })
     await records.deleteRecord({ ...target(collection), recordId: RECORD })
     expect(DB_CALLS().slice(2)).toEqual([0, 0, 0])
+  })
+})
+
+const PRESENT = { status: 'present' }
+
+describe('staffPerStudent: staff write about one student, who reads only their own', () => {
+  it.each(['professor', 'ta'] as const)('a %s’s record is owned by the student its handle names and authored by them', async (role) => {
+    viewAs(role)
+    const result = await records.createRecord({ ...target('attendance'), data: PRESENT, student: handleOf(CLASSMATE) })
+
+    expect(vi.mocked(db.insertRecord).mock.calls[0][0]).toMatchObject({ ownerId: CLASSMATE, authorId: USERS[role] })
+    expect(result).toMatchObject({ ok: true, value: { student: handleOf(CLASSMATE), mine: false } })
+    expect(db.loadSectionRoster).toHaveBeenCalledWith(SECTION)
+  })
+
+  it('a handle that names no one in this section gets the same answer as any refusal, and writes nothing', async () => {
+    viewAs('professor')
+    const otherInstallation = studentHandle('0'.repeat(64), CLASSMATE)
+    for (const handle of [otherInstallation, handleOf(crypto.randomUUID()), 'st_00000000000000000000']) {
+      expect(await records.createRecord({ ...target('attendance'), data: PRESENT, student: handle })).toEqual({
+        ok: false,
+        error: RECORD_NOT_AVAILABLE,
+      })
+    }
+    expect(db.insertRecord).not.toHaveBeenCalled()
+    expect(logEvent).not.toHaveBeenCalled()
+  })
+
+  it('a create without a student is invalid', async () => {
+    viewAs('professor')
+    const result = await records.createRecord({ ...target('attendance'), data: PRESENT })
+    expect(result).toMatchObject({ ok: false, issues: [expect.stringMatching(/^student: /)] })
+    expect(db.insertRecord).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['professor', 'questions', QUESTION],
+    ['student', 'responses', ANSWER],
+  ] as const)('a %s naming a student on %s is invalid', async (role, collection, data) => {
+    viewAs(role)
+    const result = await records.createRecord({ ...target(collection), data, student: handleOf(CLASSMATE) })
+    expect(result).toMatchObject({ ok: false, issues: [expect.stringMatching(/^student: /)] })
+    expect(db.insertRecord).not.toHaveBeenCalled()
+  })
+
+  it('a student ID in place of a handle is refused before anything is resolved', async () => {
+    viewAs('professor')
+    expect(await records.createRecord({ ...target('attendance'), data: PRESENT, student: CLASSMATE })).toEqual({
+      ok: false,
+      error: RECORD_NOT_AVAILABLE,
+    })
+    expect(resolveViewer).not.toHaveBeenCalled()
+  })
+
+  it('a student reads only their own, gets no handle, and can’t write', async () => {
+    viewAs('student')
+    vi.mocked(db.listRecords).mockResolvedValue([row(USERS.student, USERS.professor, PRESENT)])
+    const list = await records.listRecords(target('attendance'))
+    expect(vi.mocked(db.listRecords).mock.calls[0][0]).toEqual({ installationId: INSTALLATION, collection: 'attendance', owner: { only: USERS.student } })
+    expect(list).toMatchObject({ ok: true, value: [{ mine: true }] })
+    expect(list.ok && 'student' in list.value[0]).toBe(false)
+
+    const writes = [
+      await records.createRecord({ ...target('attendance'), data: PRESENT }),
+      await records.createRecord({ ...target('attendance'), data: PRESENT, student: handleOf(USERS.student) }),
+      await records.updateRecord({ ...target('attendance'), recordId: RECORD, data: PRESENT }),
+      await records.deleteRecord({ ...target('attendance'), recordId: RECORD }),
+    ]
+    expect(writes.every((r) => !r.ok && r.error === RECORD_NOT_AVAILABLE)).toBe(true)
+    expect(DB_CALLS().slice(2)).toEqual([0, 0, 0])
+    expect(db.loadInstallationHandleSalt).not.toHaveBeenCalled()
+  })
+
+  it('a grader reads every student’s but writes none', async () => {
+    viewAs('grader')
+    expect((await records.listRecords(target('attendance'))).ok).toBe(true)
+    expect(await records.createRecord({ ...target('attendance'), data: PRESENT, student: handleOf(CLASSMATE) })).toEqual({
+      ok: false,
+      error: RECORD_NOT_AVAILABLE,
+    })
+    expect(db.insertRecord).not.toHaveBeenCalled()
+  })
+
+  it.each(['responses', 'attendance'])('staff reading %s see each record’s student handle, never an ID', async (collection) => {
+    viewAs('professor')
+    vi.mocked(db.listRecords).mockResolvedValue([row(USERS.student, USERS.student), row(CLASSMATE, USERS.professor, PRESENT)])
+    const list = await records.listRecords(target(collection))
+    expect(list).toMatchObject({ ok: true, value: [{ student: handleOf(USERS.student) }, { student: handleOf(CLASSMATE) }] })
+    expect(JSON.stringify(list)).not.toContain(USERS.student)
+    expect(JSON.stringify(list)).not.toContain(CLASSMATE)
+  })
+
+  it('staff reading a shared collection get no handle, and the salt isn’t read', async () => {
+    viewAs('professor')
+    vi.mocked(db.listRecords).mockResolvedValue([row(null, USERS.professor, QUESTION)])
+    const list = await records.listRecords(target('questions'))
+    expect(list.ok && 'student' in list.value[0]).toBe(false)
+    expect(db.loadInstallationHandleSalt).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the salt or the roster can’t be read', async () => {
+    viewAs('professor')
+    vi.mocked(db.loadSectionRoster).mockResolvedValue(null)
+    expect(await records.createRecord({ ...target('attendance'), data: PRESENT, student: handleOf(CLASSMATE) })).toMatchObject({ ok: false })
+    vi.mocked(db.loadInstallationHandleSalt).mockResolvedValue(null)
+    expect((await records.listRecords(target('responses'))).ok).toBe(false)
+    expect(db.insertRecord).not.toHaveBeenCalled()
+  })
+})
+
+describe('records.batch', () => {
+  const create = (student: string) => ({ op: 'create' as const, data: PRESENT, student })
+
+  it('runs each item like its single method, in order, with partial failure, resolving the viewer and roster once', async () => {
+    viewAs('professor')
+    vi.mocked(db.deleteRecord).mockResolvedValueOnce({ ok: true, value: false })
+    const result = await records.batchRecords({
+      ...target('attendance'),
+      items: [
+        create(handleOf(USERS.student)),
+        create(handleOf(crypto.randomUUID())),
+        { op: 'create', data: { status: 3 }, student: handleOf(CLASSMATE) },
+        create(handleOf(CLASSMATE)),
+        { op: 'update', recordId: RECORD, data: PRESENT },
+        { op: 'delete', recordId: RECORD },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    const items = result.ok ? result.value : []
+    expect(items.map((r) => (r.ok ? 'ok' : r.issues ? 'invalid' : r.error))).toEqual([
+      'ok', RECORD_NOT_AVAILABLE, 'invalid', 'ok', 'ok', RECORD_NOT_AVAILABLE,
+    ])
+    expect(vi.mocked(db.insertRecord).mock.calls.map(([stamps]) => stamps.ownerId)).toEqual([USERS.student, CLASSMATE])
+    expect(resolveViewer).toHaveBeenCalledTimes(1)
+    expect(db.loadSectionRoster).toHaveBeenCalledTimes(1)
+    expect(db.loadInstallationHandleSalt).toHaveBeenCalledTimes(1)
+    // Each applied write is audited on its own; refusals aren't.
+    expect(vi.mocked(logEvent).mock.calls.map(([e]) => e.eventType)).toEqual([
+      'studio.record.create', 'studio.record.create', 'studio.record.update',
+    ])
+  })
+
+  it('applies the policy to every item: a student’s batch on a staff collection writes nothing', async () => {
+    viewAs('student')
+    const result = await records.batchRecords({ ...target('attendance'), items: [{ op: 'create', data: PRESENT }, { op: 'delete', recordId: RECORD }] })
+    expect(result).toEqual({ ok: true, value: [{ ok: false, error: RECORD_NOT_AVAILABLE }, { ok: false, error: RECORD_NOT_AVAILABLE }] })
+    expect(DB_CALLS().slice(2)).toEqual([0, 0, 0])
+  })
+
+  it('a student’s batch of their own perStudent work is stamped like single creates', async () => {
+    viewAs('student')
+    await records.batchRecords({ ...target('responses'), items: [{ op: 'create', data: ANSWER }, { op: 'create', data: ANSWER }] })
+    expect(vi.mocked(db.insertRecord).mock.calls.map(([s]) => [s.ownerId, s.authorId])).toEqual([
+      [USERS.student, USERS.student],
+      [USERS.student, USERS.student],
+    ])
+  })
+
+  it.each([
+    ['no items', []],
+    ['too many items', Array.from({ length: STUDIO_RECORD_BATCH_MAX + 1 }, () => ({ op: 'create', data: ANSWER }))],
+    ['an item naming an owner', [{ op: 'create', data: ANSWER, ownerId: USERS.professor }]],
+  ])('refuses %s before resolving anything', async (_label, items) => {
+    viewAs('student')
+    expect(await records.batchRecords({ ...target('responses'), items } as never)).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(resolveViewer).not.toHaveBeenCalled()
+  })
+
+  it('refuses the whole batch when there is no viewer', async () => {
+    vi.mocked(resolveViewer).mockResolvedValue(null)
+    expect(await records.batchRecords({ ...target('responses'), items: [{ op: 'create', data: ANSWER }] })).toEqual({
+      ok: false,
+      error: RECORD_NOT_AVAILABLE,
+    })
   })
 })
 

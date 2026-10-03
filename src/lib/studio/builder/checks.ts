@@ -27,9 +27,11 @@ import { runStaticChecks, type CheckStatus } from '../validator/static-checks'
 import { findRosterFullName } from '@/lib/validations/memory'
 import type { SourceDiagnostic } from './compile'
 import { findCopies, type GuardSource } from './disclosure'
+import { checkSample, sampleTexts } from './sample-data'
 import { AVAILABLE_CAPABILITIES } from './manifest-delta'
 import { PLUGIN_PATHS, type PluginPath } from './paths'
 import { workHash } from './snapshot'
+import type { SampleData } from './work'
 
 export type BuilderCheckId =
   | Exclude<StaticCheckId, 'artifact.hash' | 'edtech.purpose'>
@@ -39,6 +41,7 @@ export type BuilderCheckId =
   | 'builder.purpose_text'
   | 'builder.roster'
   | 'builder.disclosure'
+  | 'builder.sample'
 
 export type RepairCategory =
   | 'syntax' | 'types' | 'module_shape' | 'kit_usage' | 'styling' | 'required_states' | 'bridge_declaration'
@@ -49,7 +52,7 @@ export interface BuilderFinding {
   severity: CheckSeverity
   /** False: a warning that never blocks. */
   required: boolean
-  file: PluginPath | 'manifest' | null
+  file: PluginPath | 'manifest' | 'sample' | null
   /** Source lines for compile and typecheck. Null for Stage 1 findings, whose lines index the bundle. */
   line: number | null
   message: string
@@ -72,6 +75,7 @@ const GUIDE: Record<BuilderCheckId, { category: RepairCategory; hint: string }> 
     category: 'student_data',
     hint: 'Students can’t see this course material yet. Use it for the tool’s structure and topics, not its wording, or ask the professor to make it visible first.',
   },
+  'builder.sample': { category: 'manifest', hint: 'Rewrite the sample data with write_sample_data so every record matches its collection as the manifest declares it now.' },
   'artifact.size': { category: 'size', hint: 'Make the view smaller.' },
   'artifact.entries': { category: 'module_shape', hint: 'Both views must exist and export a default function.' },
   'artifact.vendor_free': { category: 'module_shape', hint: 'Import React hooks and kit components; never include their code.' },
@@ -104,6 +108,7 @@ const BUILDER_SEVERITY: Record<`builder.${string}` & BuilderCheckId, CheckSeveri
   'builder.purpose_text': 'policy',
   'builder.roster': 'security',
   'builder.disclosure': 'security',
+  'builder.sample': 'reliability',
 }
 
 /** Stage 1 checks the draft gate requires: all required static checks but the two above. */
@@ -195,7 +200,7 @@ function staticFindings(id: StaticBuilderId, status: CheckStatus, message: strin
 
 /** Run the whole gate on one working copy. */
 export async function runDraftChecks(
-  work: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>> },
+  work: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample?: SampleData | null },
   deps: DraftCheckDeps,
 ): Promise<DraftCheckResult> {
   const findings: BuilderFinding[] = []
@@ -213,7 +218,7 @@ export async function runDraftChecks(
     unresolved: [],
     warnings: [],
   }
-  const hash = workHash(work.manifest, work.files)
+  const hash = workHash(work.manifest, work.files, work.sample)
   let bundles: DraftCheckResult['bundles'] = null
 
   // Builder: the manifest is present, valid, available and compatible.
@@ -243,10 +248,22 @@ export async function runDraftChecks(
     for (const reason of purpose.reasons) {
       findings.push(finding('builder.purpose_text', { file: 'manifest', line: null, message: 'The manifest’s description of the tool needs another look.', detail: reason }))
     }
+
+    // Builder: sample data still matches the collections (the manifest can change after it).
+    if (work.sample) {
+      const sample = checkSample(work.sample, manifest)
+      if (!sample.ok) {
+        for (const issue of sample.issues.slice(0, 3)) findings.push(finding('builder.sample', { file: 'sample', line: null, message: 'The sample data doesn’t match the tool’s collections.', detail: quote(issue) }))
+      }
+    }
   }
 
   // Builder: no student's full name anywhere in the tool. Fails closed.
-  const texts = [...PLUGIN_PATHS.map((p) => ({ file: p as PluginPath | 'manifest', text: work.files[p] ?? '' })), { file: 'manifest' as const, text: manifest ? JSON.stringify(manifest) : '' }]
+  const texts = [
+    ...PLUGIN_PATHS.map((p) => ({ file: p as PluginPath | 'manifest' | 'sample', text: work.files[p] ?? '' })),
+    { file: 'manifest' as const, text: manifest ? JSON.stringify(manifest) : '' },
+    { file: 'sample' as const, text: sampleTexts(work.sample ?? null).join(' · ') },
+  ]
   if (deps.rosterFullNames === null) {
     summary.roster = 'unavailable'
     findings.push(finding('builder.roster', { file: null, line: null, message: 'The student-name check couldn’t run. Don’t change the code for it; checking again retries it.', detail: null }))

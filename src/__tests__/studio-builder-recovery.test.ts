@@ -107,6 +107,7 @@ function harness(script: ScriptedTurn[], setup: Setup = {}) {
     searchMaterial: async () => ({ ok: false as const }),
     rehydrateMaterial: async () => [],
     recordUsage: vi.fn(async () => {}),
+    renderPreview: async () => ({ ok: false as const, reason: 'unavailable' as const }),
     audit: vi.fn(),
     kick: vi.fn(),
     now,

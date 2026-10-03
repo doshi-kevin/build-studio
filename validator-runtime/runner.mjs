@@ -2,7 +2,8 @@
 //
 // Runs one plugin artifact's two views in headless Chromium, inside the real Step 4
 // boundary: the real frame document and security policy from frame-document.ts, the
-// real runtime.js, vendor.js and kit.css, the real host controller, on two local origins
+// real runtime.js, vendor.js and kit.css of the manifest's bridge version, the real
+// host controller, on two local origins
 // that are different sites (127.0.0.1 versus localhost), exactly like the isolation
 // harness. Plugin code runs only in the sandboxed frame, never in this Node process.
 //
@@ -40,7 +41,10 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']
 // script, runtime assets and axe next to the bundle in dist/. From source it is
 // undeclared, and the host script is built with esbuild on first use.
 const PREBUILT = typeof __STUDIO_VALIDATOR_PREBUILT__ !== 'undefined'
-const assetDir = PREBUILT ? join(here, 'studio-runtime', 'v1') : join(repo, 'public', 'studio-runtime', 'v1')
+// The bridge versions this runner serves; protocol.ts BRIDGE_VERSIONS, repeated because
+// this file loads TypeScript only through Node's type stripping, file by file.
+export const RUNTIMES = ['v1', 'v2']
+const assetDir = (runtime) => (PREBUILT ? join(here, 'studio-runtime', runtime) : join(repo, 'public', 'studio-runtime', runtime))
 const axeSource = readFileSync(PREBUILT ? join(here, 'axe.min.js') : require.resolve('axe-core/axe.min.js'), 'utf8')
 
 let hostBundle
@@ -64,14 +68,24 @@ export async function hostScript() {
 }
 
 const HOST_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Studio validator</title><style>html,body{margin:0;padding:0}.validator-frame{display:block;width:100%;height:2000px;border:0}</style></head>
+<title>Studio validator</title><style>html,body{margin:0;padding:0}.validator-frame{display:block;width:100%;height:2000px;border:0}
+.render-frame{display:block;width:100%;height:512px;border:0}</style></head>
 <body><div id="mount"></div><script src="/host.js"></script></body></html>`
 
 function listen(server, host) {
   return new Promise((resolve) => server.listen(0, host, () => resolve(server.address().port)))
 }
 
-async function startServers(artifact) {
+/** The runtime a manifest's views load. A bridge this runner doesn't serve is a runner
+ * failure, never a silent fallback to another version's kit. */
+function runtimeOf(manifest) {
+  const runtime = manifest?.bridgeVersion
+  if (!RUNTIMES.includes(runtime)) throw new Error('unsupported bridge version')
+  return runtime
+}
+
+export async function startServers(artifact) {
+  const runtimeVersion = runtimeOf(artifact.manifest)
   const script = await hostScript()
   const runtimeServer = createServer()
   const appServer = createServer((req, res) => {
@@ -100,14 +114,15 @@ async function startServers(artifact) {
         nonce: randomBytes(18).toString('base64'),
         bundle: view === 'student' ? artifact.studentBundle : artifact.professorBundle,
         title: 'Plugin',
+        runtime: runtimeVersion,
       }
       res.writeHead(200, frameHeaders(input))
       return res.end(frameHtml(input))
     }
-    const asset = /^\/studio-runtime\/v1\/(runtime\.js|vendor\.js|kit\.css)$/.exec(path)?.[1]
-    if (asset) {
+    const [, version, asset] = /^\/studio-runtime\/(v[0-9]+)\/(runtime\.js|vendor\.js|kit\.css)$/.exec(path) ?? []
+    if (asset && RUNTIMES.includes(version)) {
       res.writeHead(200, { 'Content-Type': asset.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' })
-      return res.end(readFileSync(join(assetDir, asset)))
+      return res.end(readFileSync(join(assetDir(version), asset)))
     }
     res.writeHead(404)
     res.end()
@@ -117,7 +132,7 @@ async function startServers(artifact) {
 
 const quote = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f<>]/g, '').slice(0, limits.STUDIO_VALIDATOR_QUOTE_MAX_CHARS)
 
-async function waitFor(fn, timeoutMs, stepMs = 100) {
+export async function waitFor(fn, timeoutMs, stepMs = 100) {
   const end = Date.now() + timeoutMs
   for (;;) {
     const value = await fn().catch(() => null)
@@ -127,8 +142,9 @@ async function waitFor(fn, timeoutMs, stepMs = 100) {
   }
 }
 
-/** One scenario of one view in a fresh browser context. */
-async function openScenario(browser, servers, artifact, view, scenario, viewport) {
+/** One scenario of one view in a fresh browser context. `options` ({ sample, className })
+ * is for the preview renderer (render.mjs). */
+export async function openScenario(browser, servers, artifact, view, scenario, viewport, options = {}) {
   const context = await browser.newContext({ viewport })
   const outbound = []
   await context.route('**/*', (route) => {
@@ -140,8 +156,8 @@ async function openScenario(browser, servers, artifact, view, scenario, viewport
   const page = await context.newPage()
   await page.goto(`${servers.app}/host.html`)
   await page.evaluate(
-    ([url, v, manifest, s]) => window.validator.mount(url, v, manifest, s),
-    [`${servers.runtime}/frame/${view}`, view, artifact.manifest, scenario],
+    ([url, v, manifest, s, o]) => window.validator.mount(url, v, manifest, s, o),
+    [`${servers.runtime}/frame/${view}`, view, artifact.manifest, scenario, options],
   )
   const snapshot = () => page.evaluate(() => window.validator.snapshot())
   const frame = () => page.frames().find((f) => f.url().startsWith(servers.runtime))

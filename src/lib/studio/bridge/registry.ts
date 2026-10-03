@@ -4,11 +4,12 @@
  * with that method's parsed arguments, so the catalog and the handlers can't drift.
  *
  * Handlers only route. Record methods call Step 3's records.ts, which alone decides
- * perStudent, shared, staffOnly, archived and ownership rules.
+ * perStudent, staffPerStudent, shared, staffOnly, archived and ownership rules.
  */
 import 'server-only'
 import type { StudioViewer } from '../context'
-import { loadSectionSkills } from '../db'
+import { loadReleasedAssignments, loadSectionSkills } from '../db'
+import { rosterHandles } from '../handles'
 import * as records from '../records'
 import type { BridgeErrorCode } from '../runtime/protocol'
 import type { MethodArgs, ServerMethodName } from './catalog'
@@ -33,6 +34,13 @@ function fromRecords<T>(result: records.RecordResult<T>): MethodResult {
   return { ok: false, code: 'failed', message: FAILED }
 }
 
+/** One records.batch item: the record, or only the refusal's code. */
+function batchItem(result: records.BatchItemResult) {
+  if (result.ok) return { ok: true as const, record: result.value }
+  const mapped = fromRecords(result)
+  return { ok: false as const, code: mapped.ok ? 'failed' : mapped.code }
+}
+
 type Handlers = {
   [K in ServerMethodName]: (viewer: StudioViewer, args: MethodArgs<K>, host: HostContext) => Promise<MethodResult>
 }
@@ -44,11 +52,25 @@ export const SERVER_HANDLERS: Handlers = {
     const skills = await loadSectionSkills(viewer.sectionId)
     return skills ? { ok: true, data: skills } : { ok: false, code: 'failed', message: FAILED }
   },
+  // Handles only, never IDs or names; the professor's page draws names over the frame.
+  'course.roster': async (viewer) => {
+    const students = await rosterHandles(viewer.installationId, viewer.sectionId)
+    return students ? { ok: true, data: { students } } : { ok: false, code: 'failed', message: FAILED }
+  },
+  // Released assignments only, what an enrolled student can already read. No IDs.
+  'course.assignments': async (viewer) => {
+    const assignments = await loadReleasedAssignments(viewer.sectionId)
+    return assignments ? { ok: true, data: { assignments } } : { ok: false, code: 'failed', message: FAILED }
+  },
   'records.list': async (viewer, args) => fromRecords(await records.listRecords({ ...args, installationId: viewer.installationId })),
   'records.get': async (viewer, args) => fromRecords(await records.getRecord({ ...args, installationId: viewer.installationId })),
   'records.create': async (viewer, args) => fromRecords(await records.createRecord({ ...args, installationId: viewer.installationId })),
   'records.update': async (viewer, args) => fromRecords(await records.updateRecord({ ...args, installationId: viewer.installationId })),
   'records.delete': async (viewer, args) => fromRecords(await records.deleteRecord({ ...args, installationId: viewer.installationId })),
+  'records.batch': async (viewer, args) => {
+    const result = await records.batchRecords({ ...args, installationId: viewer.installationId })
+    return result.ok ? { ok: true, data: { results: result.value.map(batchItem) } } : fromRecords(result)
+  },
 }
 
 export function serverHandler(name: string): Handlers[ServerMethodName] | null {

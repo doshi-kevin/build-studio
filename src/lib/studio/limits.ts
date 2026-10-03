@@ -9,6 +9,9 @@ export const STUDIO_MANIFEST_MAX_FIELDS = 30
 // record service enforces its own cap rather than relying on the transport.
 export const STUDIO_RECORD_MAX_BYTES = 16 * 1024
 export const STUDIO_RECORD_PAGE_MAX = 100
+/** records.batch: items in one call. Each runs as its own write; the call counts once
+ * toward the bridge's rate limits. */
+export const STUDIO_RECORD_BATCH_MAX = 50
 
 // The runtime frame and the Scholera Bridge (docs/reference/studio-plugin-runtime.md).
 export const STUDIO_BRIDGE_MAX_MESSAGE_BYTES = 64 * 1024
@@ -33,6 +36,11 @@ export const STUDIO_TOASTS_PER_MINUTE = 6
 
 /** course.skills: the most skills returned for one section. */
 export const STUDIO_SKILLS_MAX = 500
+/** course.roster, and the roster a student handle is resolved against: enrolled and
+ * completed students, in student ID order. A larger section's later students get no handle. */
+export const STUDIO_ROSTER_MAX = 500
+/** course.assignments: the most released assignments returned for one section. */
+export const STUDIO_ASSIGNMENTS_MAX = 100
 /** Requests the host refuses locally for rate in one minute before it stops the frame. */
 export const STUDIO_FRAME_RATE_ABUSE_MAX = 60
 export const STUDIO_FRAME_START_TIMEOUT_MS = 10_000
@@ -247,3 +255,21 @@ export const STUDIO_MATERIAL_SOURCES_MAX = 96
 /** Progress polling, and the most trajectory rows one poll returns. */
 export const STUDIO_BUILDER_PROGRESS_POLL_MS = 1_500
 export const STUDIO_BUILDER_PROGRESS_EVENTS_MAX = 50
+
+// ── Step 11: design review and sample data ──
+
+/** Design reviews per run. Each review may send the model back for one round of improvements. */
+export const STUDIO_BUILDER_MAX_REVIEW_ROUNDS = 2
+/** Screenshots in one review: professor and student, desktop and phone. */
+export const STUDIO_BUILDER_REVIEW_IMAGES_MAX = 4
+/** Per screenshot, as the renderer returns it (JPEG). Larger ones are dropped, not sent. */
+export const STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES = 400 * 1024
+/** What one screenshot may cost in prompt tokens at medium media resolution, counted on the
+ * high side so the context and cost estimates never undercount. */
+export const STUDIO_BUILDER_REVIEW_IMAGE_TOKENS = 1120
+/** Findings per list in a review, and characters per finding. */
+export const STUDIO_BUILDER_REVIEW_FINDINGS_MAX = 8
+export const STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS = 240
+/** write_sample_data: records across all collections, and the JSON's size. */
+export const STUDIO_BUILDER_SAMPLE_MAX_RECORDS = 60
+export const STUDIO_BUILDER_SAMPLE_MAX_BYTES = 24 * 1024

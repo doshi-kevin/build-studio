@@ -40,10 +40,12 @@ function namedRecord<T extends z.ZodType>(value: T, what: string, max: number, r
 }
 
 /** perStudent: each record belongs to one student, who sees only their own; staff see all.
+ * staffPerStudent: staff write a record about one student, who reads only their own;
+ * staff read all (attendance, feedback).
  * shared: staff write, everyone in the section reads.
  * staffOnly: never sent to a student's frame, e.g. answer keys (rule 5.2). */
 const collectionSchema = z.strictObject({
-  access: z.enum(['perStudent', 'shared', 'staffOnly']),
+  access: z.enum(['perStudent', 'staffPerStudent', 'shared', 'staffOnly']),
   fields: namedRecord(z.enum(['text', 'number', 'boolean']), 'field', STUDIO_MANIFEST_MAX_FIELDS, RESERVED_FIELDS)
     .refine((fields) => Object.keys(fields).length > 0, 'A collection needs at least one field'),
 })

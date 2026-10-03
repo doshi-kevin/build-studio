@@ -8,6 +8,8 @@ describe('the line beside the spinner', () => {
     expect(workingCopy('planning', null)).toBe('Planning the tool…')
     expect(workingCopy('checking', null)).toBe('Running checks…')
     expect(workingCopy('repairing', null)).toBe('Fixing what the checks found…')
+    expect(workingCopy('reviewing', null)).toBe('Reviewing the design…')
+    expect(workingCopy('improving', null)).toBe('Improving the interface…')
     expect(workingCopy(null, null)).toBe('Understanding your request…')
   })
 
@@ -20,7 +22,15 @@ describe('the line beside the spinner', () => {
     expect(workingCopy('checking', null, 'Checks passed')).toBe('Finishing up…')
     expect(workingCopy('understanding', null, 'Understanding your request')).toBe('Working on the next step…')
     expect(workingCopy('repairing', null, 'Fixing what the checks found')).toBe('Working on the next step…')
-    expect(workingCopy('checking', null, 'Writing the student view')).toBe('Running checks…')
+    expect(workingCopy('checking', null, 'Building the student view')).toBe('Running checks…')
+    expect(workingCopy('improving', null, 'Improving the interface')).toBe('Working on the next step…')
+  })
+
+  it('after the checks, says whether the design review or the save comes next', () => {
+    expect(workingCopy('reviewing', null, 'Checks passed')).toBe('Reviewing the design…')
+    expect(workingCopy('reviewing', null, 'Rendering the preview')).toBe('Reviewing the design…')
+    expect(workingCopy('reviewing', null, 'Design review passed')).toBe('Finishing up…')
+    expect(workingCopy('improving', null, 'Found improvements to make')).toBe('Improving the interface…')
   })
 })
 

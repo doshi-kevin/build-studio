@@ -38,6 +38,11 @@ const ACCESS: Record<StudioManifest['collections'][string]['access'], { label: s
     students: 'Save their own',
     staff: 'Read every student’s',
   },
+  staffPerStudent: {
+    label: 'Staff record something for each student; each student sees only their own',
+    students: 'Read their own',
+    staff: 'Record and read every student’s',
+  },
   shared: {
     label: 'Written by staff, read by everyone in the course',
     students: 'Read',

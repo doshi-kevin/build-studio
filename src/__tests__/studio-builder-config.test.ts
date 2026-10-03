@@ -87,6 +87,7 @@ function slice(model: Parameters<typeof runBuilderSlice>[2]['model'], gate: Para
       searchMaterial: async () => ({ ok: false as const }),
       rehydrateMaterial: async () => [],
       recordUsage,
+      renderPreview: async () => ({ ok: false as const, reason: 'unavailable' as const }),
       audit: vi.fn(),
       kick: vi.fn(),
       now: () => Date.now(),

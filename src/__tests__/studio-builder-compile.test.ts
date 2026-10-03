@@ -86,6 +86,22 @@ describe('the typecheck', () => {
     const r = typecheckViews({ ...views, 'views/student.tsx': STUDENT_VIEW.replace('<Card>', '<div style={{ color: "red" }}>').replace('</Card>', '</div>') })
     expect(r.diagnostics.map((d) => d.code)).toContain('TS2339')
   })
+  it('a v2 attendance tool (summary stats, roster, records by student, history table) compiles and typechecks', () => {
+    const files = { 'views/professor.tsx': ATTENDANCE_PROFESSOR, 'views/student.tsx': ATTENDANCE_STUDENT }
+    expect(typecheckViews(files)).toEqual({ diagnostics: [], total: 0 })
+    const r = compileView('views/professor.tsx', ATTENDANCE_PROFESSOR)
+    if (!r.ok) throw new Error(JSON.stringify(r.diagnostics))
+    for (const name of ['RosterTable', 'useRecords', 'useRoster', 'StatCard', 'DataTable', 'today']) expect(r.bundle).toContain(`var ${name} = ScholeraKit.${name};`)
+    // Type-only imports bind nothing at run time.
+    expect(r.bundle).not.toMatch(/RosterCell|PluginRecord/)
+  })
+  it('kit v2 props are checked: no style, no className, tones from the set', () => {
+    const bad = (jsx: string) => typecheckViews({ 'views/professor.tsx': ATTENDANCE_PROFESSOR, 'views/student.tsx': ATTENDANCE_STUDENT.replace('<Badge tone="success">Present</Badge>', jsx) })
+    expect(bad('<Badge tone="success">Present</Badge>').total).toBe(0)
+    expect(bad('<Badge tone="green">Present</Badge>').total).toBeGreaterThan(0)
+    expect(bad('<Badge className="x">Present</Badge>').total).toBeGreaterThan(0)
+    expect(bad('<Card style={{ color: "red" }}>Present</Card>').total).toBeGreaterThan(0)
+  })
   it('a lib reference pulls nothing in', () => {
     const r = typecheckViews({ ...views, 'views/student.tsx': `/// <reference lib="dom" />\n/// <reference path="../../node_modules/typescript/lib/lib.dom.d.ts" />\n${STUDENT_VIEW.replace('export default function', 'const w = window\nexport default function')}` })
     expect(r.diagnostics.length).toBeGreaterThan(0)
@@ -153,3 +169,100 @@ describe('the check worker', () => {
     expect(committed).toBe(generatedModule(await bundleCheckWorker()))
   })
 })
+
+const ATTENDANCE_PROFESSOR = `import { useMemo, useState } from 'react'
+import {
+  Screen, Section, Grid, StatCard, RosterTable, DataTable, Badge, Button, Alert, SegmentedControl,
+  Loading, Empty, ErrorState, useRecords, useRoster, today, formatDate,
+  type PluginRecord, type RosterCell, type Tone,
+} from '@scholera/plugin-kit'
+
+type Mark = { day: string; status: string }
+const OPTIONS: { value: string; label: string; tone: Tone }[] = [
+  { value: 'present', label: 'Present', tone: 'success' },
+  { value: 'late', label: 'Late', tone: 'warning' },
+  { value: 'absent', label: 'Absent', tone: 'danger' },
+]
+
+export default function ProfessorView() {
+  const roster = useRoster()
+  const marks = useRecords<Mark>('marks')
+  const [day] = useState(today())
+  const [view, setView] = useState('today')
+  const [failed, setFailed] = useState(false)
+  const todays = useMemo(() => {
+    const m = new Map<string, PluginRecord<Mark>>()
+    marks.records.forEach((r) => { if (r.data.day === day && r.student) m.set(r.student, r) })
+    return m
+  }, [marks.records, day])
+  const present = roster.students.filter((s) => todays.get(s)?.data.status === 'present').length
+
+  if (roster.status === 'loading' || marks.status === 'loading') return <Screen title="Attendance"><Loading /></Screen>
+  if (roster.status === 'error' || marks.status === 'error') return <Screen title="Attendance"><ErrorState onRetry={() => { roster.retry(); marks.retry() }} /></Screen>
+  if (roster.students.length === 0) return <Screen title="Attendance"><Empty title="No students yet" description="Students appear here once they enrol." /></Screen>
+
+  const mark = (student: string, status: string) => {
+    const existing = todays.get(student)
+    const done = existing ? marks.update(existing, { day, status }) : marks.create({ day, status }, student)
+    void done.then((ok) => setFailed(!ok))
+  }
+  const markAll = () => {
+    const changes = roster.students.filter((s) => !todays.has(s)).map((s) => ({ op: 'create' as const, data: { day, status: 'present' }, student: s }))
+    void marks.saveMany(changes).then((ok) => setFailed(!ok))
+  }
+  const cell = (student: string): Record<string, RosterCell> => ({
+    status: { kind: 'choice', value: todays.get(student)?.data.status ?? null, options: OPTIONS },
+  })
+  const days = Array.from(new Set(marks.records.map((r) => r.data.day))).sort().reverse()
+
+  return (
+    <Screen title="Attendance" description={formatDate(day, 'long')} width="wide" actions={<Button onPress={markAll}>Mark everyone present</Button>}>
+      {failed ? <Alert tone="danger" title="Some marks weren't saved">Try that again.</Alert> : null}
+      <Grid columns={3}>
+        <StatCard label="Present today" value={present} hint={'of ' + roster.students.length + ' students'} tone="success" />
+        <StatCard label="Not marked" value={roster.students.length - todays.size} />
+        <StatCard label="Sessions" value={days.length} />
+      </Grid>
+      <SegmentedControl label="Show" value={view} onChange={setView} options={[{ value: 'today', label: 'Today' }, { value: 'history', label: 'History' }]} />
+      {view === 'today' ? (
+        <Section title="Today">
+          <RosterTable label="Attendance today" students={roster.students} columns={[{ key: 'status', header: 'Status' }]} cells={cell} onAction={(s, _column, value) => mark(s, value)} />
+        </Section>
+      ) : (
+        <Section title="History">
+          <DataTable
+            label="Sessions"
+            columns={[{ key: 'day', header: 'Day' }, { key: 'present', header: 'Present', align: 'end' }, { key: 'rate', header: 'Rate' }]}
+            rows={days.map((d) => {
+              const n = marks.records.filter((r) => r.data.day === d && r.data.status === 'present').length
+              return { key: d, cells: { day: formatDate(d), present: n, rate: <Badge tone={n === roster.students.length ? 'success' : 'neutral'}>{Math.round((n / roster.students.length) * 100) + '%'}</Badge> } }
+            })}
+            emptyText="No sessions yet."
+          />
+        </Section>
+      )}
+    </Screen>
+  )
+}
+`
+
+const ATTENDANCE_STUDENT = `import { Screen, List, ListItem, Badge, Loading, Empty, ErrorState, useRecords, formatDate } from '@scholera/plugin-kit'
+
+type Mark = { day: string; status: string }
+
+export default function StudentView() {
+  const marks = useRecords<Mark>('marks')
+  if (marks.status === 'loading') return <Screen title="My attendance"><Loading /></Screen>
+  if (marks.status === 'error') return <Screen title="My attendance"><ErrorState onRetry={marks.retry} /></Screen>
+  if (marks.records.length === 0) return <Screen title="My attendance"><Empty title="Nothing recorded yet" /></Screen>
+  return (
+    <Screen title="My attendance">
+      <List label="Sessions">
+        {marks.records.map((r) => (
+          <ListItem key={r.id} title={formatDate(r.data.day, 'long')} meta={r.data.status === 'present' ? <Badge tone="success">Present</Badge> : <Badge tone="warning">{r.data.status}</Badge>} />
+        ))}
+      </List>
+    </Screen>
+  )
+}
+`

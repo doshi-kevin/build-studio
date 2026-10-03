@@ -168,6 +168,7 @@ async function main() {
         searchMaterial: c.material ? searchCourse : async () => ({ ok: false as const }),
         rehydrateMaterial: c.material ? rehydrateCourse : async () => [],
         recordUsage: async () => {},
+        renderPreview: async () => ({ ok: false as const, reason: 'unavailable' as const }),
         audit: () => {},
         kick: () => {},
         now: () => Date.now(),

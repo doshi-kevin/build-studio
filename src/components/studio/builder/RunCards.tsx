@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useId, useRef, useState, useTransition } from 'react'
-import { Bookmark, CheckCircle2, CircleSlash, Eye, HelpCircle, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
+import { Bookmark, CheckCircle2, ChevronRight, CircleSlash, Eye, HelpCircle, ListChecks, Loader2, RotateCcw, ShieldCheck, Square, TriangleAlert } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { STUDIO_BUILDER_QUEUE_NOTICE_MS } from '@/lib/studio/limits'
 import type { ProgressRead } from './types'
 
@@ -14,6 +15,8 @@ const PHASE_COPY: Record<string, string> = {
   editing: 'Building your tool…',
   checking: 'Running checks…',
   repairing: 'Fixing what the checks found…',
+  reviewing: 'Reviewing the design…',
+  improving: 'Improving the interface…',
 }
 
 /** A queued run no worker has picked up for this long gets a hint under the lines. */
@@ -22,13 +25,36 @@ export const queuedTooLong = (queuedMs: number | null | undefined) => queuedMs !
 /**
  * The line with the spinner. A run no worker has picked up says so, rather than "Working…" for
  * minutes. The phase only moves when a tool sets it, so a line that would repeat the step just
- * finished ("Checks passed", then "Running checks…") says what comes next instead.
+ * finished ("Checks passed", then "Running checks…") says what comes next instead: the design
+ * review when the run has moved on to it, otherwise the commit.
  */
 export function workingCopy(phase: string | null | undefined, queuedMs: number | null | undefined, lastLabel?: string): string {
   if (queuedMs != null) return queuedTooLong(queuedMs) ? 'Still waiting to start…' : 'Starting…'
-  if (lastLabel === 'Checks passed') return 'Finishing up…'
+  if (lastLabel === 'Checks passed' && phase !== 'reviewing') return 'Finishing up…'
+  if (lastLabel === 'Design review passed') return 'Finishing up…'
   const copy = PHASE_COPY[phase ?? 'understanding'] ?? 'Working…'
   return lastLabel && copy.startsWith(lastLabel) ? 'Working on the next step…' : copy
+}
+
+/** The run's steps as lines, consecutive repeats collapsed. */
+const stepLines = (events: ProgressRead['events']) => events.filter((e, i) => i === 0 || e.label !== events[i - 1].label)
+
+function StepLines({ lines, children }: { lines: ProgressRead['events']; children?: React.ReactNode }) {
+  return (
+    <ul className="space-y-1.5 text-sm">
+      {lines.map((e) => (
+        <li key={e.seq} className="flex items-center gap-2 text-muted-foreground">
+          {e.outcome === 'done' ? (
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <CircleSlash className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          )}
+          {e.label}
+        </li>
+      ))}
+      {children}
+    </ul>
+  )
 }
 
 /** Fixed-copy progress lines, consecutive repeats collapsed. Never model reasoning. */
@@ -52,27 +78,17 @@ export function ProgressLines({ events, working, phase, queuedMs, loaded, unreac
       </div>
     )
   }
-  const lines = events.filter((e, i) => i === 0 || e.label !== events[i - 1].label)
+  const lines = stepLines(events)
   return (
     <div className="space-y-3 rounded-2xl bg-muted p-4">
-      <ul className="space-y-1.5 text-sm">
-        {lines.slice(-8).map((e) => (
-          <li key={e.seq} className="flex items-center gap-2 text-muted-foreground">
-            {e.outcome === 'done' ? (
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            ) : (
-              <CircleSlash className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            )}
-            {e.label}
-          </li>
-        ))}
+      <StepLines lines={lines.slice(-8)}>
         {working && (
           <li className="flex items-center gap-2 font-medium">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             {workingCopy(phase, queuedMs, lines.at(-1)?.label)}
           </li>
         )}
-      </ul>
+      </StepLines>
       {working && queuedTooLong(queuedMs) && <p className="text-sm text-muted-foreground">This is taking longer than usual. You can stop and try again.</p>}
       {offline}
       {working && (
@@ -82,6 +98,56 @@ export function ProgressLines({ events, working, phase, queuedMs, loaded, unreac
         </Button>
       )}
     </div>
+  )
+}
+
+/** Every step of a finished run, closed until the professor opens it. */
+export function RunTimeline({ events }: { events: ProgressRead['events'] }) {
+  const lines = stepLines(events)
+  if (lines.length === 0) return null
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" className="min-h-11 gap-1.5 px-2 text-muted-foreground [&[data-state=open]>svg]:rotate-90">
+          <ChevronRight className="h-4 w-4 motion-safe:transition-transform" aria-hidden="true" />
+          What Athena did ({lines.length} {lines.length === 1 ? 'step' : 'steps'})
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="rounded-2xl bg-muted p-4">
+        <StepLines lines={lines} />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** Athena's plan: her own words, labelled as hers and shown as plain text. */
+export function PlanCard({ plan }: { plan: NonNullable<ProgressRead['plan']> }) {
+  const views = [
+    { name: 'Professor view', items: plan.professor },
+    { name: 'Student view', items: plan.student },
+  ].filter((v) => v.items.length > 0)
+  return (
+    <section aria-label="Athena’s plan" className="space-y-3 rounded-2xl bg-card p-4 shadow-sm">
+      <div className="flex items-center gap-2">
+        <ListChecks className="h-4 w-4 text-primary" aria-hidden="true" />
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Athena’s plan</p>
+      </div>
+      <p className="whitespace-pre-wrap break-words text-sm">{plan.goal}</p>
+      {views.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+          {views.map((v) => (
+            <div key={v.name} className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">{v.name}</p>
+              <ul className="list-disc space-y-0.5 break-words pl-5 text-sm">
+                {v.items.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 

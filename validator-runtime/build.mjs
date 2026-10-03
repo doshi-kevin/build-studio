@@ -6,7 +6,8 @@
 //   cloud-entry.mjs      the entry, runner.mjs, binding.mjs, frame-document.ts and
 //                        limits.ts in one file
 //   host.js              the validator host page's script (host-entry.ts), prebuilt
-//   studio-runtime/v1/   runtime.js, vendor.js and kit.css, copied as is
+//   studio-runtime/v1/, studio-runtime/v2/
+//                        runtime.js, vendor.js and kit.css of each bridge version, as is
 //   axe.min.js           axe-core, copied as is
 //   node_modules/playwright-core
 //                        the browser driver, copied from this checkout so its version
@@ -18,7 +19,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import { hostScript } from './runner.mjs'
+import { hostScript, RUNTIMES } from './runner.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = join(here, '..')
@@ -49,8 +50,10 @@ await build({
   logLevel: 'error',
 })
 
-for (const asset of ['runtime.js', 'vendor.js', 'kit.css']) {
-  cpSync(join(repo, 'public', 'studio-runtime', 'v1', asset), join(out, 'studio-runtime', 'v1', asset))
+for (const runtime of RUNTIMES) {
+  for (const asset of ['runtime.js', 'vendor.js', 'kit.css']) {
+    cpSync(join(repo, 'public', 'studio-runtime', runtime, asset), join(out, 'studio-runtime', runtime, asset))
+  }
 }
 cpSync(require.resolve('axe-core/axe.min.js'), join(out, 'axe.min.js'))
 cpSync(dirname(require.resolve('playwright-core/package.json')), join(out, 'node_modules', 'playwright-core'), { recursive: true })

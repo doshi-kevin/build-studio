@@ -9,7 +9,10 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/logger'
 import type { CourseUnitRow, MaterialSourceEntry } from './builder/course-material'
 import type { MemoryKind, MemorySlot, MemoryTopic } from './builder/memory'
-import { STUDIO_COURSE_TIMEOUT_MS, STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX } from './limits'
+import {
+  STUDIO_ASSIGNMENTS_MAX, STUDIO_COURSE_TIMEOUT_MS, STUDIO_MEMORY_MAX_ACTIVE, STUDIO_PROJECT_VERSIONS_LISTED, STUDIO_ROSTER_MAX,
+  STUDIO_SECTION_INSTALLATIONS_LISTED, STUDIO_SKILLS_MAX,
+} from './limits'
 
 const PROJECTS = 'studio_plugin_projects'
 const VERSIONS = 'studio_plugin_versions'
@@ -102,6 +105,14 @@ export async function loadInstallation(id: string): Promise<InstallationRow | nu
   return data ? toInstallation(data) : null
 }
 
+/** The installation's handle salt (handles.ts). Server-only: it never leaves this
+ * process, and nothing that builds a response reads it. Null if it can't be read. */
+export async function loadInstallationHandleSalt(id: string): Promise<string | null> {
+  const { data, error } = await createAdminClient().from(INSTALLATIONS).select('handle_salt').eq('id', id).maybeSingle()
+  if (error) logger.error('studio/db.loadInstallationHandleSalt', safeError(error), { id })
+  return typeof data?.handle_salt === 'string' ? data.handle_salt : null
+}
+
 /** The section's active installation of a project (at most one exists). `error` when unreadable. */
 export async function findActiveInstallation(sectionId: string, projectId: string): Promise<InstallationRow | null | 'error'> {
   const { data, error } = await createAdminClient()
@@ -179,17 +190,21 @@ export async function loadLatestProjectVersion(projectId: string): Promise<{ id:
   return data ?? null
 }
 
-/** The compiled code for one view of a version, and the plugin's name for the frame title. */
-export async function loadVersionBundle(id: string, view: 'student' | 'professor'): Promise<{ code: string; name: string } | null> {
+/** The compiled code for one view of a version, the plugin's name for the frame title, and
+ * the bridge version whose runtime the frame loads. */
+export async function loadVersionBundle(
+  id: string,
+  view: 'student' | 'professor',
+): Promise<{ code: string; name: string; bridgeVersion: string } | null> {
   const column = view === 'student' ? 'student_bundle' : 'professor_bundle'
-  const { data, error } = await createAdminClient().from(VERSIONS).select(`${column}, manifest`).eq('id', id).maybeSingle()
+  const { data, error } = await createAdminClient().from(VERSIONS).select(`${column}, manifest, bridge_version`).eq('id', id).maybeSingle()
   if (error) logger.error('studio/db.loadVersionBundle', error, { id, view })
   // The column is chosen at runtime, so the row is read as a plain record.
   const row = data as Record<string, unknown> | null
   const code = row?.[column]
   if (typeof code !== 'string') return null
   const manifest = row?.manifest as { name?: unknown } | undefined
-  return { code, name: typeof manifest?.name === 'string' ? manifest.name : 'Plugin' }
+  return { code, name: typeof manifest?.name === 'string' ? manifest.name : 'Plugin', bridgeVersion: String(row?.bridge_version ?? '') }
 }
 
 /** The course code and title shown to a plugin (context.get). Not a Studio table, but
@@ -258,6 +273,67 @@ export async function loadEnrollmentStatus(sectionId: string, userId: string): P
     .maybeSingle()
   if (error) logger.error('studio/db.loadEnrollmentStatus', error, { sectionId })
   return data?.status === 'enrolled' || data?.status === 'completed' ? data.status : null
+}
+
+export interface RosterStudent {
+  id: string
+  firstName: string | null
+  lastName: string | null
+  name: string | null
+}
+
+/** The section's students who count for Studio (`enrolled` or `completed`), in student ID
+ * order, at most STUDIO_ROSTER_MAX. The order makes the cap the same on every read, so a
+ * handle resolves the same way each time. Null when the read fails or a profile is
+ * missing: a partial roster would make a real student's handle look unknown. Names are for
+ * the professor's own page (rosterNamesAction); nothing here reaches a frame. */
+export async function loadSectionRoster(sectionId: string): Promise<RosterStudent[] | null> {
+  const { data, error } = await createAdminClient()
+    .from('enrollments')
+    .select('student_id, student:profiles(first_name, last_name, name)')
+    .eq('section_id', sectionId)
+    .in('status', ['enrolled', 'completed'])
+    .not('student_id', 'is', null)
+    .order('student_id', { ascending: true })
+    .limit(STUDIO_ROSTER_MAX)
+  if (error || !Array.isArray(data)) {
+    if (error) logger.error('studio/db.loadSectionRoster', safeError(error), { sectionId })
+    return null
+  }
+  const roster: RosterStudent[] = []
+  for (const row of data as Record<string, unknown>[]) {
+    const p = (Array.isArray(row.student) ? row.student[0] : row.student) as
+      | { first_name?: string | null; last_name?: string | null; name?: string | null }
+      | null
+    if (!p || typeof row.student_id !== 'string') return null
+    roster.push({ id: row.student_id, firstName: p.first_name ?? null, lastName: p.last_name ?? null, name: p.name ?? null })
+  }
+  return roster
+}
+
+/** course.assignments: the section's released assignments (published or closed, what
+ * enrolled students can already read), by due date with undated last, then title. Title,
+ * due date and points only: no IDs. Points are null for an ungraded assignment. */
+export async function loadReleasedAssignments(
+  sectionId: string,
+): Promise<{ title: string; dueAt: string | null; points: number | null }[] | null> {
+  const { data, error } = await createAdminClient()
+    .from('assignments')
+    .select('title, due_at, points, is_graded')
+    .eq('section_id', sectionId)
+    .in('status', ['published', 'closed'])
+    .order('due_at', { ascending: true, nullsFirst: false })
+    .order('title', { ascending: true })
+    .limit(STUDIO_ASSIGNMENTS_MAX)
+  if (error) {
+    logger.error('studio/db.loadReleasedAssignments', safeError(error), { sectionId })
+    return null
+  }
+  return ((data ?? []) as { title: string; due_at: string | null; points: number | string | null; is_graded: boolean }[]).map((a) => ({
+    title: a.title,
+    dueAt: a.due_at,
+    points: a.is_graded && a.points !== null ? Number(a.points) : null,
+  }))
 }
 
 export interface SectionInstallationRow {
@@ -1244,12 +1320,14 @@ export interface SnapshotRow {
   studentBundle: string
   professorBundle: string
   checkSummary: Record<string, unknown>
+  /** The builder's synthetic preview records; null for snapshots built without them. */
+  sampleData?: Record<string, unknown> | null
 }
 
 export async function loadSnapshot(projectId: string, hash: string): Promise<SnapshotRow | null> {
   const { data, error } = await createAdminClient()
     .from(SNAPSHOTS)
-    .select('project_id, hash, compiler, manifest, files, student_bundle, professor_bundle, check_summary')
+    .select('project_id, hash, compiler, manifest, files, student_bundle, professor_bundle, check_summary, sample_data')
     .eq('project_id', projectId)
     .eq('hash', hash)
     .maybeSingle()
@@ -1264,19 +1342,30 @@ export async function loadSnapshot(projectId: string, hash: string): Promise<Sna
     studentBundle: data.student_bundle,
     professorBundle: data.professor_bundle,
     checkSummary: data.check_summary ?? {},
+    sampleData: data.sample_data ?? null,
   }
 }
 
-/** One view's bundle of a snapshot, for the draft frame. Pinned to the project. */
-export async function loadSnapshotBundle(projectId: string, hash: string, view: 'student' | 'professor'): Promise<{ code: string; name: string } | null> {
+/** One view's bundle of a snapshot, for the draft frame. Pinned to the project. A snapshot
+ * has no bridge_version column: the stamped manifest's bridgeVersion is it, and an
+ * unstamped one gives '' so the frame refuses it. */
+export async function loadSnapshotBundle(
+  projectId: string,
+  hash: string,
+  view: 'student' | 'professor',
+): Promise<{ code: string; name: string; bridgeVersion: string } | null> {
   const column = view === 'student' ? 'student_bundle' : 'professor_bundle'
   const { data, error } = await createAdminClient().from(SNAPSHOTS).select(`${column}, manifest`).eq('project_id', projectId).eq('hash', hash).maybeSingle()
   if (error) logger.error('studio/db.loadSnapshotBundle', safeError(error), { projectId, view })
   const row = data as Record<string, unknown> | null
   const code = row?.[column]
   if (typeof code !== 'string') return null
-  const manifest = row?.manifest as { name?: unknown } | undefined
-  return { code, name: typeof manifest?.name === 'string' ? manifest.name : 'Draft' }
+  const manifest = row?.manifest as { name?: unknown; bridgeVersion?: unknown } | undefined
+  return {
+    code,
+    name: typeof manifest?.name === 'string' ? manifest.name : 'Draft',
+    bridgeVersion: typeof manifest?.bridgeVersion === 'string' ? manifest.bridgeVersion : '',
+  }
 }
 
 /** The project's newest published version's manifest: its collections are frozen. */

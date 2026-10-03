@@ -102,7 +102,8 @@ describe('what the professor gets', () => {
     // The fixture's professor view declares course.skills, course.weakSpots, ui.resize and
     // ui.toast. course.weakSpots isn't a bridge method yet, so it isn't offered.
     expect(page.props.allowedMethods).toEqual([
-      'context.get', 'course.skills', 'records.list', 'records.get', 'records.create', 'records.update', 'records.delete', 'ui.resize', 'ui.toast',
+      'context.get', 'course.skills', 'records.list', 'records.get', 'records.create', 'records.update', 'records.delete', 'records.batch',
+      'ui.resize', 'ui.toast',
     ])
   })
 

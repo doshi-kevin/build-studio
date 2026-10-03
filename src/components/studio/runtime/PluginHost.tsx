@@ -8,11 +8,13 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { rosterNamesAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/roster-actions'
 import type { StudioManifest } from '@/lib/studio/manifest'
 import { createBridgeClient } from '@/lib/studio/runtime/bridge-client'
 import { mountPluginFrame, type FrameSnapshot, type StopReason } from '@/lib/studio/runtime/host'
 import type { ToastTone } from '@/lib/studio/runtime/host-methods'
-import { createPreviewBridge } from '@/lib/studio/runtime/preview-bridge'
+import { createPreviewBridge, type PreviewSample } from '@/lib/studio/runtime/preview-bridge'
+import { previewRosterNames } from '@/lib/studio/runtime/preview-roster'
 import type { PluginView } from '@/lib/studio/runtime/protocol'
 
 interface CommonProps {
@@ -38,13 +40,15 @@ interface CommonProps {
   exitLabel?: string
 }
 
-/** Live: requests go to the server for this installation's version. Preview (rule 8.3):
- * requests go to an in-memory bridge with sample data built from the manifest, and never
- * to the server. A builder draft is preview only: it has no installation or version. */
+/** Live: requests go to the server for this installation's version, and the roster's
+ * names come from rosterNamesAction. Preview (rule 8.3): requests go to an in-memory
+ * bridge with the draft's sample data (or placeholders built from the manifest) and the
+ * synthetic class, and never to the server. A builder draft is preview only: it has no
+ * installation or version. */
 type PluginHostProps = CommonProps &
   (
-    | { preview?: undefined; installationId: string; versionId: string }
-    | { preview: StudioManifest; installationId?: string; versionId?: string }
+    | { preview?: undefined; sample?: undefined; installationId: string; versionId: string }
+    | { preview: StudioManifest; sample?: PreviewSample | null; installationId?: string; versionId?: string }
   )
 
 // Plain language only: a stop reason is never shown as a code (ui-design rules).
@@ -81,6 +85,7 @@ export function PluginHost({
   readOnly = false,
   readOnlyNotice,
   preview,
+  sample,
   onReload,
   reloading = false,
   exitHref,
@@ -93,8 +98,19 @@ export function PluginHost({
   useEffect(() => {
     if (!container.current) return
     const live = preview || !installationId || !versionId ? null : createBridgeClient({ installationId, versionId })
-    const bridge = preview ? createPreviewBridge(preview, view) : live
+    const bridge = preview ? createPreviewBridge(preview, view, { sample }) : live
     if (!bridge) return
+    // Only a professor view draws the roster; the host refuses it anywhere else.
+    const liveId = live && view === 'professor' ? installationId : null
+    const rosterNames = preview
+      ? async () => previewRosterNames()
+      : liveId
+        ? async () => {
+            const result = await rosterNamesAction({ installationId: liveId })
+            if ('error' in result) throw new Error(result.error)
+            return result.names
+          }
+        : undefined
     const mounted = mountPluginFrame({
       container: container.current,
       frameUrl,
@@ -112,10 +128,12 @@ export function PluginHost({
       onStopped: (reason) => live?.reportStop(reason),
       // Preview has no server to ask; a live frame checks it can keep running.
       checkStatus: live ? () => live.checkStatus() : undefined,
+      // Names stay on this page; a failed load shows "Unknown student" rather than nothing.
+      rosterNames,
       onChange: setFrame,
     })
     return () => mounted.destroy()
-  }, [frameUrl, title, view, installationId, versionId, allowedMethods, readOnly, preview])
+  }, [frameUrl, title, view, installationId, versionId, allowedMethods, readOnly, preview, sample])
 
   const stopped = frame.status === 'stopped' && frame.reason !== 'destroyed' ? STOPPED[frame.reason] : null
   const starting = frame.status === 'loading' || frame.status === 'handshaking'

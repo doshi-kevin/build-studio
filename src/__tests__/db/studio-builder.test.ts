@@ -280,6 +280,42 @@ describe('committing a snapshot', () => {
     const other = await start(null)
     await expect(sql('update public.studio_plugin_projects set draft_head_hash = $2 where id = $1', [other.project_id, h])).rejects.toThrow(/foreign key|violates/)
   })
+  it('stores the sample data the build wrote, and none for a build without it (Step 11)', async () => {
+    const sample = { attendance: [{ student: 0, data: { status: 'present' } }] }
+    const withSample = await start(null)
+    const t1 = await claim(String(withSample.run_id))
+    const h1 = randomBytes(32).toString('hex')
+    await rpc('studio_builder_end', [withSample.run_id, t1, 'preview_ready', null, { status: 'preview_ready' }, { ...snapshot(h1), sample_data: sample }, 0])
+    const without = await start(null)
+    const t2 = await claim(String(without.run_id))
+    const h2 = randomBytes(32).toString('hex')
+    await rpc('studio_builder_end', [without.run_id, t2, 'preview_ready', null, { status: 'preview_ready' }, snapshot(h2), 0])
+
+    const rows = await sql<{ hash: string; sample_data: unknown }>('select hash, sample_data from public.studio_plugin_snapshots where hash = any($1)', [[h1, h2]])
+    expect(Object.fromEntries(rows.map((r) => [r.hash, r.sample_data]))).toEqual({ [h1]: sample, [h2]: null })
+    expect((await studioDb.loadSnapshot(String(withSample.project_id), h1))?.sampleData).toEqual(sample)
+  })
+
+  it('refuses sample data that isn’t an object, and keeps the run where it was', async () => {
+    const s = await start(null)
+    const token = await claim(String(s.run_id))
+    const h = randomBytes(32).toString('hex')
+    await expect(
+      rpc('studio_builder_end', [s.run_id, token, 'preview_ready', null, { status: 'preview_ready' }, { ...snapshot(h), sample_data: [1, 2] }, 0]),
+    ).rejects.toThrow(/sample_data/)
+    expect(await runRow(String(s.run_id))).toMatchObject({ status: 'running' })
+  })
+
+  it('a run can be reviewing or improving, and nothing else new (Step 11)', async () => {
+    const s = await start(null)
+    await claim(String(s.run_id))
+    for (const phase of ['reviewing', 'improving']) {
+      await sql('update public.studio_plugin_builder_runs set phase = $2 where id = $1', [s.run_id, phase])
+      expect(await runRow(String(s.run_id))).toMatchObject({ phase })
+    }
+    await expect(sql(`update public.studio_plugin_builder_runs set phase = 'polishing' where id = $1`, [s.run_id])).rejects.toThrow(/phase_check/)
+  })
+
   it('Stop wins over a commit that arrives after it', async () => {
     const s = await start(null)
     const token = await claim(String(s.run_id))

@@ -9,7 +9,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { parseManifest } from '@/lib/studio/manifest'
-import { VENDOR_V1_SHA256 } from '@/lib/studio/kit/vendor-hash'
+import { VENDOR_V1_SHA256, VENDOR_V2_SHA256 } from '@/lib/studio/kit/vendor-hash'
 import { artifactHash, canonicalJson } from '@/lib/studio/validator/artifact'
 import { GOOD, GOOD_MANIFEST, STATIC_BAD, type FixtureArtifact } from '@/lib/studio/validator/fixtures'
 import { deterministicPurpose, evaluatePurpose, type PurposeClassification, type PurposeClassifier } from '@/lib/studio/validator/purpose'
@@ -439,5 +439,9 @@ describe('the pinned runtime vendor file', () => {
   it('is exactly the v1 file recorded when it was built (rule 8.7)', () => {
     const file = readFileSync(join(process.cwd(), 'public/studio-runtime/v1/vendor.js'), 'utf8')
     expect(createHash('sha256').update(file).digest('hex')).toBe(VENDOR_V1_SHA256)
+  })
+  it('is exactly the v2 file recorded when it was built', () => {
+    const file = readFileSync(join(process.cwd(), 'public/studio-runtime/v2/vendor.js'), 'utf8')
+    expect(createHash('sha256').update(file).digest('hex')).toBe(VENDOR_V2_SHA256)
   })
 })

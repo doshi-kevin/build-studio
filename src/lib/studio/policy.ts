@@ -6,7 +6,7 @@
 import type { SectionRole } from '@/lib/auth/section-access'
 
 export type ViewerRole = SectionRole | 'student'
-export type CollectionAccess = 'perStudent' | 'shared' | 'staffOnly'
+export type CollectionAccess = 'perStudent' | 'staffPerStudent' | 'shared' | 'staffOnly'
 export type RecordOperation = 'list' | 'get' | 'create' | 'update' | 'delete'
 export type InstallationState = 'active' | 'archived'
 /** `readOnly` whenever the viewer may not write: an archived installation or section, a
@@ -22,13 +22,15 @@ export type Decision =
       allow: true
       /** 'self': every query is filtered to records the viewer owns. */
       ownerFilter: 'self' | 'none'
-      /** 'self': a created record is owned by the viewer. */
-      ownerStamp: 'self' | 'none'
+      /** 'self': a created record is owned by the viewer. 'student': by the student the
+       * request names, resolved from a handle by the record service. */
+      ownerStamp: 'self' | 'none' | 'student'
     }
 
 const DENY: Decision = { allow: false }
 const READ_ALL: Decision = { allow: true, ownerFilter: 'none', ownerStamp: 'none' }
 const OWN: Decision = { allow: true, ownerFilter: 'self', ownerStamp: 'self' }
+const ABOUT_STUDENT: Decision = { allow: true, ownerFilter: 'none', ownerStamp: 'student' }
 
 const isRead = (op: RecordOperation) => op === 'list' || op === 'get'
 
@@ -47,6 +49,8 @@ export function decide(
 
   if (role === 'student') {
     if (access === 'perStudent') return OWN
+    // A student reads what staff recorded about them, and writes none of it.
+    if (access === 'staffPerStudent') return isRead(operation) ? OWN : DENY
     if (access === 'shared') return isRead(operation) ? READ_ALL : DENY
     return DENY // staffOnly never reaches a student (rule 5.2)
   }
@@ -55,5 +59,6 @@ export function decide(
   if (isRead(operation)) return READ_ALL
   // A perStudent record is the student's own work. Staff don't write it in v1.
   if (access === 'perStudent') return DENY
-  return writesAsStaff(role) ? READ_ALL : DENY
+  if (!writesAsStaff(role)) return DENY
+  return access === 'staffPerStudent' ? ABOUT_STUDENT : READ_ALL
 }

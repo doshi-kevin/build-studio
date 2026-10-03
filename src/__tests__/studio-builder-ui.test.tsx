@@ -5,7 +5,7 @@
  * builder follows the newest run from the progress route.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import type { ProgressRead } from '@/lib/studio/builder/service'
 
@@ -31,7 +31,8 @@ vi.mock('@/components/studio/runtime/PluginHost', () => ({ PluginHost: () => nul
 
 const actions = await import('@/app/(dashboard)/professor/courses/[sectionId]/studio/actions')
 const { toast } = await import('sonner')
-const { ApprovalCard, EndingCard, QuestionCard, ProgressLines } = await import('@/components/studio/builder/RunCards')
+const { ApprovalCard, EndingCard, QuestionCard, ProgressLines, RunTimeline } = await import('@/components/studio/builder/RunCards')
+const { StudioPreview } = await import('@/components/studio/builder/StudioPreview')
 const { StudioChat } = await import('@/components/studio/builder/StudioChat')
 const { StudioBuilder } = await import('@/components/studio/builder/StudioBuilder')
 const { StudioWorkspace } = await import('@/components/studio/builder/StudioWorkspace')
@@ -140,6 +141,110 @@ describe('progress and Stop', () => {
   it('says Scholera is unreachable even before the first progress read answers', () => {
     render(<ProgressLines working={false} loaded={false} unreachable stopping={false} onStop={vi.fn()} events={[]} />)
     expect(screen.getByText(/Can’t reach Scholera right now/)).toBeTruthy()
+  })
+})
+
+describe('the timeline after a run ends', () => {
+  const events = [
+    { seq: 1, label: 'Understanding your request', outcome: 'done' as const },
+    { seq: 2, label: 'Building the student view', outcome: 'done' as const },
+    { seq: 3, label: 'Building the student view', outcome: 'done' as const },
+    { seq: 4, label: 'Checks passed', outcome: 'done' as const },
+  ]
+  const ended = progress({ status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD, passed: true }), events })
+
+  it('stays under the ending card, closed, and opens from the keyboard', () => {
+    render(chat({ current: following(ended) }))
+    const toggle = screen.getByRole('button', { name: 'What Athena did (3 steps)' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('Checks passed')).toBeNull()
+    // The ending comes first in the log; the steps follow it.
+    expect(screen.getByText('Preview ready.').compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Checks passed')).toBeTruthy()
+    expect(screen.getAllByText('Building the student view')).toHaveLength(1)
+    // While working, the live lines show instead; once ended they don't.
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  })
+  it('a run with no steps to show has no timeline', () => {
+    const { container } = render(<RunTimeline events={[]} />)
+    expect(container.textContent).toBe('')
+  })
+})
+
+describe('Athena’s plan', () => {
+  const plan = { goal: 'An attendance tracker where you mark each student.', professor: ['Mark each student present or absent'], student: ['See your own attendance'] }
+  it('shows the goal and each view’s features, labelled as Athena’s, while building and after', () => {
+    const { rerender } = render(chat({ current: following(progress({ plan, events: [{ seq: 1, label: 'Planning the tool', outcome: 'done' }] })) }))
+    const card = screen.getByRole('region', { name: 'Athena’s plan' })
+    expect(within(card).getByText(plan.goal)).toBeTruthy()
+    expect(within(card).getByText('Professor view')).toBeTruthy()
+    expect(within(card).getByText('Mark each student present or absent')).toBeTruthy()
+    expect(within(card).getByText('See your own attendance')).toBeTruthy()
+    rerender(chat({ current: following(progress({ plan, status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD }) })) }))
+    expect(screen.getByRole('region', { name: 'Athena’s plan' })).toBeTruthy()
+  })
+  it('renders model text as text, and leaves out a view the plan doesn’t describe', () => {
+    render(chat({ current: following(progress({ plan: { goal: '<b>Flashcards</b>', professor: [], student: ['Flip cards'] } })) }))
+    const card = screen.getByRole('region', { name: 'Athena’s plan' })
+    expect(within(card).getByText('<b>Flashcards</b>')).toBeTruthy()
+    expect(card.querySelector('b')).toBeNull()
+    expect(within(card).queryByText('Professor view')).toBeNull()
+  })
+  it('a run without a plan shows no plan card', () => {
+    render(chat({ current: following(progress()) }))
+    expect(screen.queryByRole('region', { name: 'Athena’s plan' })).toBeNull()
+  })
+})
+
+describe('the preview pane', () => {
+  type PreviewProps = ComponentProps<typeof StudioPreview>
+  const preview = (over: Partial<PreviewProps> = {}) => (
+    <StudioPreview sectionId={SECTION} pluginProjectId="p1" snapshotHash={HEAD} mode="professor" device="desktop" onModeChange={vi.fn()} onDeviceChange={vi.fn()} {...over} />
+  )
+
+  it('before the first draft, says what will appear here', () => {
+    render(preview({ snapshotHash: null }))
+    expect(screen.getByText('Your tool appears here')).toBeTruthy()
+    expect(screen.getByText(/the professor view and the student view run here on sample data/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Reload preview' })).toBeNull()
+    expect(actions.draftPreviewAction).not.toHaveBeenCalled()
+  })
+  it('while the first build runs, shows each view as a placeholder, not an empty pane', () => {
+    const { container } = render(preview({ snapshotHash: null, building: true, mode: 'split' }))
+    expect(screen.getByText(/building your first draft/)).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Professor view' })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Student view' })).toBeTruthy()
+    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy()
+    expect(screen.queryByText('Your tool appears here')).toBeNull()
+  })
+  it('marks a new draft as updated, keeps the chosen view, and settles the highlight', () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender, container } = render(preview())
+      // The draft the builder opened on is not an update.
+      expect(screen.queryByText(/Updated/)).toBeNull()
+      const NEXT = 'b'.repeat(64)
+      rerender(preview({ snapshotHash: NEXT }))
+      expect(screen.getByText(/Updated/)).toBeTruthy()
+      expect(container.querySelector('[data-updated]')).toBeTruthy()
+      expect(actions.draftPreviewAction).toHaveBeenLastCalledWith({ sectionId: SECTION, pluginProjectId: 'p1', snapshotHash: NEXT, view: 'professor' })
+      expect(screen.queryByRole('region', { name: 'Student view' })).toBeNull()
+      act(() => vi.advanceTimersByTime(2400))
+      expect(container.querySelector('[data-updated]')).toBeNull()
+      expect(screen.getByText(/Updated/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('Reload asks for the same draft again', () => {
+    render(preview())
+    expect(actions.draftPreviewAction).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Reload preview' }))
+    expect(actions.draftPreviewAction).toHaveBeenCalledTimes(2)
+    expect(actions.draftPreviewAction).toHaveBeenLastCalledWith({ sectionId: SECTION, pluginProjectId: 'p1', snapshotHash: HEAD, view: 'professor' })
   })
 })
 

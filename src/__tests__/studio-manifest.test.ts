@@ -61,7 +61,7 @@ describe('version', () => {
   })
 
   it('rejects a bridge version the platform does not serve', () => {
-    expect(issuesAfter('bridgeVersion', 'v2')).toEqual([expect.stringMatching(/^bridgeVersion: /)])
+    expect(issuesAfter('bridgeVersion', 'v3')).toEqual([expect.stringMatching(/^bridgeVersion: /)])
   })
 
   it.each([0, 3, '1'])('rejects manifest format %j, which it does not know', (manifestVersion) => {
@@ -86,6 +86,16 @@ describe('capabilities', () => {
     ])
   })
 
+  it('keeps the roster out of the student view, and lets either view read published assignments', () => {
+    expect(issuesAfter('views.student.capabilities', [...studentCaps, 'course.roster'])).toEqual([
+      'views.student.capabilities.2: course.roster isn’t available in the student view',
+    ])
+    const both = structuredClone(exitTicket)
+    both.views.student.capabilities.push('course.assignments')
+    both.views.professor.capabilities.push('course.roster', 'course.assignments')
+    expect(parseManifest(both).ok).toBe(true)
+  })
+
   it('every capability has a label a professor can read and at least one view', () => {
     for (const c of Object.values(CAPABILITIES)) {
       expect(c.label.length).toBeGreaterThan(5)
@@ -105,6 +115,14 @@ describe('collections', () => {
     expect(issuesAfter('collections.responses.fields.answer', 'html')).toEqual([
       expect.stringMatching(/^collections\.responses\.fields\.answer: /),
     ])
+  })
+
+  it('accepts staffPerStudent: staff write about one student, who reads only their own', () => {
+    const result = parseManifest({
+      ...exitTicket,
+      collections: { ...exitTicket.collections, attendance: { access: 'staffPerStudent', fields: { status: 'text' } } },
+    })
+    expect(result).toMatchObject({ ok: true, manifest: { collections: { attendance: { access: 'staffPerStudent' } } } })
   })
 
   it('rejects an unknown access rule', () => {

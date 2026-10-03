@@ -15,6 +15,8 @@
 import ts from 'typescript'
 import type { StudioManifestV2 } from '../manifest'
 import { PLUGIN_PATHS, type PluginPath } from './paths'
+import { sampleTexts } from './sample-data'
+import type { SampleData } from './work'
 
 /** A source the builder read, with its current text and disclosure class. */
 export interface GuardSource {
@@ -28,7 +30,7 @@ export interface GuardSource {
 export interface GuardHit {
   key: string
   label: string
-  file: PluginPath | 'manifest'
+  file: PluginPath | 'manifest' | 'sample'
 }
 
 export interface GuardResult {
@@ -94,12 +96,14 @@ function containsRun(hay: readonly string[], needle: readonly string[]): boolean
 
 /** The guard over one working copy: each view and the manifest against every unopened source. */
 export function findCopies(
-  work: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>> },
+  work: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample?: SampleData | null },
   sources: readonly GuardSource[],
 ): GuardResult {
-  const streams: { file: PluginPath | 'manifest'; words: string[] }[] = [
+  const streams: { file: PluginPath | 'manifest' | 'sample'; words: string[] }[] = [
     ...PLUGIN_PATHS.flatMap((p) => (typeof work.files[p] === 'string' ? [{ file: p, words: viewWords(p, work.files[p]!) }] : [])),
     { file: 'manifest' as const, words: manifestWords(work.manifest) },
+    // Sample records are shown in the preview, so their text is held to the same guard.
+    { file: 'sample' as const, words: sampleTexts(work.sample ?? null).flatMap(words) },
   ]
   const sets = streams.map((s) => ({ ...s, set: shingleSet(s.words) }))
   const copies: GuardHit[] = []
@@ -114,7 +118,7 @@ export function findCopies(
       continue
     }
     const own = shingleSet(w)
-    let best: { file: PluginPath | 'manifest'; shared: number } | null = null
+    let best: { file: PluginPath | 'manifest' | 'sample'; shared: number } | null = null
     for (const s of sets) {
       let shared = 0
       for (const sh of own) if (s.set.has(sh)) shared += 1

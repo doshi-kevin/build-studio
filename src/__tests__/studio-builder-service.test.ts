@@ -113,8 +113,48 @@ describe('who may call the builder', () => {
       { seq: 4, kind: 'tool', tool: 'x', toolCallId: '1.2', status: 'done', label: 'made.up', argsSummary: {}, resultSummary: {}, ms: 1 },
     ] as never)
     const p = await service.readProgress(RUN, 0)
-    expect(p!.events.map((e) => e.label)).toEqual(['Understanding your request', 'Editing the student view', 'That step didn’t work, so I’m trying another way'])
+    expect(p!.events.map((e) => e.label)).toEqual(['Understanding your request', 'Refining the student view', 'That step didn’t work, so I’m trying another way'])
     expect(JSON.stringify(p)).not.toMatch(/edit_file|invalid_args|views\/student\.tsx|gemini/)
+  })
+  it('a build that reviews its design reads as real steps, with the bookkeeping ones left out', async () => {
+    const step = (seq: number, label: string, path?: string) => ({ seq, kind: 'tool', tool: 'x', toolCallId: `1.${seq}`, status: 'done', label, argsSummary: path ? { path } : {}, resultSummary: {}, ms: 1 })
+    vi.mocked(db.listBuilderSteps).mockResolvedValue([
+      step(1, 'turn.understanding'), step(2, 'material.searched'), step(3, 'plan.submitted'), step(4, 'manifest.applied'), step(5, 'turn.next'),
+      step(6, 'file.written', 'views/professor.tsx'), step(7, 'sample.written'), step(8, 'check.passed'), step(9, 'preview.rendered'),
+      step(10, 'review.changes'), step(11, 'improve.round'), step(12, 'file.edited', 'views/student.tsx'), step(13, 'check.passed'),
+      step(14, 'review.skipped'), step(15, 'review.ready'), step(16, 'run.finishing'),
+    ] as never)
+    const p = await service.readProgress(RUN, 0)
+    expect(p!.events.map((e) => e.label)).toEqual([
+      'Understanding your request', 'Reading your course', 'Planning the tool', 'Setting up the tool’s data', 'Building the professor view',
+      'Adding sample data for the preview', 'Checks passed', 'Rendering the preview', 'Found improvements to make', 'Improving the interface',
+      'Refining the student view', 'Checks passed', 'Design review passed', 'Preparing your preview',
+    ])
+  })
+})
+
+describe('the plan in a progress read', () => {
+  const plan = {
+    goal: 'An attendance tracker where you mark each student.',
+    files_to_change: ['views/professor.tsx', 'views/student.tsx'],
+    manifest_changes: [], capabilities_needed: ['course.roster'], checks: [],
+    professor_view: ['Mark each student present, late or absent', 'See today’s totals'],
+    student_view: ['See your own attendance record'],
+    requirements: ['Professor can mark a student late', 'Student cannot see other students'],
+  }
+  it('gives the goal and each view’s features, and nothing else from the plan', async () => {
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(run({ plan }) as never)
+    const p = await service.readProgress(RUN, 0)
+    expect(p!.plan).toEqual({ goal: plan.goal, professor: plan.professor_view, student: plan.student_view })
+    expect(JSON.stringify(p)).not.toMatch(/course\.roster|views\/professor\.tsx|Student cannot/)
+  })
+  it('reads a plan stored before the view features existed, and none at all', async () => {
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(run({ plan: { goal: 'Flashcards.', files_to_change: ['views/student.tsx'], manifest_changes: [], capabilities_needed: [], checks: [] } }) as never)
+    expect((await service.readProgress(RUN, 0))!.plan).toEqual({ goal: 'Flashcards.', professor: [], student: [] })
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(run({ plan: { goal: 7, professor_view: ['x'] } }) as never)
+    expect((await service.readProgress(RUN, 0))!.plan).toBeNull()
+    vi.mocked(db.loadBuilderRun).mockResolvedValue(run() as never)
+    expect((await service.readProgress(RUN, 0))!.plan).toBeNull()
   })
 })
 
@@ -210,7 +250,7 @@ describe('draft preview', () => {
     expect(ticket.verifyDraftFrameTicket(ticket.signDraftFrameTicket({ projectId: PROJECT, hash, view: 'student', expiresAt: Date.now() - 1 }, SECRET), SECRET)).toBeNull()
   })
   it('the frame route serves only the ticket’s own project, view and snapshot, and nothing while paused', async () => {
-    vi.mocked(db.loadSnapshotBundle).mockResolvedValue({ code: "'use strict';(function(){})()", name: 'Cards' })
+    vi.mocked(db.loadSnapshotBundle).mockResolvedValue({ code: "'use strict';(function(){})()", name: 'Cards', bridgeVersion: 'v2' })
     const t = ticket.signDraftFrameTicket({ projectId: PROJECT, hash, view: 'student', expiresAt: Date.now() + 60_000 }, SECRET)
     expect((await draftFrameResponse('runtime.test:3001', PROJECT, 'student', t)).status).toBe(200)
     expect((await draftFrameResponse('runtime.test:3001', crypto.randomUUID(), 'student', t)).status).toBe(404)

@@ -36,9 +36,19 @@ export interface ModelUsage {
   reasoning: number
 }
 
+/** A rendered screenshot for the design review. Bounded by the renderer and the harness
+ * (STUDIO_BUILDER_REVIEW_IMAGE_*); it shows the plugin on synthetic data only. */
+export interface ModelImage {
+  label: string
+  mediaType: 'image/jpeg' | 'image/png'
+  bytes: Uint8Array
+}
+
 export interface ModelStepInput {
   system: string
   prompt: string
+  /** Only the design review sends images. Each is preceded by its label in the message. */
+  images?: ModelImage[]
   tools: ModelToolDecl[]
   maxOutputTokens: number
   abortSignal: AbortSignal
@@ -112,10 +122,29 @@ export function createGeminiModel(modelId = STUDIO_BUILDER_MODEL): AgentModel {
       const tools: ToolSet = Object.fromEntries(input.tools.map((t) => [t.name, tool({ description: t.description, inputSchema: t.inputSchema })]))
       const timeout = AbortSignal.timeout(input.timeoutMs)
       try {
+        const images = input.images ?? []
+        // Text-only turns keep the plain prompt; a turn with images sends one user message
+        // whose parts are the prompt, then each label followed by its image.
+        const content = images.length
+          ? {
+              messages: [
+                {
+                  role: 'user' as const,
+                  content: [
+                    { type: 'text' as const, text: input.prompt },
+                    ...images.flatMap((img) => [
+                      { type: 'text' as const, text: img.label },
+                      { type: 'image' as const, image: img.bytes, mediaType: img.mediaType },
+                    ]),
+                  ],
+                },
+              ],
+            }
+          : { prompt: input.prompt }
         const res = await generateText({
           model: google(modelId),
           system: input.system,
-          prompt: input.prompt,
+          ...content,
           tools,
           toolChoice: 'required',
           // One step: the harness runs the loop, one turn per call, under its own budgets.
@@ -123,7 +152,13 @@ export function createGeminiModel(modelId = STUDIO_BUILDER_MODEL): AgentModel {
           maxOutputTokens: input.maxOutputTokens,
           maxRetries: 2,
           abortSignal: AbortSignal.any([input.abortSignal, timeout]),
-          providerOptions: { google: { thinkingConfig: { thinkingLevel: 'low', includeThoughts: false } } },
+          providerOptions: {
+            google: {
+              thinkingConfig: { thinkingLevel: 'low', includeThoughts: false },
+              // Fixes what each screenshot costs (STUDIO_BUILDER_REVIEW_IMAGE_TOKENS).
+              ...(images.length ? { mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' } : {}),
+            },
+          },
         })
         return {
           toolCalls: res.toolCalls.map((c) => ({ name: c.toolName, input: c.input, invalid: (c as { invalid?: boolean }).invalid === true })),

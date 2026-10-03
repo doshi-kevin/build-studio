@@ -137,7 +137,18 @@ export function scriptedModel(script: ScriptedTurn[]): AgentModel & { prompts: M
 
 export const call = (name: string, input: unknown = {}) => ({ name, input })
 export const plan = (files: PluginPath[] = ['views/student.tsx', 'views/professor.tsx']) =>
-  call('submit_plan', { goal: 'Flashcards for this week’s terms.', files_to_change: files, manifest_changes: ['Add a cards collection'], capabilities_needed: [], checks: ['Both views show loading, empty and error states'] })
+  call('submit_plan', {
+    goal: 'Flashcards for this week’s terms.',
+    files_to_change: files,
+    manifest_changes: ['Add a cards collection'],
+    capabilities_needed: [],
+    checks: ['Both views show loading, empty and error states'],
+    professor_view: ['Add and remove cards'],
+    student_view: ['Flip through the cards'],
+    data: ['cards (shared): the deck the professor writes'],
+    requirements: ['Professor can add a card', 'Student can flip a card'],
+    enhancements: [],
+  })
 export const proposeManifest = (manifest: unknown = FLASHCARDS_MANIFEST) => call('propose_manifest_change', { manifest_json: JSON.stringify(manifest) })
 export const write = (path: PluginPath, content: string) => call('write_file', { path, content })
 export const finish = (status: 'completed' | 'blocked' = 'completed', summary = 'Built flashcards.') => call('finish', { status, summary, open_questions: [] })

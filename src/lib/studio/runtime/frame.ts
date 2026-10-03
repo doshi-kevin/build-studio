@@ -7,6 +7,9 @@
  * installation and view as the ticket, and Studio must not be switched off (the kill
  * switch, read fresh, failing closed). Every failure is the same plain 404, so the route
  * can't be used to probe which installations exist.
+ *
+ * The document loads the runtime of the bundle's own bridge version (frame-document.ts).
+ * A version whose bridge the platform no longer serves gets the same 404.
  */
 import 'server-only'
 import { randomBytes } from 'node:crypto'
@@ -15,6 +18,7 @@ import { loadSnapshotBundle, loadVersionBundle } from '../db'
 import { frameHeaders, frameHtml } from './frame-document'
 import { frameTicketSecret, verifyDraftFrameTicket, verifyFrameTicket } from './frame-ticket'
 import { studioOrigins } from './origin'
+import { isSupportedRuntime } from './protocol'
 
 const notFound = () =>
   new Response('Not found', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
@@ -29,7 +33,7 @@ export async function frameResponse(host: string, installationId: string, view: 
   if (await studioKillSwitchEngaged()) return notFound()
 
   const bundle = await loadVersionBundle(ticket.versionId, ticket.view)
-  if (!bundle) return notFound()
+  if (!bundle || !isSupportedRuntime(bundle.bridgeVersion)) return notFound()
 
   const input = {
     appOrigin: origins.app,
@@ -37,6 +41,7 @@ export async function frameResponse(host: string, installationId: string, view: 
     nonce: randomBytes(18).toString('base64'),
     bundle: bundle.code,
     title: bundle.name,
+    runtime: bundle.bridgeVersion,
   }
   return new Response(frameHtml(input), { status: 200, headers: frameHeaders(input) })
 }
@@ -54,7 +59,7 @@ export async function draftFrameResponse(host: string, projectId: string, view: 
   if (await studioKillSwitchEngaged()) return notFound()
 
   const bundle = await loadSnapshotBundle(ticket.projectId, ticket.hash, ticket.view)
-  if (!bundle) return notFound()
+  if (!bundle || !isSupportedRuntime(bundle.bridgeVersion)) return notFound()
 
   const input = {
     appOrigin: origins.app,
@@ -62,6 +67,7 @@ export async function draftFrameResponse(host: string, projectId: string, view: 
     nonce: randomBytes(18).toString('base64'),
     bundle: bundle.code,
     title: bundle.name,
+    runtime: bundle.bridgeVersion,
   }
   return new Response(frameHtml(input), { status: 200, headers: frameHeaders(input) })
 }

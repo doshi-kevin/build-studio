@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BUNDLE_ELEMENT_ID, frameCsp, frameHeaders, frameHtml, escapeScriptText } from '@/lib/studio/runtime/frame-document'
 import { classifyRuntimeRequest, requestHost, studioOrigins } from '@/lib/studio/runtime/origin'
-import { parseFrameMessage } from '@/lib/studio/runtime/protocol'
+import { parseFrameMessage, parseRosterPayload } from '@/lib/studio/runtime/protocol'
 import type { StudioViewer } from '@/lib/studio/context'
 
 vi.mock('@/lib/studio/context', () => ({ resolveViewer: vi.fn(), candidateVersion: vi.fn() }))
@@ -24,7 +24,7 @@ const APP = 'http://localhost:3000'
 const RUNTIME = 'http://127.0.0.1:3000'
 const SECRET = 'a-test-only-frame-ticket-secret-of-48-characters!!'
 const NONCE = 'AAECAwQFBgcICQoLDA0ODxAR'
-const INPUT = { appOrigin: APP, runtimeOrigin: RUNTIME, nonce: NONCE, bundle: 'ScholeraStudio.request("x")', title: 'Exit ticket' }
+const INPUT = { appOrigin: APP, runtimeOrigin: RUNTIME, nonce: NONCE, bundle: 'ScholeraStudio.request("x")', title: 'Exit ticket', runtime: 'v1' as const }
 
 const directives = (csp: string) => Object.fromEntries(csp.split('; ').map((d) => [d.split(' ')[0], d.split(' ').slice(1).join(' ')]))
 
@@ -78,8 +78,21 @@ describe('frame security policy', () => {
     ['an app origin with a path', { ...INPUT, appOrigin: `${APP}/x` }],
     ['a non-http runtime origin', { ...INPUT, runtimeOrigin: 'javascript:alert(1)' }],
     ['a nonce that could break the header', { ...INPUT, nonce: "abc'; script-src *" }],
+    ['a runtime that isn’t a version', { ...INPUT, runtime: '../app' as 'v1' }],
   ])('refuses to build with %s', (_label, bad) => {
     expect(() => frameHeaders(bad)).toThrow()
+    expect(() => frameHtml(bad)).toThrow()
+  })
+
+  it('a v2 bundle gets the v2 runtime files and nothing from v1', () => {
+    const v2 = directives(frameCsp({ ...INPUT, runtime: 'v2' }))
+    expect(v2['script-src']).toBe(`${RUNTIME}/studio-runtime/v2/runtime.js ${RUNTIME}/studio-runtime/v2/vendor.js 'nonce-${NONCE}'`)
+    expect(v2['style-src']).toBe(`${RUNTIME}/studio-runtime/v2/`)
+    expect(v2['font-src']).toBe(`${RUNTIME}/studio-runtime/v2/fonts/`)
+    const html = frameHtml({ ...INPUT, runtime: 'v2' })
+    expect(html).toContain(`<link rel="stylesheet" href="${RUNTIME}/studio-runtime/v2/kit.css">`)
+    expect(html).toContain(`<script src="${RUNTIME}/studio-runtime/v2/runtime.js">`)
+    expect(html).not.toContain('/studio-runtime/v1/')
   })
 })
 
@@ -144,6 +157,8 @@ describe('origins', () => {
   it.each([
     ['127.0.0.1:3000', '/studio-frame/v1/x/student', 'serve-runtime'],
     ['127.0.0.1:3000', '/studio-runtime/v1/runtime.js', 'serve-runtime'],
+    ['127.0.0.1:3000', '/studio-runtime/v2/kit.css', 'serve-runtime'],
+    ['127.0.0.1:3000', '/studio-runtime/v3/runtime.js', 'not-found'],
     ['127.0.0.1:3000', '/login', 'not-found'],
     ['127.0.0.1:3000', '/api/professor-assistant', 'not-found'],
     ['127.0.0.1:3000', '/_next/data/x.json', 'not-found'],
@@ -203,6 +218,72 @@ describe('bridge envelope', () => {
     ['a method with no namespace', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'eval', args: null }],
     ['oversized args', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'a.b', args: 'x'.repeat(MAX + 1) }],
   ])('rejects %s', (_label, raw) => {
+    expect(parseFrameMessage(raw, MAX)).toBeNull()
+  })
+})
+
+describe('v2 roster and size messages', () => {
+  const SESSION = crypto.randomUUID()
+  const MAX = 64 * 1024
+  const HANDLE = `st_${'a'.repeat(20)}`
+  const PAYLOAD = {
+    label: 'Attendance',
+    sort: 'name',
+    searchable: true,
+    columns: [{ key: 'status', header: 'Today' }, { key: 'note', header: 'Note' }],
+    rows: [
+      {
+        student: HANDLE,
+        cells: {
+          status: { kind: 'choice', value: 'present', options: [{ value: 'present', label: 'Present', tone: 'success' }, { value: 'absent', label: 'Absent', tone: 'danger' }] },
+          note: { kind: 'text', text: 'Arrived late' },
+        },
+      },
+    ],
+    emptyText: 'No students yet.',
+  }
+  const msg = (extra: Record<string, unknown>) => ({ scholera: 'bridge', v: 1, session: SESSION, ...extra })
+  const withRow = (cells: Record<string, unknown>, student = HANDLE) => ({ ...PAYLOAD, rows: [{ student, cells }] })
+
+  it('accepts render, place, remove and size exactly as 3.4 defines them', () => {
+    expect(parseFrameMessage(msg({ type: 'roster', op: 'render', slot: 'r1', payload: PAYLOAD }), MAX)).toEqual({ type: 'roster', session: SESSION, op: 'render', slot: 'r1', payload: PAYLOAD })
+    const rect = { x: 0, y: 120, width: 640, height: 400 }
+    expect(parseFrameMessage(msg({ type: 'roster', op: 'place', slot: 'r1', rect }), MAX)).toEqual({ type: 'roster', session: SESSION, op: 'place', slot: 'r1', rect })
+    expect(parseFrameMessage(msg({ type: 'roster', op: 'remove', slot: 'r1' }), MAX)).toEqual({ type: 'roster', session: SESSION, op: 'remove', slot: 'r1' })
+    expect(parseFrameMessage(msg({ type: 'size', height: 812 }), MAX)).toEqual({ type: 'size', session: SESSION, height: 812 })
+    for (const cell of [
+      { kind: 'badge', text: 'Excused', tone: 'warning' },
+      { kind: 'select', value: null, placeholder: 'Grade', options: [{ value: 'a', label: 'A' }] },
+      { kind: 'button', label: 'Excuse', value: 'excuse', variant: 'secondary' },
+    ]) {
+      expect(parseRosterPayload(withRow({ status: cell }))).not.toBeNull()
+    }
+  })
+
+  it.each([
+    ['an extra payload field', { ...PAYLOAD, html: '<b>x</b>' }],
+    ['an extra cell field', withRow({ note: { kind: 'text', text: 'x', style: 'color:red' } })],
+    ['a cell for a column that doesn’t exist', withRow({ other: { kind: 'text', text: 'x' } })],
+    ['text over its limit', withRow({ note: { kind: 'text', text: 'x'.repeat(61) } })],
+    ['a user ID instead of a handle', withRow({}, crypto.randomUUID())],
+    ['the same student twice', { ...PAYLOAD, rows: [PAYLOAD.rows[0], PAYLOAD.rows[0]] }],
+    ['five columns', { ...PAYLOAD, columns: ['a', 'b', 'c', 'd', 'e'].map((key) => ({ key, header: key })) }],
+    ['a choice with one option', withRow({ status: { kind: 'choice', value: null, options: [{ value: 'p', label: 'P', tone: 'success' }] } })],
+    ['an unknown tone', withRow({ status: { kind: 'badge', text: 'x', tone: 'red' } })],
+    ['an unknown cell kind', withRow({ status: { kind: 'html', text: 'x' } })],
+    ['an unknown sort', { ...PAYLOAD, sort: 'id' }],
+  ])('refuses a payload with %s', (_label, payload) => {
+    expect(parseRosterPayload(payload)).toBeNull()
+    expect(parseFrameMessage(msg({ type: 'roster', op: 'render', slot: 'r1', payload }), MAX)).toBeNull()
+  })
+
+  it.each([
+    ['a slot that isn’t a short token', msg({ type: 'roster', op: 'remove', slot: 'R-1' })],
+    ['an unknown op', msg({ type: 'roster', op: 'names', slot: 'r1' })],
+    ['a rect with a missing side', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 0, y: 0, width: 10 } })],
+    ['a negative height', msg({ type: 'size', height: -1 })],
+    ['a height that isn’t a number', msg({ type: 'size', height: '900px' })],
+  ])('refuses %s', (_label, raw) => {
     expect(parseFrameMessage(raw, MAX)).toBeNull()
   })
 })
@@ -289,7 +370,7 @@ describe('frame route', () => {
     vi.stubEnv('STUDIO_RUNTIME_ORIGIN', RUNTIME)
     vi.stubEnv('SITE_URL', APP)
     vi.stubEnv('STUDIO_FRAME_TICKET_SECRET', SECRET)
-    vi.mocked(loadVersionBundle).mockResolvedValue({ code: 'window.probe = 1', name: 'Exit ticket' })
+    vi.mocked(loadVersionBundle).mockResolvedValue({ code: 'window.probe = 1', name: 'Exit ticket', bridgeVersion: 'v1' })
     vi.mocked(studioKillSwitchEngaged).mockResolvedValue(false)
   })
   afterEach(() => vi.unstubAllEnvs())
@@ -341,6 +422,14 @@ describe('frame route', () => {
     expect(res.status).toBe(404)
     expect(await res.text()).toBe('Not found')
     expect(res.headers.get('Content-Security-Policy')).toBeNull()
+  })
+
+  it('loads the runtime of the version’s own bridge, and 404s for a bridge the platform doesn’t serve', async () => {
+    vi.mocked(loadVersionBundle).mockResolvedValue({ code: 'window.probe = 1', name: 'Exit ticket', bridgeVersion: 'v2' })
+    const v2 = await frameResponse('127.0.0.1:3000', installationId, 'student', token())
+    expect(v2.headers.get('Content-Security-Policy')).toContain(`script-src ${RUNTIME}/studio-runtime/v2/runtime.js`)
+    vi.mocked(loadVersionBundle).mockResolvedValue({ code: 'window.probe = 1', name: 'Exit ticket', bridgeVersion: 'v0' })
+    expect((await frameResponse('127.0.0.1:3000', installationId, 'student', token())).status).toBe(404)
   })
 
   it('404s for another installation’s ticket', async () => {

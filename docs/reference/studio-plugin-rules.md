@@ -13,7 +13,7 @@ If you change a rule here, change whichever of those three enforces it in the sa
 | | |
 |---|---|
 | **Status** | Review |
-| **Version** | 4 (2026-10-01: rule 1.2 states what can and can't be blocked) |
+| **Version** | 5 (2026-10-03: rule 2.5 says how a professor view shows names without them entering the frame; rule 3.2 adds records staff write about one student) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-29 |
 
@@ -90,6 +90,8 @@ Protects students from each other, and institutions from each other.
 - **2.3** A plugin sees only what the viewer's role may see. A student's view can read the student's own records and anything the professor marked as visible to the class. The professor's view and the TA or grader view can read the whole section. *Runtime.*
 - **2.4** A plugin version can be installed in several course sections, but each installation belongs to exactly one section. Each installation has its own data, capability approval and state. No installation can read another's, even when both run the same version. The manifest names no institution, course, section or user, so a version carries nothing tied to one section. In version 1, a project can be installed only in sections of its own institution. *Runtime.*
 - **2.5** No user ID, name or email enters a plugin frame, and no section or institution ID either. Anything in a frame must be treated as leakable, because a plugin can always navigate itself to a URL carrying data (appendix N9). Professor views that need to tell students apart get per-installation pseudonymous handles. The frame's own URL does carry its installation and version IDs: they identify no person and are useless without a Scholera session. *Runtime.*
+  - **Handles.** A handle is `st_` and 20 characters of an HMAC of the student's ID under a salt that belongs to one installation and never leaves the server. It means nothing in any other installation, and a plugin can't turn it back into a person. Only professor views get handles; a student's view never sees one.
+  - **Names are drawn by Scholera, on top of the frame.** When a professor view needs a class list with names, the plugin sends Scholera's page the handles and what to show beside each one. The page draws the table itself, in a layer over the frame, with names it loaded from the server for that professor. The plugin learns which button the professor pressed for which handle. It never receives a name, the order of the names, or what the professor typed in the search box. This is not an exception to the rule: nothing in the frame changes.
 
 ## 3. Data and tracking
 
@@ -97,6 +99,7 @@ What gets stored, where, and for how long.
 
 - **3.1** Plugin data lives only in Scholera's storage, never in the frame. The frame can't use browser storage, so anything the platform doesn't hold is gone on reload. The validator rejects code that tries. *Runtime and pre-publish check.*
 - **3.2** Every plugin declares the shape of its data in its manifest: its collections, their fields, and which records belong to a student. The server rejects any write that doesn't match. *Runtime.*
+  - **A record can belong to a student two ways.** The student wrote it (`perStudent`), or course staff wrote it about them (`staffPerStudent`, such as attendance or a check-in note). Either way the student reads only their own and writes none of the second kind. Staff name the student by handle (rule 2.5), and the server checks that the handle is a student of the installation's own section.
 - **3.3** Every record is stamped with its institution, section, installation, plugin version, collection and author by Scholera's trusted server, never by the plugin. The plugin can't forget the institution, because it never supplies it. *Runtime.*
   - **No client reaches plugin storage directly.** Row-level security (the Postgres feature that filters rows by who is asking) is on with no client policies, and client privileges are revoked. That is default deny.
   - **The trusted server decides what each viewer sees.** It reads the collection's access rule from the installation's manifest and the viewer's role in the section. A record doesn't store its own visibility, because a later version's manifest can change a collection's rule.

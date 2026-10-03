@@ -96,6 +96,8 @@ Capabilities are declared per view, not once for the whole plugin. That's what l
 | `context.get` | See this course's name and your role in it | yes | yes |
 | `course.skills` | Read this course's skill list | yes | yes |
 | `course.weakSpots` | See which skills the class is struggling with | **no** (rule 4.1) | yes |
+| `course.roster` | See which students are in this course. Names are shown by Scholera and never given to the tool | **no** (rule 4.1) | yes |
+| `course.assignments` | Read this course's published assignments and due dates | yes | yes |
 | `ui.resize` | Fit itself to the page | yes | yes |
 | `ui.toast` | Show short notifications | yes | yes |
 
@@ -113,8 +115,11 @@ Rule 3.2 requires every plugin to declare the shape of its data. A collection is
 | `access` | Student view | Professor view | Use it for |
 |---|---|---|---|
 | `perStudent` | Reads and writes only records it owns | Reads every student's records | Answers, attempts, reflections |
+| `staffPerStudent` | Reads only records about this student, writes none | Reads every record; professors and TAs write one about a named student | Attendance, check-ins, notes back to one student |
 | `shared` | Reads | Reads and writes | Questions, prompts, settings the class sees |
 | `staffOnly` | Never sent to the frame | Reads and writes | Answer keys (rule 5.2), professor notes |
+
+A `staffPerStudent` create names its student by handle (`student`), as `course.roster` and staff reads return it. A record staff write about a student counts toward the installation's storage, not the student's own allowance.
 
 Fields are `text`, `number` or `boolean`, and every field is required. A collection needs at least one field and allows at most 30.
 

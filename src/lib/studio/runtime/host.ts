@@ -31,6 +31,17 @@
  * hear that, so a running frame also asks `checkStatus` every
  * STUDIO_FRAME_STATUS_INTERVAL_MS: `unavailable` stops it, `stale` freezes it,
  * `readOnly` and `available` set whether writes are refused.
+ *
+ * Runtime v2 (docs/designs/studio/studio-builder-quality.md 3.4). The welcome echoes the
+ * runtime the frame said in its hello, and a v1 frame never gets v2 messages. A v2 frame
+ * may also send:
+ *   size    its content's height; clamped like ui.resize and applied to the iframe.
+ *   roster  a RosterTable placeholder; roster-overlay.ts draws the table, with names,
+ *           over the frame. Only in a professor view whose allowed methods include
+ *           course.roster: anything else is a strike. Names come from `rosterNames`
+ *           and never enter the frame; the frame hears only `event` roster.action.
+ * Neither counts toward the call budget. Each has its own per-second bound, and
+ * messages over it are dropped.
  */
 import {
   envelope,
@@ -41,6 +52,7 @@ import {
   type FrameStatus,
   type HostMessage,
   type PluginView,
+  type RuntimeVersion,
 } from './protocol'
 import {
   STUDIO_BRIDGE_CALLS_PER_MINUTE,
@@ -53,7 +65,12 @@ import {
   STUDIO_TOASTS_PER_MINUTE,
 } from '../limits'
 import { methodSpec } from '../bridge/catalog'
-import { runHostMethod, type ToastTone } from './host-methods'
+import { clampFrameHeight, runHostMethod, type ToastTone } from './host-methods'
+import { createRosterOverlay, type RosterOverlay } from './roster-overlay'
+
+/** Per-second bounds for v2's layout messages (3.4). The kit sends at most 10 of each. */
+const ROSTER_MESSAGES_PER_SECOND = 20
+const SIZE_MESSAGES_PER_SECOND = 10
 
 export type StopReason =
   | 'start-timeout'
@@ -105,6 +122,9 @@ export interface PluginFrameOptions {
   onChange?: (snapshot: FrameSnapshot) => void
   /** Every stop except an intentional destroy, for the server to log. */
   onStopped?: (reason: Exclude<StopReason, 'destroyed'>) => void
+  /** Display names by student handle, for the host-drawn roster (v2, professor view).
+   * Asked once per frame, on the first roster render. Preview passes the synthetic class. */
+  rosterNames?: () => Promise<Record<string, string>>
   limits?: Partial<{
     startTimeoutMs: number
     helloTimeoutMs: number
@@ -113,6 +133,8 @@ export interface PluginFrameOptions {
     rateAbuseMax: number
     toastsPerMinute: number
     statusIntervalMs: number
+    rosterPerSecond: number
+    sizePerSecond: number
   }>
 }
 
@@ -132,6 +154,8 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     rateAbuseMax: STUDIO_FRAME_RATE_ABUSE_MAX,
     toastsPerMinute: STUDIO_TOASTS_PER_MINUTE,
     statusIntervalMs: STUDIO_FRAME_STATUS_INTERVAL_MS,
+    rosterPerSecond: ROSTER_MESSAGES_PER_SECOND,
+    sizePerSecond: SIZE_MESSAGES_PER_SECOND,
     ...options.limits,
   }
 
@@ -151,6 +175,8 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   let loads = 0
   let strikes = 0
   let helloSeen = false
+  let runtime: RuntimeVersion = 'v1'
+  let overlay: RosterOverlay | null = null
   const pending = new Set<string>()
   let frameWindow: Window | null = null
   let readOnly = options.readOnly ?? false
@@ -163,6 +189,10 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   let callsInWindow = 0
   let refusedInWindow = 0
   let toastsInWindow = 0
+  // v2 layout messages: fixed one-second windows.
+  let secondStart = Date.now()
+  let rosterInSecond = 0
+  let sizeInSecond = 0
 
   function snapshot(): FrameSnapshot {
     const counters = { loads, strikes }
@@ -193,6 +223,8 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     clearInterval(heartbeat)
     window.removeEventListener('message', onMessage)
     pending.clear()
+    overlay?.destroy()
+    overlay = null
     iframe.remove()
     if (why !== 'destroyed') options.onStopped?.(why)
     changed()
@@ -211,6 +243,24 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     rollWindow()
     if (callsInWindow >= limits.callsPerMinute) return false
     callsInWindow += 1
+    return true
+  }
+
+  /** False when this second's bound for that kind of message is used up. */
+  function takeLayout(kind: 'roster' | 'size'): boolean {
+    const now = Date.now()
+    if (now - secondStart >= 1000) {
+      secondStart = now
+      rosterInSecond = 0
+      sizeInSecond = 0
+    }
+    if (kind === 'roster') {
+      if (rosterInSecond >= limits.rosterPerSecond) return false
+      rosterInSecond += 1
+      return true
+    }
+    if (sizeInSecond >= limits.sizePerSecond) return false
+    sizeInSecond += 1
     return true
   }
 
@@ -253,7 +303,7 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     clearTimeout(timer)
     session = crypto.randomUUID()
     status = 'ready'
-    post({ type: 'welcome', session, context: { runtime: 'v1', view: options.view, theme: 'light' } })
+    post({ type: 'welcome', session, context: { runtime, view: options.view, theme: 'light' } })
     if (options.checkStatus) heartbeat = setInterval(() => void checkNow(), limits.statusIntervalMs)
     changed()
   }
@@ -280,6 +330,31 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
       options.onToast?.(message, tone)
       return true
     },
+  }
+
+  /** Roster actions go back as handles, column keys and values: what the plugin sent. */
+  function rosterOverlay(): RosterOverlay {
+    overlay ??= createRosterOverlay({
+      container: options.container,
+      names: options.rosterNames,
+      onAction: (data) => {
+        if (running()) post({ type: 'event', session, name: 'roster.action', data })
+      },
+    })
+    return overlay
+  }
+
+  function onRoster(message: Extract<FrameMessage, { type: 'roster' }>) {
+    // Names are for staff, and only for a tool allowed to read the class.
+    if (options.view !== 'professor' || !options.allowedMethods?.includes('course.roster')) return strike()
+    if (!takeLayout('roster')) return
+    if (message.op === 'render') {
+      if (!rosterOverlay().render(message.slot, message.payload)) strike()
+    } else if (message.op === 'place') {
+      overlay?.place(message.slot, message.rect)
+    } else {
+      overlay?.remove(message.slot)
+    }
   }
 
   async function answer(request: Extract<FrameMessage, { type: 'request' }>) {
@@ -346,12 +421,20 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     if (message.type === 'hello') {
       if (helloSeen) return strike()
       if (!isSupportedRuntime(message.runtime)) return stop('unsupported-runtime')
+      runtime = message.runtime
       helloSeen = true
       return welcomeIfReady()
     }
     // Before the welcome, or from an earlier document: not this session.
     if (!running() || message.session !== session) return strike()
     if (message.type === 'crash') return stop('crashed')
+    if (message.type === 'roster' || message.type === 'size') {
+      // v2 messages from a v1 runtime are junk.
+      if (runtime === 'v1') return strike()
+      if (message.type === 'roster') return onRoster(message)
+      if (takeLayout('size')) effects.setHeight(clampFrameHeight(Math.round(message.height)))
+      return
+    }
     void answer(message)
   }
 

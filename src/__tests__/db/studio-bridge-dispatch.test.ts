@@ -32,6 +32,7 @@ const lifecycle = await import('@/lib/studio/lifecycle')
 const { resolveViewer } = await import('@/lib/studio/context')
 const { dispatch } = await import('@/lib/studio/bridge/dispatch')
 const { POST } = await import('@/app/api/studio/bridge/route')
+const { rosterNamesAction } = await import('@/app/(dashboard)/professor/courses/[sectionId]/studio/roster-actions')
 
 const A = FIXTURE.a
 const PROFESSOR = A.users.professor.id
@@ -290,5 +291,142 @@ describe('course.skills and stale frames', () => {
     ok(await lifecycle.rollbackVersion({ sectionId: section, installationId: install, versionId: v1 }))
     expect(await bridge(STUDENT_A, v2, 'records.list', { collection: 'responses' })).toMatchObject({ ok: false, error: { code: 'stale' } })
     expect(await bridge(STUDENT_A, v1, 'records.list', { collection: 'responses' })).toMatchObject({ ok: true })
+  })
+})
+
+// Step 11: a third plugin, an attendance tracker. Staff mark each student by handle; each
+// student reads only their own marks.
+describe('course.roster, staffPerStudent, records.batch and course.assignments', () => {
+  const slug = `ba-${run}`
+  let project = ''
+  let install = ''
+  const attendance = () => ({
+    ...manifest('1.0.0', ['context.get', 'course.assignments'], slug),
+    views: {
+      student: { entry: 'views/student.tsx', capabilities: ['context.get', 'course.assignments'] },
+      professor: { entry: 'views/professor.tsx', capabilities: ['context.get', 'course.roster', 'course.assignments'] },
+    },
+    collections: { ...exitTicket.collections, attendance: { access: 'staffPerStudent', fields: { status: 'text' } } },
+  })
+
+  async function as(userId: string, method: string, args: unknown) {
+    session.userId = userId
+    const viewer = await resolveViewer(install)
+    if (!viewer) return { ok: false as const, code: 'not_available' as const }
+    return dispatch(viewer, { method, args, host: HOST })
+  }
+  const dataOf = <T,>(r: unknown) => (r as { ok: true; data: T }).data
+  let handles: string[] = []
+  const handleOf = async (studentId: string) => {
+    const [row] = await sql<{ id: string }>(
+      `select id from public.studio_plugin_records where installation_id = $1 and owner_id = $2 and collection = 'attendance' limit 1`,
+      [install, studentId],
+    )
+    const list = dataOf<{ id: string; student?: string }[]>(await as(PROFESSOR, 'records.list', { collection: 'attendance' }))
+    return list.find((r) => r.id === row.id)?.student
+  }
+
+  beforeAll(async () => {
+    session.userId = PROFESSOR
+    project = ok(await lifecycle.createProject({ sectionId: section, slug, name: 'Attendance' }))
+    const v1 = ok(await lifecycle.publishVersion({ sectionId: section, projectId: project, manifest: attendance(), source: {}, studentBundle: 's()', professorBundle: 'p()' }))
+    install = ok(await lifecycle.installPlugin({ sectionId: section, versionId: v1 }))
+    const add = (title: string, status: string, due: string | null, graded = true) =>
+      sql(
+        `insert into public.assignments (section_id, institution_id, created_by, title, status, due_at, points, is_graded)
+         values ($1, $2, $3, $4, $5, $6, 20, $7)`,
+        [section, A.institution, PROFESSOR, title, status, due, graded],
+      )
+    await add('Lab 2', 'published', '2026-11-02T17:00:00Z')
+    await add('Lab 1', 'closed', '2026-10-20T17:00:00Z')
+    await add('Reading log', 'published', null, false)
+    await add('Final project (draft)', 'draft', '2026-12-01T17:00:00Z')
+  })
+
+  afterAll(async () => {
+    if (!project) return
+    await sql('delete from public.assignments where section_id = $1', [section])
+    await sql('delete from public.studio_plugin_records where installation_id in (select id from public.studio_plugin_installations where project_id = $1)', [project])
+    await sql('delete from public.studio_plugin_installations where project_id = $1', [project])
+    await sql('delete from public.studio_plugin_versions where project_id = $1', [project])
+    await sql('delete from public.studio_plugin_projects where id = $1', [project])
+  })
+
+  it('course.roster gives staff one handle per enrolled student, sorted, with no IDs or names', async () => {
+    const roster = await as(TA, 'course.roster', null)
+    handles = dataOf<{ students: { handle: string }[] }>(roster).students.map((s) => s.handle)
+    expect(handles).toHaveLength(2)
+    expect(handles).toEqual([...handles].sort())
+    expect(handles.every((h) => /^st_[0-9a-v]{20}$/.test(h))).toBe(true)
+    expect(JSON.stringify(roster)).not.toMatch(UUID)
+    expect(await as(STUDENT_A, 'course.roster', null)).toMatchObject({ ok: false, code: 'not_available' })
+  })
+
+  it('a professor marks a student by handle; the record is the student’s, written by the professor', async () => {
+    const result = await as(PROFESSOR, 'records.create', { collection: 'attendance', data: { status: 'present' }, student: handles[0] })
+    expect(result).toMatchObject({ ok: true, data: { student: handles[0], mine: false } })
+    const [row] = await sql<{ owner_id: string; author_id: string }>('select owner_id, author_id from public.studio_plugin_records where id = $1', [
+      dataOf<{ id: string }>(result).id,
+    ])
+    expect(row.author_id).toBe(PROFESSOR)
+    expect([STUDENT_A, STUDENT_B]).toContain(row.owner_id)
+  })
+
+  it('a handle from nowhere, a student ID, or a student writing are all refused', async () => {
+    expect(await as(PROFESSOR, 'records.create', { collection: 'attendance', data: { status: 'present' }, student: 'st_00000000000000000000' })).toMatchObject({
+      ok: false,
+      code: 'not_available',
+    })
+    expect(await as(PROFESSOR, 'records.create', { collection: 'attendance', data: { status: 'present' }, student: STUDENT_A })).toMatchObject({
+      ok: false,
+      code: 'invalid',
+    })
+    expect(await as(STUDENT_A, 'records.create', { collection: 'attendance', data: { status: 'present' } })).toMatchObject({ ok: false, code: 'not_available' })
+  })
+
+  it('records.batch marks the class in one call, item by item', async () => {
+    const result = await as(TA, 'records.batch', {
+      collection: 'attendance',
+      items: [
+        { op: 'create', data: { status: 'late' }, student: handles[1] },
+        { op: 'create', data: { status: 'late' }, student: 'st_00000000000000000000' },
+        { op: 'create', data: { status: 4 }, student: handles[1] },
+      ],
+    })
+    const { results } = dataOf<{ results: { ok: boolean; code?: string; record?: { student?: string } }[] }>(result)
+    expect(results).toMatchObject([{ ok: true, record: { student: handles[1] } }, { ok: false, code: 'not_available' }, { ok: false, code: 'invalid' }])
+  })
+
+  it('each student reads only their own marks, with no handle; staff see every handle', async () => {
+    const mineA = dataOf<Record<string, unknown>[]>(await as(STUDENT_A, 'records.list', { collection: 'attendance' }))
+    const mineB = dataOf<Record<string, unknown>[]>(await as(STUDENT_B, 'records.list', { collection: 'attendance' }))
+    expect(mineA).toHaveLength(1)
+    expect(mineB).toHaveLength(1)
+    expect([...mineA, ...mineB].every((r) => r.mine === true && !('student' in r))).toBe(true)
+    expect(new Set([await handleOf(STUDENT_A), await handleOf(STUDENT_B)])).toEqual(new Set(handles))
+  })
+
+  it('rosterNamesAction gives staff a name for every handle, and a student nothing', async () => {
+    session.userId = PROFESSOR
+    const names = await rosterNamesAction({ installationId: install })
+    expect('names' in names && Object.keys(names.names).sort()).toEqual(handles)
+    expect('names' in names && Object.values(names.names).every((n) => typeof n === 'string' && n.length > 0)).toBe(true)
+    session.userId = STUDENT_A
+    expect(await rosterNamesAction({ installationId: install })).toEqual({ error: expect.any(String) })
+  })
+
+  it('course.assignments lists released assignments by due date, undated last, with no IDs', async () => {
+    const result = await as(STUDENT_A, 'course.assignments', null)
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        assignments: [
+          { title: 'Lab 1', dueAt: expect.stringMatching(/^2026-10-20/), points: 20 },
+          { title: 'Lab 2', dueAt: expect.stringMatching(/^2026-11-02/), points: 20 },
+          { title: 'Reading log', dueAt: null, points: null },
+        ],
+      },
+    })
+    expect(JSON.stringify(result)).not.toMatch(UUID)
   })
 })

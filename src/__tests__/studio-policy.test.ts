@@ -10,8 +10,10 @@ import {
 // The approved access table (docs/reference/studio-plugin-server.md), written out cell by
 // cell rather than derived, so this test is the specification and not a copy of the code.
 // own: allowed, limited to and stamped with the viewer's own records.
-// all: allowed, no owner filter.  -: refused.
-type Cell = 'own' | 'all' | '-'
+// all: allowed, no owner filter.
+// about: allowed, no owner filter, a created record is owned by the student it names.
+// -: refused.
+type Cell = 'own' | 'all' | 'about' | '-'
 const ROLES: ViewerRole[] = ['student', 'professor', 'ta', 'grader']
 type Row = [Cell, Cell, Cell, Cell]
 type Table = Record<CollectionAccess, Record<RecordOperation, Row>>
@@ -23,6 +25,13 @@ const WRITABLE: Table = {
     create: ['own', '-', '-', '-'],
     update: ['own', '-', '-', '-'],
     delete: ['own', '-', '-', '-'],
+  },
+  staffPerStudent: {
+    list: ['own', 'all', 'all', 'all'],
+    get: ['own', 'all', 'all', 'all'],
+    create: ['-', 'about', 'about', '-'],
+    update: ['-', 'about', 'about', '-'],
+    delete: ['-', 'about', 'about', '-'],
   },
   shared: {
     list: ['all', 'all', 'all', 'all'],
@@ -50,6 +59,13 @@ const READ_ONLY: Table = {
     update: ['-', '-', '-', '-'],
     delete: ['-', '-', '-', '-'],
   },
+  staffPerStudent: {
+    list: ['own', 'all', 'all', 'all'],
+    get: ['own', 'all', 'all', 'all'],
+    create: ['-', '-', '-', '-'],
+    update: ['-', '-', '-', '-'],
+    delete: ['-', '-', '-', '-'],
+  },
   shared: {
     list: ['all', 'all', 'all', 'all'],
     get: ['all', 'all', 'all', 'all'],
@@ -69,6 +85,7 @@ const READ_ONLY: Table = {
 const EXPECTED = {
   own: { allow: true, ownerFilter: 'self', ownerStamp: 'self' },
   all: { allow: true, ownerFilter: 'none', ownerStamp: 'none' },
+  about: { allow: true, ownerFilter: 'none', ownerStamp: 'student' },
   '-': { allow: false },
 } as const
 
@@ -83,7 +100,7 @@ const cases = (Object.entries({ writable: WRITABLE, readOnly: READ_ONLY }) as [W
 
 describe('decide', () => {
   it('covers every role, access rule, operation and write mode', () => {
-    expect(cases).toHaveLength(4 * 3 * 5 * 2)
+    expect(cases).toHaveLength(4 * 4 * 5 * 2)
   })
 
   it.each(cases)('$mode $access $operation as $role: $cell', ({ mode, access, operation, role, cell }) => {
