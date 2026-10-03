@@ -105,9 +105,10 @@ const LABELS: Record<string, string | null> = {
 }
 
 /** Why a run ended, for the professor. Fixed copy per status and reason. `hasNote`: Athena left a summary. */
-export function endingCopy(status: db.BuilderRunStatus, reason: string | null, hasNote = true): string | null {
+export function endingCopy(status: db.BuilderRunStatus, reason: string | null, hasNote = true, polishStopped = false): string | null {
   switch (status) {
     case 'preview_ready':
+      if (polishStopped) return 'Preview ready. I stopped polishing because this build reached its improvement limit; this draft passes every check. Students won’t see it until you save it as a version and add it to the course.'
       return 'Preview ready. Students won’t see this until you save it as a version and add it to the course.'
     case 'completed':
       return 'Nothing needed to change.'
@@ -436,7 +437,7 @@ export async function readProgress(runId: string, afterSeq: number): Promise<Pro
         }
       : null,
     question: openQuestion && openQuestion.answer === null ? { id: openQuestion.id, text: openQuestion.question, expiresAt: run.waitingUntil } : null,
-    ending: ACTIVE.includes(run.status) ? null : endingCopy(run.status, run.errorCode, typeof result?.summary === 'string'),
+    ending: ACTIVE.includes(run.status) ? null : endingCopy(run.status, run.errorCode, typeof result?.summary === 'string', result?.polish_stopped === true),
     endingReason: ACTIVE.includes(run.status) ? null : run.errorCode,
     result: result
       ? {

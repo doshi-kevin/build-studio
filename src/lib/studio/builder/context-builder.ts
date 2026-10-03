@@ -27,6 +27,7 @@ import {
   STUDIO_BUILDER_CONTEXT_MAX_TOKENS,
   STUDIO_BUILDER_FILE_MAX_BYTES,
   STUDIO_BUILDER_HISTORY_REQUEST_MAX_CHARS,
+  STUDIO_BUILDER_IMPROVE_MAX_TURNS,
   STUDIO_BUILDER_MANIFEST_MAX_BYTES,
   STUDIO_BUILDER_MAX_BYTES_WRITTEN,
   STUDIO_BUILDER_MAX_CHECK_RUNS,
@@ -181,6 +182,22 @@ function materialLog(r: Record<string, unknown>): string {
   return results === 0 ? `: nothing students can or will see matched${hidden}` : `: ${results} excerpt${results === 1 ? '' : 's'}, shown under Course material${hidden}`
 }
 
+/** What the builder is told while it acts on a design review: a small turn budget, one batch of
+ * edits, and finish as soon as the checks pass. The harness keeps the last passing draft if it doesn't. */
+function improveGuide(work: Work, modelTurns: number, checkedNow: boolean): string {
+  const from = work.review.improveFromTurn
+  const left = typeof from === 'number' ? Math.max(0, STUDIO_BUILDER_IMPROVE_MAX_TURNS - (modelTurns - from)) : STUDIO_BUILDER_IMPROVE_MAX_TURNS
+  if (checkedNow && work.review.last && (modelTurns - (from ?? modelTurns)) > 0) {
+    return `Your changes pass every check. Call finish now with your summary. Don't keep polishing: minor issues are optional. (${left} improvement turn${left === 1 ? '' : 's'} left.)`
+  }
+  return [
+    `A reviewer looked at the rendered tool and its code against your plan. You have ${left} turn${left === 1 ? '' : 's'} for this.`,
+    'Fix the unmet requirements and major issues only, without rebuilding what works. Minor issues are optional: fix one only if it is a one-line change.',
+    'Make every edit in ONE turn (several edit_file calls) together with run_checks, then call finish as soon as the checks pass.',
+    'If you run out of turns, the platform keeps the last version that passed every check.',
+  ].join(' ')
+}
+
 export function buildTurnContext(input: TurnInput): TurnContext {
   const { nonce, work } = input
   const block = (kind: string, provenance: FenceProvenance, text: string, max: number, attrs?: Record<string, string | number>) =>
@@ -314,7 +331,7 @@ export function buildTurnContext(input: TurnInput): TurnContext {
       parts.push(
         '',
         `# Design review${stale ? ' (you have changed the tool since)' : ''}`,
-        'A reviewer looked at the rendered tool and its code against your plan. Fix every unmet requirement and major issue, and the minor ones that are cheap, without rebuilding what works; then run_checks and finish again.',
+        improveGuide(work, input.counters.modelTurns, check?.passed === true && check.work_hash === current),
         block('review', 'check-output', reviewFeedback(review), 6144),
       )
     }

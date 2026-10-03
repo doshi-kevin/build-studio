@@ -273,3 +273,6 @@ export const STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS = 240
 /** write_sample_data: records across all collections, and the JSON's size. */
 export const STUDIO_BUILDER_SAMPLE_MAX_RECORDS = 60
 export const STUDIO_BUILDER_SAMPLE_MAX_BYTES = 24 * 1024
+/** Model turns the builder gets to act on one design review. After them the harness settles the
+ * build itself: it keeps the improved draft if it still passes every check, or the reviewed one. */
+export const STUDIO_BUILDER_IMPROVE_MAX_TURNS = 4

@@ -42,7 +42,16 @@ export interface Work {
    * preview bridge's generated placeholders. */
   sample: SampleData | null
   /** Design reviews this run (at most STUDIO_BUILDER_MAX_REVIEW_ROUNDS) and the latest one. */
-  review: { rounds: number; last: ReviewRecord | null }
+  review: {
+    rounds: number
+    last: ReviewRecord | null
+    /** The model turn count when the latest review sent the builder back to improve. */
+    improveFromTurn?: number | null
+    /** The builder's finish note from before that review, kept for a build the harness settles. */
+    summary?: string | null
+    /** The draft the latest review saw: it passed every check and rendered without crashing. */
+    good?: { manifest: StudioManifestV2; files: Partial<Record<PluginPath, string>>; sample: SampleData | null } | null
+  }
 }
 
 /** Per collection, the records the preview shows. `student` indexes the synthetic roster
@@ -154,4 +163,6 @@ export interface BuildResult {
   material_read: { label: string; visible: boolean; opens_at: string | null }[]
   /** Design reviews run, and whether the last one saw screenshots. */
   review?: { rounds: number; rendered: boolean; verdict: 'ready' | 'improve' | null }
+  /** The harness stopped the optional polishing and kept a draft that passes every check. */
+  polish_stopped?: boolean
 }

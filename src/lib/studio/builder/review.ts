@@ -139,7 +139,7 @@ export function reviewFeedback(review: ReviewRecord): string {
     `Design review round ${review.round} of ${STUDIO_BUILDER_MAX_REVIEW_ROUNDS} (${review.rendered ? 'from screenshots and code' : 'from code only'}): ${review.verdict}.`,
     ...list('Unmet requirements', review.unmet_requirements),
     ...list('Major issues', review.major_issues),
-    ...list('Minor issues (fix when cheap)', review.minor_issues),
+    ...list('Minor issues (optional: only if a one-line change)', review.minor_issues),
   ].join('\n')
 }
 

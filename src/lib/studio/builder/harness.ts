@@ -46,6 +46,7 @@ import {
   STUDIO_BUILDER_MAX_QUESTIONS,
   STUDIO_BUILDER_MAX_REPAIR_ROUNDS,
   STUDIO_BUILDER_MAX_RESUMES,
+  STUDIO_BUILDER_IMPROVE_MAX_TURNS,
   STUDIO_BUILDER_MAX_REVIEW_ROUNDS,
   STUDIO_BUILDER_MAX_SLICES,
   STUDIO_BUILDER_MAX_TOOL_CALLS,
@@ -188,6 +189,27 @@ const readJson = (text: string): unknown => {
   }
 }
 
+/** Endings that mean the run ran out of room, not that its checked draft is wrong. */
+const SETTLES = (status: TerminalStatus, code: RunErrorCode | null) =>
+  status === 'budget_exhausted'
+    ? code !== 'limit_daily_cost'
+    : (status === 'blocked' || status === 'failed') && (code === 'repair_rounds' || code === 'same_finding' || code === 'check_runs' || code === 'repeated_tool_errors')
+
+/** A copy small enough to keep beside the working files under the run row's size limit. */
+const keepable = (work: Work) => !!work.manifest && utf8Bytes(JSON.stringify({ m: work.manifest, f: work.files, s: work.sample })) <= 96 * 1024
+
+const wordsOf = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter((w) => w.length > 3))
+
+/** Every must-fix finding of the new review is close to one the last review already gave. */
+function repeats(last: ReviewRecord, next: { unmet_requirements: string[]; major_issues: string[] }): boolean {
+  const before = [...last.unmet_requirements, ...last.major_issues].map(wordsOf)
+  const now = [...next.unmet_requirements, ...next.major_issues].map(wordsOf)
+  if (now.length === 0 || before.length === 0) return false
+  return now.every((w) =>
+    before.some((b) => [...w].filter((x) => b.has(x)).length / Math.max(1, Math.min(w.size, b.size)) >= 0.6),
+  )
+}
+
 const paramsSchema = z.strictObject({ runId: z.uuid(), sliceNo: z.number().int().min(1) })
 
 /** Budgets the harness checks before every model call, in order. */
@@ -236,7 +258,7 @@ function buildResult(
   plan: Plan | null,
   status: TerminalStatus,
   reason: RunErrorCode | null,
-  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number; material?: RenderedSearch[] },
+  extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number; material?: RenderedSearch[]; polishStopped?: boolean },
 ): BuildResult {
   const files = PLUGIN_PATHS.map((path) => {
     const before = data?.base?.files[path]
@@ -272,6 +294,7 @@ function buildResult(
     memory_applied: extra.memoryApplied ?? 0,
     material_read: materialRead(extra.material ?? []),
     review: { rounds: work?.review.rounds ?? 0, rendered: work?.review.last?.rendered ?? false, verdict: work?.review.last?.verdict ?? null },
+    ...(extra.polishStopped ? { polish_stopped: true } : {}),
   }
   // The database refuses a result over 8 KiB (jsonb's text form adds a space after each
   // separator, so the margin is generous); trim the listed items, then the model's prose,
@@ -372,6 +395,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     return Math.round(ms)
   }
 
+  let settling = false
   const end = async (
     run: db.BuilderRunRow,
     work: Work | null,
@@ -380,6 +404,12 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     code: RunErrorCode | null,
     extra: Parameters<typeof buildResult>[6] & { snapshot?: Record<string, unknown> | null } = {},
   ): Promise<'stop'> => {
+    // A limit reached while polishing never costs the professor a draft that already passed.
+    if (work?.review.good && !settling && SETTLES(status, code)) {
+      settling = true
+      const settled = await settle(run, work, plan)
+      if (settled) return settled
+    }
     // Fresh counters for the result: this turn's calls have moved them.
     const latest = (await deps.store.loadRun(runId)) ?? run
     // Course material is listed only from a re-read this slice made after its gate passed: an
@@ -456,6 +486,13 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       let work = parseWork(run.work) ?? initialWork(data.base)
       const plan = parsePlan(run.plan)
       if (run.cancelRequested || flags.cancel) return await end(run, work, plan, 'cancelled', null)
+
+      // ── Convergence: a review's improvements get a bounded number of turns ──
+      const from = work.review.improveFromTurn
+      if (work.review.good && typeof from === 'number' && run.counters.modelTurns - from >= STUDIO_BUILDER_IMPROVE_MAX_TURNS) {
+        settling = true
+        return (await settle(run, work, plan)) ?? (await end(run, work, plan, 'budget_exhausted', 'limit_turns'))
+      }
 
       // ── The combined gate, before every model call ──
       const refusal = await deps.gate(run)
@@ -885,7 +922,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     }
 
     // The design review, before anything is committed.
-    const reviewed = await designReview(id, gateWork, plan, run, fresh.bundles)
+    const reviewed = await designReview(id, gateWork, plan, run, fresh.bundles, outcome.summary)
     if (reviewed === 'stop') return 'stop'
     if (reviewed === 'improve') return 'continue'
     gateWork = reviewed
@@ -911,6 +948,59 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   }
 
   /**
+   * Ends a build whose optional polishing ran out (improvement turns, or any run budget) with the
+   * best draft that passes every check: the improved one if it still passes and renders, else the
+   * one the review saw. Null when neither passes now, and the run ends as it would have.
+   */
+  async function settle(run: db.BuilderRunRow, work: Work, plan: Plan | null): Promise<'stop' | null> {
+    if (!data) return null
+    const good = work.review.good
+    const candidates: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample: SampleData | null; current: boolean }[] = [
+      { manifest: work.manifest, files: work.files, sample: work.sample, current: true },
+      ...(good ? [{ ...good, current: false }] : []),
+    ]
+    for (const c of candidates) {
+      if (!c.manifest || PLUGIN_PATHS.some((p) => typeof c.files[p] !== 'string')) continue
+      const candidate: Work = { ...work, manifest: c.manifest, files: c.files, sample: c.sample }
+      let fresh: DraftCheckResult
+      try {
+        fresh = await deps.runChecks(run, data, candidate)
+      } catch {
+        continue
+      }
+      if (!fresh.passed || !fresh.bundles || !fresh.compiler) continue
+      // The improved draft hasn't been rendered: one that crashes falls back to the reviewed one.
+      if (c.current && good && workHash(c.manifest, c.files, c.sample) !== workHash(good.manifest, good.files, good.sample)) {
+        const render = await deps.renderPreview({ manifest: c.manifest, bundles: fresh.bundles, sample: c.sample }).catch(() => null)
+        if (render?.ok && render.failures.length > 0) continue
+      }
+      const files = c.files as Record<PluginPath, string>
+      if (data.base && workHash(data.base.manifest, data.base.files, data.base.sample) === workHash(c.manifest, files, c.sample)) {
+        return await end(run, candidate, plan, 'completed', null, { summary: work.review.summary ?? undefined, passed: true })
+      }
+      const hash = snapshotHash(fresh.compiler, c.manifest, files, c.sample)
+      logger.info('studio.builder.settled', { runId, kept: c.current ? 'improved' : 'reviewed' })
+      return await end(run, candidate, plan, 'preview_ready', null, {
+        summary: work.review.summary ?? undefined,
+        passed: true,
+        polishStopped: true,
+        snapshotHash: hash,
+        snapshot: {
+          hash,
+          compiler: fresh.compiler,
+          manifest: c.manifest,
+          files,
+          student_bundle: fresh.bundles.student,
+          professor_bundle: fresh.bundles.professor,
+          check_summary: fresh.summary,
+          ...(c.sample ? { sample_data: c.sample } : {}),
+        },
+      })
+    }
+    return null
+  }
+
+  /**
    * Renders the draft, asks the model to review it against the plan and the rubric, and
    * records what it found. 'improve' sends the builder back for another round (the finish
    * call is recorded as that outcome); otherwise the work comes back, with the review on it,
@@ -923,6 +1013,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     plan: Plan | null,
     run: db.BuilderRunRow,
     bundles: { student: string; professor: string },
+    summary: string,
   ): Promise<Work | 'improve' | 'stop'> {
     const files = work.files as Record<PluginPath, string>
     const current = workHash(work.manifest, files, work.sample)
@@ -1048,8 +1139,13 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     }
     if (!findings) return skip(reply.timedOut ? 'timeout' : 'no_review')
 
+    // A second review that only repeats what the first asked for means the builder couldn't do it:
+    // asking again would loop, so it counts as ready.
+    if (findings.verdict === 'improve' && work.review.last && repeats(work.review.last, findings)) findings.verdict = 'ready'
     const record: ReviewRecord = { round, work_hash: current, rendered: images.length > 0, ...findings }
-    const next: Work = { ...work, review: { rounds: round, last: record } }
+    // This draft passed every check and rendered without crashing: the one to keep if polishing runs out.
+    const good = keepable(work) ? { manifest: work.manifest!, files: { ...work.files }, sample: work.sample } : (work.review.good ?? null)
+    const next: Work = { ...work, review: { rounds: round, last: record, improveFromTurn: findings.verdict === 'improve' ? c.modelTurns + 1 : null, summary, good } }
     const counts = { unmet: findings.unmet_requirements.length, major: findings.major_issues.length, minor: findings.minor_issues.length, rendered: record.rendered }
     // Counts only: the findings are model text and stay in the run's working copy.
     deps.audit(run, 'studio.build.design_review', { runId, round, verdict: findings.verdict, unmet: counts.unmet, major: counts.major })

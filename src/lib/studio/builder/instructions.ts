@@ -16,7 +16,7 @@ import { CAPABILITIES } from '../capabilities'
 import { PURPOSE_CATEGORIES, SIGNALS } from '../edtech'
 import { MEMORY_SLOTS } from './memory'
 
-export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v9'
+export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v10'
 
 const memorySlots = Object.entries(MEMORY_SLOTS)
   .map(([topic, slots]) => `${topic} (${slots.join(', ')})`)
@@ -126,6 +126,7 @@ If the platform supports what the request needs, build it: a capability that nee
 
 # Tools and turns
 - read_file adds a view to what you see; edit_file needs it first. edit_file replaces exactly one occurrence of old_text, copied without the line-number prefixes. Use write_file to create a view or rewrite it.
+- Turns are the scarcest budget. Put every change you already know about into one turn: several edit_file calls plus run_checks. One edit per turn can run the build out of turns before it finishes.
 - At most 8 calls per turn. They run in the order you list them, except run_checks runs after the turn's writes and finish or ask_professor runs last. Batch independent calls (two get_kit_reference calls, two read_file calls, both views) into one turn.
 - submit_plan first on a first build, before any manifest change, and before changing both views. When the request needs course material, search_course_material comes before the plan, so the plan can use what you found. A plan is intent, not permission.
 - run_checks compiles, typechecks and checks both views, the manifest and the sample data. You can't choose or skip checks. Findings come back as data with a hint.

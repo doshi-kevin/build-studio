@@ -12,7 +12,7 @@ import type { RenderOutcome } from '@/lib/studio/builder/renderer'
 import { parseReview, REVIEW_INSTRUCTIONS } from '@/lib/studio/builder/review'
 import { readPlan } from '@/lib/studio/builder/work'
 import { parseManifest, type StudioManifestV2 } from '@/lib/studio/manifest'
-import { STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
+import { STUDIO_BUILDER_IMPROVE_MAX_TURNS, STUDIO_BUILDER_MAX_MODEL_TURNS, STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
 import { createMemoryStore, newRun } from './helpers/builder-memory-store'
 import { call, finish, FLASHCARDS_MANIFEST, inProcessWorkerCheck, PROFESSOR_VIEW, scriptedModel, STUDENT_VIEW, type ScriptedTurn } from './helpers/builder-fixtures'
 
@@ -227,6 +227,74 @@ describe('the design review', () => {
     await h.slice()
     expect(h.mem.state.run.status).toBe('completed')
     expect(h.reviews()).toHaveLength(0)
+  })
+})
+
+describe('convergence after a design review (live failure, office-hours queue, 2026-10-03)', () => {
+  // What Gemini did: one edit per turn after the review, never finishing, until the turn cap.
+  const nudge = (n: number) => {
+    const from = n === 0 ? 'Add a card' : `Add a card${'!'.repeat(n)}`
+    return { calls: [call('edit_file', { path: 'views/professor.tsx', old_text: from, new_text: `Add a card${'!'.repeat(n + 1)}` })] }
+  }
+  const reviewedFirstBuild: ScriptedTurn[] = [readFiles, { calls: [tweak(1), call('run_checks')] }, { calls: [finish('completed', 'Built the deck.')] }, improve()]
+
+  it('a builder that polishes forever is settled after the improvement turns, keeping the improved draft that still passes', async () => {
+    const h = harness([...reviewedFirstBuild, ...Array.from({ length: 30 }, (_, i) => nudge(i))])
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    const result = h.mem.state.run.result as { polish_stopped?: boolean; summary: string | null }
+    expect(result.polish_stopped).toBe(true)
+    // The builder's own note from before the review is kept.
+    expect(result.summary).toBe('Built the deck.')
+    // Bounded: the review turn plus the improvement turns, far below the run's cap.
+    expect(h.mem.state.run.counters.modelTurns).toBeLessThanOrEqual(4 + STUDIO_BUILDER_IMPROVE_MAX_TURNS + 1)
+    expect(h.mem.state.run.counters.modelTurns).toBeLessThan(STUDIO_BUILDER_MAX_MODEL_TURNS)
+    const files = [...h.mem.state.snapshots.values()][0].files as Record<string, string>
+    expect(files['views/professor.tsx']).toMatch(/Add a card!+/)
+  })
+
+  it('an improvement that breaks the checks falls back to the draft the review saw, never an unchecked one', async () => {
+    const broken = { calls: [call('edit_file', { path: 'views/professor.tsx', old_text: 'Add a card', new_text: 'Add a card {' })] }
+    const h = harness([...reviewedFirstBuild, broken, ...Array.from({ length: 10 }, () => ({ calls: [call('read_file', { path: 'views/student.tsx' })] }))])
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    const files = [...h.mem.state.snapshots.values()][0].files as Record<string, string>
+    expect(files['views/professor.tsx']).toContain('Add a card')
+    expect(files['views/professor.tsx']).not.toContain('Add a card {')
+  })
+
+  it('a second review that repeats the first one’s findings counts as ready, so it can’t loop', async () => {
+    const h = harness([...reviewedFirstBuild, { calls: [tweak(2), call('run_checks')] }, { calls: [finish()] }, improve()])
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    expect(h.reviews()).toHaveLength(2)
+    expect(h.labels().filter((l) => l === 'review.changes')).toHaveLength(1)
+    expect((h.mem.state.run.result as { polish_stopped?: boolean }).polish_stopped).toBeUndefined()
+  })
+
+  it('a build that never passed its checks still fails: nothing unchecked is ever kept', async () => {
+    const bad = (n: number) => ({ calls: [call('edit_file', { path: 'views/professor.tsx', old_text: n === 0 ? 'Add card' : `Add card${'{'.repeat(n)}`, new_text: `Add card${'{'.repeat(n + 1)}` }), call('run_checks')] })
+    const h = harness([readFiles, ...Array.from({ length: 12 }, (_, i) => bad(i))])
+    await h.slice()
+    expect(['blocked', 'budget_exhausted', 'failed']).toContain(h.mem.state.run.status)
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('Stop while improving cancels: Stop is never turned into a settled preview', async () => {
+    const h = harness([...reviewedFirstBuild, { hang: true }])
+    const done = h.slice()
+    await vi.waitFor(() => expect(h.model.prompts.length).toBeGreaterThanOrEqual(5))
+    h.mem.state.run.cancelRequested = true
+    await done
+    expect(h.mem.state.run.status).toBe('cancelled')
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('a follow-up edit on a reviewed draft converges in a handful of turns', async () => {
+    const h = harness([readFiles, { calls: [tweak(1), sample(), call('run_checks')] }, { calls: [finish()] }, ready])
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    expect(h.mem.state.run.counters.modelTurns).toBeLessThanOrEqual(5)
   })
 })
 
