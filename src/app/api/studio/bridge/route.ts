@@ -59,7 +59,12 @@ export async function POST(request: Request) {
     if (!userId) return refuse(401, 'not_available', NOT_AVAILABLE)
 
     const kind = envelope.type === 'call' ? (methodSpec(envelope.method)?.kind ?? 'read') : 'read'
-    if (!takeBridgeCall(userId, envelope.installationId, kind)) {
+    // A batch is charged one write per five items: marking a whole class still fits one call, but a caller
+    // can't turn the write limit into fifty times as many database writes and audit rows.
+    const items = envelope.type === 'call' && envelope.method === 'records.batch' && Array.isArray((envelope.args as { items?: unknown } | null)?.items) ? Math.ceil((envelope.args as { items: unknown[] }).items.length / 5) : 1
+    let allowed = true
+    for (let i = 0; i < Math.max(1, items) && allowed; i++) allowed = takeBridgeCall(userId, envelope.installationId, kind)
+    if (!allowed) {
       return refuse(429, 'rate_limited', 'Too many requests. Wait a moment and try again.', {
         'Retry-After': String(RETRY_AFTER_SECONDS),
       })

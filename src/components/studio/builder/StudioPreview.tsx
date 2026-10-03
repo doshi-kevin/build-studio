@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { PluginHost } from '@/components/studio/runtime/PluginHost'
+import type { PreviewSample } from '@/lib/studio/runtime/preview-bridge'
 import type { StudioManifest } from '@/lib/studio/manifest'
 import { cn } from '@/lib/utils'
 import { draftPreviewAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
@@ -28,7 +29,7 @@ interface StudioPreviewProps {
   onDeviceChange: (device: Device) => void
 }
 
-type Frame = { frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string } | { error: string } | null
+type Frame = { frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string; sample: PreviewSample | null } | { error: string } | null
 
 /** One view of the draft in the real sandbox, on sample data. Previews never reach real records. */
 function DraftFrame({ sectionId, pluginProjectId, snapshotHash, view }: { sectionId: string; pluginProjectId: string; snapshotHash: string; view: 'student' | 'professor' }) {
@@ -39,7 +40,7 @@ function DraftFrame({ sectionId, pluginProjectId, snapshotHash, view }: { sectio
   useEffect(() => {
     let live = true
     void draftPreviewAction({ sectionId, pluginProjectId, snapshotHash, view }).then((r) => {
-      if (live) setFrame('success' in r ? { frameUrl: r.frameUrl, allowedMethods: r.allowedMethods, manifest: r.manifest, title: r.title } : { error: r.error })
+      if (live) setFrame('success' in r ? { frameUrl: r.frameUrl, allowedMethods: r.allowedMethods, manifest: r.manifest, title: r.title, sample: r.sample } : { error: r.error })
     })
     return () => {
       live = false
@@ -63,6 +64,7 @@ function DraftFrame({ sectionId, pluginProjectId, snapshotHash, view }: { sectio
       view={view}
       allowedMethods={frame.allowedMethods}
       preview={frame.manifest}
+      sample={frame.sample}
       reloading={reloading}
       onReload={() => {
         setFrame(null)

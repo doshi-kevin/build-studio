@@ -7,7 +7,7 @@
  *
  *   unavailable (the default, and always in production)
  *       No renderer. The review runs on the code alone.
- *   local (STUDIO_BUILDER_RENDERER=local, refused in production)
+ *   local (STUDIO_BUILDER_RENDERER=local; refused in production unless the database is on this machine)
  *       Spawns validator-runtime/render.mjs with the same minimal environment as the
  *       local Stage 2 runner (no Scholera secrets), which runs Playwright's Chromium with
  *       its OS sandbox on. For development: a developer machine is not an isolated
@@ -26,8 +26,20 @@ import { runnerEnvironment } from '../validator/runtime-runner'
 
 export type RendererMode = 'unavailable' | 'local'
 
+/** True only for a database on this machine: a deployed app never has one. */
+const loopbackDatabase = (url: string | undefined) => {
+  try {
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url ?? '').hostname)
+  } catch {
+    return false
+  }
+}
+
+/** Local rendering runs where a developer machine is the environment: a dev server, or the guarded
+ * production build (e2e/serve-guarded.mjs), which talks only to a loopback database. */
 export function rendererMode(env: Record<string, string | undefined> = process.env): RendererMode {
-  return env.STUDIO_BUILDER_RENDERER === 'local' && env.NODE_ENV !== 'production' ? 'local' : 'unavailable'
+  const local = env.NODE_ENV !== 'production' || loopbackDatabase(env.NEXT_PUBLIC_SUPABASE_URL)
+  return env.STUDIO_BUILDER_RENDERER === 'local' && local ? 'local' : 'unavailable'
 }
 
 export interface RenderedImage {
@@ -93,7 +105,10 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
       clearTimeout(timer)
       resolve(result)
     }
-    const child = spawn(process.execPath, [join(process.cwd(), 'validator-runtime', 'render.mjs')], {
+    // The repository root, when the server runs from a build that doesn't ship validator-runtime.
+    const root = env.STUDIO_BUILDER_RENDERER_ROOT || process.cwd()
+    const child = spawn(process.execPath, [join(root, 'validator-runtime', 'render.mjs')], {
+      cwd: root,
       env: runnerEnvironment(env),
       stdio: 'pipe',
       windowsHide: true,

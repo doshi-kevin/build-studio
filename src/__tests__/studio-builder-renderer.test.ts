@@ -24,6 +24,8 @@ describe('renderer mode', () => {
     expect(rendererMode({})).toBe('unavailable')
     expect(rendererMode({ STUDIO_BUILDER_RENDERER: 'local' })).toBe('local')
     expect(rendererMode({ STUDIO_BUILDER_RENDERER: 'local', NODE_ENV: 'production' })).toBe('unavailable')
+    expect(rendererMode({ STUDIO_BUILDER_RENDERER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://abc.supabase.co' })).toBe('unavailable')
+    expect(rendererMode({ STUDIO_BUILDER_RENDERER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:54321' })).toBe('local')
     expect(rendererMode({ STUDIO_BUILDER_RENDERER: 'cloud' })).toBe('unavailable')
   })
 

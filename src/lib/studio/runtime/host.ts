@@ -344,11 +344,17 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     return overlay
   }
 
+  const lastRoster = new Map<string, string>()
+
   function onRoster(message: Extract<FrameMessage, { type: 'roster' }>) {
     // Names are for staff, and only for a tool allowed to read the class.
     if (options.view !== 'professor' || !options.allowedMethods?.includes('course.roster')) return strike()
     if (!takeLayout('roster')) return
     if (message.op === 'render') {
+      // The same table again changes nothing: skip the rebuild, so a plugin can't spin the page.
+      const key = JSON.stringify(message.payload)
+      if (lastRoster.get(message.slot) === key) return
+      lastRoster.set(message.slot, key)
       if (!rosterOverlay().render(message.slot, message.payload)) strike()
     } else if (message.op === 'place') {
       overlay?.place(message.slot, message.rect)

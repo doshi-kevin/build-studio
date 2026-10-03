@@ -22,6 +22,7 @@ import { kickWorker } from '@/lib/jobs/enqueue'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logEvent } from '@/lib/supabase/event-logger'
 import { STUDIO_PAUSED, studioAccess } from '../access'
+import type { PreviewSample } from '../runtime/preview-bridge'
 import { allowedBridgeMethods } from '../bridge/catalog'
 import { requireProfessor, sessionUserId, type StudioProfessor } from '../context'
 import * as db from '../db'
@@ -543,7 +544,7 @@ const previewInput = z.strictObject({ sectionId: id, pluginProjectId: id, snapsh
  * with sample records: no real records, no publication, nothing students can see. */
 export async function issueDraftPreview(
   input: z.input<typeof previewInput>,
-): Promise<ServiceResult<{ frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string }>> {
+): Promise<ServiceResult<{ frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string; sample: PreviewSample | null }>> {
   const parsed = previewInput.safeParse(input)
   if (!parsed.success) return denied()
   const professor = await requireProfessor(parsed.data.sectionId)
@@ -557,7 +558,7 @@ export async function issueDraftPreview(
   const view = parsed.data.view as PluginView
   const frameUrl = draftFrameUrl(project.id, snapshot.hash, view)
   if (!frameUrl) return { ok: false, error: 'Previews aren’t available here right now.' }
-  return { ok: true, value: { frameUrl, allowedMethods: allowedBridgeMethods(manifest.manifest, view), manifest: manifest.manifest, title: manifest.manifest.name } }
+  return { ok: true, value: { frameUrl, allowedMethods: allowedBridgeMethods(manifest.manifest, view), manifest: manifest.manifest, title: manifest.manifest.name, sample: (snapshot.sampleData as PreviewSample | null | undefined) ?? null } }
 }
 
 /** Save the current draft as a new immutable version: human-only (lifecycle.publishDraft). */

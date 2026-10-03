@@ -39,6 +39,7 @@ import {
 } from '@/lib/studio/builder/service'
 import type { BlockerCode, Issue, WarningCode } from '@/lib/studio/student-visibility'
 import type { MemoryKind, MemorySlot, MemoryTopic } from '@/lib/studio/builder/memory'
+import type { PreviewSample } from '@/lib/studio/runtime/preview-bridge'
 import type { StudioManifest } from '@/lib/studio/manifest'
 
 const NOT_AVAILABLE = 'This isn’t available.'
@@ -116,7 +117,7 @@ export async function draftPreviewAction(input: {
   pluginProjectId: string
   snapshotHash: string
   view: 'student' | 'professor'
-}): Promise<{ success: true; frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string } | { error: string }> {
+}): Promise<{ success: true; frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string; sample: PreviewSample | null } | { error: string }> {
   if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
   const r = await issueDraftPreview(input)
   return r.ok ? { success: true, ...r.value } : { error: r.error }

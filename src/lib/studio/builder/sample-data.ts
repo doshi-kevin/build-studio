@@ -16,6 +16,9 @@ import type { SampleData } from './work'
 
 export type SampleResult = { ok: true; sample: SampleData; records: number } | { ok: false; issues: string[] }
 
+/** Model-chosen keys go into issues the model and the trajectory read: plain characters, short. */
+const plain = (s: string) => s.replace(/[^\w.-]/g, '').slice(0, 40)
+
 const OWNED = new Set(['perStudent', 'staffPerStudent'])
 
 const isPlain = (v: unknown): v is Record<string, unknown> =>
@@ -32,7 +35,7 @@ export function checkSample(raw: unknown, manifest: StudioManifestV2): SampleRes
   let records = 0
   for (const [name, list] of Object.entries(raw)) {
     if (!Object.hasOwn(manifest.collections, name)) {
-      issues.push(`${name}: not a collection of this tool`)
+      issues.push(`${plain(name)}: not a collection of this tool`)
       continue
     }
     if (!Array.isArray(list)) {
@@ -59,7 +62,7 @@ export function checkSample(raw: unknown, manifest: StudioManifestV2): SampleRes
       }
       const valid = validateRecordData('sample', name, collection, item.data)
       if (!valid.ok) {
-        issues.push(...valid.issues.slice(0, 3).map((issue) => `${at}: ${issue}`))
+        issues.push(...valid.issues.slice(0, 3).map((issue) => `${at}: ${issue.replace(/^[^:]*: not a field/, `${plain(issue.split(':')[0])}: not a field`)}`))
         return
       }
       const bad = Object.values(valid.data).map((v) => (typeof v === 'string' ? characterProblem(v) : null)).find(Boolean)

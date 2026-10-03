@@ -675,13 +675,12 @@ describe('POST /api/studio/bridge', () => {
     expect((await post(CALL)).status).toBe(200)
   })
 
-  it('counts a whole batch as one write', async () => {
+  it('charges a batch one write per five items, so one call can’t carry more than the write budget', async () => {
     vi.mocked(records.batchRecords).mockResolvedValue({ ok: true, value: [] })
-    const items = Array.from({ length: 50 }, () => ({ op: 'create', data: {} }))
-    const batch = { ...CALL, method: 'records.batch', args: { collection: 'responses', items } }
-    for (let i = 0; i < 30; i++) expect((await post(batch)).status).toBe(200)
-    expect((await post(batch)).status).toBe(429)
-    expect(records.batchRecords).toHaveBeenCalledTimes(30)
+    const batchOf = (n: number) => ({ ...CALL, method: 'records.batch', args: { collection: 'responses', items: Array.from({ length: n }, () => ({ op: 'create', data: {} })) } })
+    for (let i = 0; i < 3; i++) expect((await post(batchOf(50))).status).toBe(200)
+    expect((await post(batchOf(50))).status).toBe(429)
+    expect(records.batchRecords).toHaveBeenCalledTimes(3)
   })
 
   it('logs a runtime stop with identifiers and the reason only', async () => {

@@ -218,7 +218,7 @@ export async function publishDraft(input: z.input<typeof publishDraftInput>): Pr
   const stamped = snapshot ? parseManifest(snapshot.manifest) : null
   if (!snapshot || !stamped?.ok || stamped.manifest.manifestVersion !== 2) return denied()
   const files = snapshot.files as Record<PluginPath, string>
-  if (snapshot.compiler !== COMPILER_ID || snapshotHash(snapshot.compiler, stamped.manifest, files) !== snapshot.hash) {
+  if (snapshot.compiler !== COMPILER_ID || snapshotHash(snapshot.compiler, stamped.manifest, files, snapshot.sampleData ?? undefined) !== snapshot.hash) {
     return { ok: false, error: 'Studio was updated since this draft was built. Ask Athena to rebuild it, then save.' }
   }
 
