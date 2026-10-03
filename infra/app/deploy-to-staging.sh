@@ -49,7 +49,9 @@ SECRET_NAME="supabase-staging-service-role-key"
 # secret by this name, so rename it in both places or neither.
 BG_JOBS_SECRET_NAME="staging-background-jobs-secret"
 FRAME_TICKET_SECRET_NAME="staging-studio-frame-ticket-secret"
-PROD_REF="ywdqaoahfmmzcsczxvxn"               # NEVER deploy staging against this
+# NEVER deploy staging against this. One copy, shared with e2e/serve-guarded.mjs.
+PROD_REF="$(tr -d '[:space:]' < "$(dirname "${BASH_SOURCE[0]}")/production-project-ref")"
+[ -n "$PROD_REF" ] || { echo "production-project-ref is missing or empty" >&2; exit 1; }
 MEMORY="4Gi"; CPU="2"; TIMEOUT="900"; PORT="8080"
 MIN_INSTANCES="0"; MAX_INSTANCES="2"
 

@@ -138,3 +138,7 @@ docs/archive/
 docs/designs/
 docs/handoffs/
 docs/product/
+validator-runtime/dist/
+
+# Clean-copy builds for browser tests (e2e/serve-guarded.mjs)
+.e2e-build/

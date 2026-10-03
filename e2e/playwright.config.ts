@@ -1,29 +1,36 @@
-// Playwright config for Scholera E2E tests. Runs against a local Next.js
-// dev server on :3000 and a local Supabase on 127.0.0.1:54321. Global
+// Playwright config for Scholera E2E tests. Runs against a guarded production build
+// (e2e/serve-guarded.mjs) on :3000 and a local Supabase on 127.0.0.1:54321. Global
 // setup runs the seed via db:seed:e2e, then logs each role in once and
 // persists storageState per role under e2e/.auth/.
+//
+// .env.test is required: without it this refuses to run rather than let anything fall
+// back to .env, which holds production credentials. Its Supabase URL must be loopback.
 
 import { defineConfig, devices } from '@playwright/test'
 import * as path from 'path'
 import * as fs from 'fs'
 
-// Load .env.test so baseURL + Supabase env are available both to the test
-// process AND to the spawned Next.js dev server.
 const envPath = path.resolve(__dirname, '..', '.env.test')
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2]
-  }
+if (!fs.existsSync(envPath)) {
+  throw new Error('E2E refused: .env.test is missing. Create it with local Supabase values; .env is never used for tests.')
 }
+const testEnv: Record<string, string> = {}
+for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+  const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
+  if (m) testEnv[m[1]] = m[2]
+}
+if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(testEnv.NEXT_PUBLIC_SUPABASE_URL ?? '')) {
+  throw new Error('E2E refused: NEXT_PUBLIC_SUPABASE_URL in .env.test is not a loopback URL.')
+}
+// The test process (seeding, logins) reads these; .env.test wins over anything inherited.
+Object.assign(process.env, testEnv)
+// The server gets only what serve-guarded.mjs allows, passed by name as E2E_<NAME>.
+const serverEnv = Object.fromEntries(Object.entries(testEnv).map(([k, v]) => [`E2E_${k}`, v]))
 
 const baseURL = process.env.E2E_BASE_URL ?? 'http://localhost:3000'
 
 export default defineConfig({
   testDir: './tests',
-  // 90s per test accommodates Next.js dev-server on-demand compilation for
-  // routes hit for the first time in a session (attempt/results pages can
-  // take 15-20s on cold compile). Prod bundles resolve this instantly.
   timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
@@ -41,11 +48,14 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {
-    command: 'npx dotenv -e .env.test -- npm run dev',
+    command: 'node e2e/serve-guarded.mjs',
     cwd: path.resolve(__dirname, '..'),
+    env: serverEnv,
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    // Never reuse a server this config didn't start: it may have loaded .env.
+    reuseExistingServer: false,
+    // A cold production build.
+    timeout: 900_000,
   },
   globalSetup: require.resolve('./global-setup.ts'),
 })
