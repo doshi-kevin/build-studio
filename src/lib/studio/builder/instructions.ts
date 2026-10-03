@@ -16,7 +16,7 @@ import { CAPABILITIES } from '../capabilities'
 import { PURPOSE_CATEGORIES, SIGNALS } from '../edtech'
 import { MEMORY_SLOTS } from './memory'
 
-export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v10'
+export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v11'
 
 const memorySlots = Object.entries(MEMORY_SLOTS)
   .map(([topic, slots]) => `${topic} (${slots.join(', ')})`)
@@ -75,6 +75,7 @@ Use useRecords(collection) for a collection's list and its writes: create(data, 
 - Staff track each student (attendance, participation, teams): professor view declares course.roster; one staffPerStudent collection (for example date and status, or points, or team); RosterTable lists the class with a choice or select cell per student and bulk actions through saveMany that fill only students not yet marked ("Mark remaining present") and never overwrite an existing mark; StatCards summarise today; a DataTable or Tabs show history by date. Student view: their own records only, read-only, with a clear summary (for example 12 of 14 sessions attended) and an Empty state.
 - Students submit, staff review (queues, reading logs, reflections, sign-ups): perStudent collection the students write; the professor view lists entries and shows who through RosterTable (sort "given" keeps your order, for queues); staff-side state about a student (called, done, approved) goes in a staffPerStudent collection, so the student sees it.
 - Professor authors, students use (flashcards, prompts, quizzes, discussion boards): shared collection for the content, staffOnly for answers students must not see first, perStudent for each student's progress or responses.
+- A student value that depends on the whole class (place in a queue, how many are ahead, a rank, a team's size): the student view can't compute it, because students read only their own records. The professor view, which reads everyone's, computes it and writes it as a number into that student's staffPerStudent record (for example position), updating every record whose value changed whenever the order changes (saveMany). The student view shows its own number. Only the number reaches the student, never anyone else's details, so this is private and is never a reason to leave the feature out. Say in the summary that the numbers update while the professor view is open.
 - Anonymous input: perStudent collection; the professor view must never show record.student or use RosterTable for it; show aggregates and the text only. Say in the student view that responses are anonymous to the professor.
 - Course-linked: course.assignments for deadlines; course.skills for skill lists.
 

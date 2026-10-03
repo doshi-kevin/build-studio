@@ -107,9 +107,9 @@ describe('roster overlay', () => {
     const { container, overlay, onAction } = setup()
     overlay.render('r1', payload())
     await settle()
-    const present = container.querySelector<HTMLButtonElement>(`[aria-label="Mark ${nameOf(A)} Present"]`)!
+    const present = container.querySelector<HTMLButtonElement>(`[aria-label="Present, ${nameOf(A)}"]`)!
     expect(present.getAttribute('aria-pressed')).toBe('true')
-    const absent = container.querySelector<HTMLButtonElement>(`[aria-label="Mark ${nameOf(B)} Absent"]`)!
+    const absent = container.querySelector<HTMLButtonElement>(`[aria-label="Absent, ${nameOf(B)}"]`)!
     expect(absent.getAttribute('aria-pressed')).toBe('false')
     absent.click()
     expect(onAction).toHaveBeenCalledWith({ slot: 'r1', student: B, column: 'status', value: 'absent' })

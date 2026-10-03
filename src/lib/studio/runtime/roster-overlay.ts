@@ -161,7 +161,7 @@ export function createRosterOverlay(options: RosterOverlayOptions): RosterOverla
           const button = el('button', controlStyle(pressed, option.tone), option.label)
           button.type = 'button'
           button.setAttribute('aria-pressed', String(pressed))
-          button.setAttribute('aria-label', `Mark ${name} ${option.label}`)
+          button.setAttribute('aria-label', `${option.label}, ${name}`)
           button.dataset.rosterKey = focusKey(student, column.key, option.value)
           button.addEventListener('click', () => act(slot, student, column.key, option.value))
           group.appendChild(button)
