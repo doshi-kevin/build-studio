@@ -153,7 +153,7 @@ export const STUDIO_BUILDER_INSTITUTION_DAILY_COST_USD = 100
 
 /** Repair (approved decision 1.9). */
 export const STUDIO_BUILDER_MAX_REPAIR_ROUNDS = 3
-export const STUDIO_BUILDER_MAX_CHECK_RUNS = 6
+export const STUDIO_BUILDER_MAX_CHECK_RUNS = 9
 /** A blocking finding (check and file) still present after this many repair rounds ends the run. */
 export const STUDIO_BUILDER_SAME_FINDING_LIMIT = 2
 export const STUDIO_BUILDER_MAX_CONSECUTIVE_ERRORS = 3

@@ -9,10 +9,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { runBuilderSlice, WORST_CASE_CALL_USD, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
 import { runDraftChecks } from '@/lib/studio/builder/checks'
 import type { RenderOutcome } from '@/lib/studio/builder/renderer'
-import { REVIEW_INSTRUCTIONS } from '@/lib/studio/builder/review'
+import { parseReview, REVIEW_INSTRUCTIONS } from '@/lib/studio/builder/review'
 import { readPlan } from '@/lib/studio/builder/work'
 import { parseManifest, type StudioManifestV2 } from '@/lib/studio/manifest'
-import { STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
+import { STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
 import { createMemoryStore, newRun } from './helpers/builder-memory-store'
 import { call, finish, FLASHCARDS_MANIFEST, inProcessWorkerCheck, PROFESSOR_VIEW, scriptedModel, STUDENT_VIEW, type ScriptedTurn } from './helpers/builder-fixtures'
 
@@ -252,6 +252,15 @@ describe('sample data', () => {
     await h.slice()
     const check = h.mem.state.steps.find((s) => s.label === 'check.failed')
     expect(JSON.stringify(check?.resultSummary.failing)).toContain('builder.roster|sample')
+  })
+})
+
+describe('review parsing', () => {
+  it('cuts an over-long finding instead of throwing the whole review away', () => {
+    const long = 'Professor desktop: ' + 'x'.repeat(900)
+    const review = parseReview([{ name: 'submit_review', invalid: false, input: { verdict: 'improve', unmet_requirements: [], major_issues: [long], minor_issues: [] } }])
+    expect(review?.verdict).toBe('improve')
+    expect(review?.major_issues[0]).toHaveLength(STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS)
   })
 })
 

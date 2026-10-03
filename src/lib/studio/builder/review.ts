@@ -59,22 +59,21 @@ Write each finding as one sentence: where (professor/student, desktop/phone), wh
 # Verdict
 improve when there is at least one unmet requirement or major issue; otherwise ready. Don't hold back a ready verdict for minor issues.`
 
-const finding = z
-  .string()
-  .min(1)
-  .max(STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS)
-  .refine((s) => characterProblem(s) === null, 'contains a control or bidirectional character')
+/** What the model is asked for is one short sentence per finding, but a long one is cut, not refused:
+ * a review that fails validation is a review the professor's tool never gets. */
+const finding = z.string().min(1).max(2000)
+const list = z.array(finding).max(32)
 
 export const reviewSchema = z.strictObject({
   verdict: z.enum(['ready', 'improve']),
-  unmet_requirements: z.array(finding).max(STUDIO_BUILDER_REVIEW_FINDINGS_MAX),
-  major_issues: z.array(finding).max(STUDIO_BUILDER_REVIEW_FINDINGS_MAX),
-  minor_issues: z.array(finding).max(STUDIO_BUILDER_REVIEW_FINDINGS_MAX),
+  unmet_requirements: list,
+  major_issues: list,
+  minor_issues: list,
 })
 
 export const REVIEW_TOOL: ModelToolDecl = {
   name: 'submit_review',
-  description: 'Report the review once: the verdict, every unmet requirement, and the major and minor issues, each one sentence naming the view, the problem and the fix.',
+  description: `Report the review once: the verdict, every unmet requirement, and the major and minor issues, each one sentence (at most ${STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS} characters) naming the view, the problem and the fix.`,
   inputSchema: reviewSchema,
 }
 
@@ -85,7 +84,12 @@ export function parseReview(calls: readonly { name: string; input: unknown; inva
   const call = calls.find((c) => c.name === REVIEW_TOOL.name && !c.invalid)
   const parsed = call ? reviewSchema.safeParse(call.input) : null
   if (!parsed?.success) return null
-  const r = parsed.data
+  const clean = (items: string[]) =>
+    items
+      .map((i) => i.slice(0, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS))
+      .filter((i) => characterProblem(i) === null)
+      .slice(0, STUDIO_BUILDER_REVIEW_FINDINGS_MAX)
+  const r = { ...parsed.data, unmet_requirements: clean(parsed.data.unmet_requirements), major_issues: clean(parsed.data.major_issues), minor_issues: clean(parsed.data.minor_issues) }
   // The verdict follows the findings: improve needs something to improve.
   const verdict = r.unmet_requirements.length + r.major_issues.length > 0 ? r.verdict : 'ready'
   return { ...r, verdict }
