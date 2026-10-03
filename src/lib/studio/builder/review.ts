@@ -48,7 +48,7 @@ Check each of these, and report only real problems:
 6. State clarity: selected, marked, done and empty states are visibly different; numbers are labelled.
 7. Copy: specific, plain labels and helpful empty states; no placeholder text, no developer words, no handles or ids on screen, nothing awkward.
 8. Role fit: the professor view helps run the class; the student view is focused and only lets students do what they should.
-9. Phone width: no clipping, overflow or horizontal page scroll; controls still usable.
+9. Phone width: no clipping, overflow or horizontal page scroll; controls still usable. Sideways scroll inside a RosterTable is fine on phones; don't ask for choice cells to be swapped for selects to avoid clipping (choice cells are preferred for up to 4 options).
 10. Accessibility: labelled controls, readable sizes, meaning not carried by colour alone.
 
 # Severity

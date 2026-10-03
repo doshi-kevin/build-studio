@@ -188,6 +188,14 @@ describe('the tool registry', () => {
     const order = orderCalls([{ name: 'finish' }, { name: 'run_checks' }, { name: 'write_file' }, { name: 'read_file' }]).map((c) => c.name)
     expect(order).toEqual(['write_file', 'read_file', 'run_checks', 'finish'])
   })
+  it('finish refuses a professor-facing note written as code, and accepts plain words', async () => {
+    const finish = (summary: string, open_questions: string[] = []) => TOOLS.finish.execute(baseState(), { status: 'completed', summary, open_questions } as never)
+    for (const bad of ['Added a `status` field.', 'Uses a perStudent collection.', 'Marked staffPerStudent.', 'Set to staffOnly.']) {
+      expect(await finish(bad)).toMatchObject({ kind: 'refused', code: 'note_has_code' })
+    }
+    expect(await finish('Fine.', ['Should `late` count?'])).toMatchObject({ kind: 'refused', code: 'note_has_code' })
+    expect(await finish('Attendance for each student, with a summary for them.')).toMatchObject({ kind: 'finish' })
+  })
   it('the plan gate: manifest changes always need a plan; a second view does too', () => {
     const state = baseState()
     expect(planGate(state, 'propose_manifest_change', {})).not.toBeNull()

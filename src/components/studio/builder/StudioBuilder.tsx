@@ -53,7 +53,7 @@ interface StudioBuilderProps {
 }
 
 export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose, onChanged }: StudioBuilderProps) {
-  const [mode, setMode] = useState<ViewMode>('split')
+  const [mode, setMode] = useState<ViewMode>('professor')
   const [device, setDevice] = useState<Device>('desktop')
   const [pane, setPane] = useState<'chat' | 'preview'>('chat')
   // The workspace remounts this per project (key), so props only seed state.

@@ -148,8 +148,10 @@ export function Badge({ tone = 'neutral', children }: { tone?: Tone } & Children
 }
 
 export function StatCard({ label, value, hint, tone = 'neutral' }: { label: string; value: string | number; hint?: string; tone?: Tone }) {
+  // A zero is the absence of the thing the tone describes, so it never takes the tone.
+  const shown = value === 0 || (typeof value === 'string' && value.trim() === '0') ? 'neutral' : tone
   return (
-    <div className={`kit-stat kit-stat-${tone}`}>
+    <div className={`kit-stat kit-stat-${shown}`}>
       <p className="kit-stat-label">{label}</p>
       <p className="kit-stat-value">{typeof value === 'number' ? formatNumber(value) : value}</p>
       {hint ? <p className="kit-stat-hint">{hint}</p> : null}

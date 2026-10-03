@@ -78,7 +78,7 @@ const LABELS: Record<string, string | null> = {
   'approval.waiting': 'Waiting for your approval',
   'approval.approved': 'You approved the change',
   'approval.declined': 'You declined the change',
-  'question.asked': 'Athena has a question for you',
+  'question.asked': 'I have a question for you',
   'question.answered': 'You answered',
   'check.passed': 'Checks passed',
   'check.failed': 'Found issues to fix',
@@ -107,7 +107,7 @@ const LABELS: Record<string, string | null> = {
 export function endingCopy(status: db.BuilderRunStatus, reason: string | null, hasNote = true): string | null {
   switch (status) {
     case 'preview_ready':
-      return 'Preview ready. Your saved tool hasn’t changed until you save this draft as a version.'
+      return 'Preview ready. Students won’t see this until you save it as a version and add it to the course.'
     case 'completed':
       return 'Nothing needed to change.'
     case 'cancelled':

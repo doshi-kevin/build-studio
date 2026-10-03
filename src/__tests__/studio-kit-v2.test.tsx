@@ -25,6 +25,7 @@ import {
   SearchField,
   SegmentedControl,
   Select,
+  StatCard,
   Switch,
   Tabs,
   TextField,
@@ -127,6 +128,17 @@ describe('data display', () => {
     expect(screen.getByRole('table', { name: 'Submissions' })).toBeInTheDocument()
     expect(screen.getByText('No submissions yet.')).toHaveAttribute('colspan', '2')
     expect(screen.getByRole('columnheader', { name: 'Score' })).toHaveClass('kit-cell-end')
+  })
+  it('a stat of zero is neutral; other values keep their tone', () => {
+    const { container } = render(
+      <>
+        <StatCard label="Late" value={0} tone="danger" />
+        <StatCard label="Absent" value="0" tone="danger" />
+        <StatCard label="Missing" value={3} tone="danger" />
+      </>,
+    )
+    const tones = [...container.querySelectorAll('.kit-stat')].map((n) => n.className)
+    expect(tones).toEqual(['kit-stat kit-stat-neutral', 'kit-stat kit-stat-neutral', 'kit-stat kit-stat-danger'])
   })
   it('a progress bar is a named progressbar; bars print their values', () => {
     render(

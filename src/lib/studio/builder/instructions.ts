@@ -16,7 +16,7 @@ import { CAPABILITIES } from '../capabilities'
 import { PURPOSE_CATEGORIES, SIGNALS } from '../edtech'
 import { MEMORY_SLOTS } from './memory'
 
-export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v8'
+export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v9'
 
 const memorySlots = Object.entries(MEMORY_SLOTS)
   .map(([topic, slots]) => `${topic} (${slots.join(', ')})`)
@@ -71,7 +71,7 @@ ${kitIndex}
 Use useRecords(collection) for a collection's list and its writes: create(data, student?), update(record, data), remove(record), and saveMany(items) to write many records in one request (marking a whole class, resetting a session). Never loop single writes over a class.
 
 # Patterns that work
-- Staff track each student (attendance, participation, teams): professor view declares course.roster; one staffPerStudent collection (for example date and status, or points, or team); RosterTable lists the class with a choice or select cell per student and bulk actions (Mark all present) through saveMany; StatCards summarise today; a DataTable or Tabs show history by date. Student view: their own records only, read-only, with a clear summary (for example 12 of 14 sessions attended) and an Empty state.
+- Staff track each student (attendance, participation, teams): professor view declares course.roster; one staffPerStudent collection (for example date and status, or points, or team); RosterTable lists the class with a choice or select cell per student and bulk actions through saveMany that fill only students not yet marked ("Mark remaining present") and never overwrite an existing mark; StatCards summarise today; a DataTable or Tabs show history by date. Student view: their own records only, read-only, with a clear summary (for example 12 of 14 sessions attended) and an Empty state.
 - Students submit, staff review (queues, reading logs, reflections, sign-ups): perStudent collection the students write; the professor view lists entries and shows who through RosterTable (sort "given" keeps your order, for queues); staff-side state about a student (called, done, approved) goes in a staffPerStudent collection, so the student sees it.
 - Professor authors, students use (flashcards, prompts, quizzes, discussion boards): shared collection for the content, staffOnly for answers students must not see first, perStudent for each student's progress or responses.
 - Anonymous input: perStudent collection; the professor view must never show record.student or use RosterTable for it; show aggregates and the text only. Say in the student view that responses are anonymous to the professor.
@@ -83,11 +83,11 @@ Use useRecords(collection) for a collection's list and its writes: create(data, 
 - Student views are focused: their status first, one clear thing to do, nothing they can't use. When students only observe (staff write), make it plainly read-only.
 - Show state at a glance: Badge and tones for status, ProgressBar for completion, BarChart for comparisons, formatDate for dates, today() for the current day. Long lists get SearchField, Tabs or filters.
 - Copy is specific and plain: "Mark all present", "Save attendance for Oct 3", helpful Empty states that say what to do next. No placeholder text, no developer words, no ids or handles on screen.
-- Every screen works at phone width: Grid and RosterTable adapt; keep rows short.
+- Every screen works at phone width: Grid and RosterTable adapt; keep rows short. Scrolling sideways inside a RosterTable is fine on phones. Prefer choice cells for up to 4 options; don't swap choice cells for selects to avoid clipping.
 - Give the tool real substance: if a professor would reasonably expect it (counts, history, undo a mistake, an empty state with guidance), build it.
 
 # Sample data
-Before finishing, write sample data with write_sample_data: invented, realistic records for each collection that make both views meaningful in the preview (several students, several dates, every status). For perStudent and staffPerStudent records, "student" is a number from 0 to 11, one of the preview's invented students (student 0 is the student previewing the student view). Never use a real person's name. Keep it consistent with the manifest; rewrite it when collections change.
+Before finishing, write sample data with write_sample_data: invented, realistic records for each collection that make both views meaningful in the preview (several students, several dates, every status). Dates in sample data should end on the most recent day, with several records on that day. For perStudent and staffPerStudent records, "student" is a number from 0 to 11, one of the preview's invented students (student 0 is the student previewing the student view). Never use a real person's name. Keep it consistent with the manifest; rewrite it when collections change.
 
 # The manifest
 The manifest says what the tool stores, what each view may use and what it is for. Change it only with propose_manifest_change, passing the whole manifest as JSON (manifestVersion 2). When the tool has a manifest, the prompt shows it as JSON: start from that, change only what the request needs, and keep every other field, empty arrays included. The platform sets id, version, manifestVersion, bridgeVersion and both view entries itself; don't fight them.

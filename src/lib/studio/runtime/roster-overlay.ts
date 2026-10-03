@@ -25,7 +25,7 @@ const C = {
   muted: 'oklch(0.967 0.003 247)',
   mutedForeground: 'oklch(0.47 0.013 257)',
   border: 'oklch(0.922 0.004 247)',
-  inputBorder: 'oklch(0.7 0.01 255)',
+  inputBorder: 'oklch(0.66 0.01 255)',
   primary: 'oklch(0.56 0.19 260)',
   onSolid: 'oklch(0.99 0 0)',
   danger: 'oklch(0.52 0.21 27)',
@@ -203,13 +203,26 @@ export function createRosterOverlay(options: RosterOverlayOptions): RosterOverla
   }
 
   const cellStyle = (header: boolean): Style => ({
-    padding: '0 10px',
+    padding: '0 16px',
     textAlign: 'left',
     verticalAlign: 'middle',
     whiteSpace: 'nowrap',
     borderTop: header ? '0' : `1px solid ${C.border}`,
-    ...(header ? { font: `600 13px/1.2 ${FONT}`, color: C.mutedForeground, height: `${ROSTER_HEADER_PX}px` } : {}),
+    ...(header
+      ? {
+          font: `600 12px/1.2 ${FONT}`,
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          color: C.mutedForeground,
+          background: C.muted,
+          borderBottom: `1px solid ${C.border}`,
+          height: `${ROSTER_HEADER_PX}px`,
+        }
+      : {}),
   })
+
+  /** The name column stays put while the rest scrolls sideways. */
+  const sticky: Style = { position: 'sticky', left: '0', zIndex: '1' }
 
   function buildTable(s: Slot): HTMLTableElement {
     const { slot, payload } = s
@@ -218,8 +231,8 @@ export function createRosterOverlay(options: RosterOverlayOptions): RosterOverla
     if (!names) table.setAttribute('aria-busy', 'true')
 
     const head = el('tr')
-    for (const header of ['Student', ...payload.columns.map((c) => c.header)]) {
-      const th = el('th', cellStyle(true), header)
+    for (const [i, header] of ['Student', ...payload.columns.map((c) => c.header)].entries()) {
+      const th = el('th', i === 0 ? { ...cellStyle(true), ...sticky } : cellStyle(true), header)
       th.scope = 'col'
       head.appendChild(th)
     }
@@ -240,7 +253,7 @@ export function createRosterOverlay(options: RosterOverlayOptions): RosterOverla
       const tr = el('tr', rowStyle)
       const name = nameOf(row.student)
       // Up to two lines, so a phone-width table still fits its controls.
-      const th = el('th', { ...cellStyle(false), font: `500 15px/1.25 ${FONT}`, color: C.foreground, whiteSpace: 'normal', minWidth: '7rem', maxWidth: '16rem' })
+      const th = el('th', { ...cellStyle(false), ...sticky, background: C.card, font: `500 15px/1.25 ${FONT}`, color: C.foreground, whiteSpace: 'normal', minWidth: '7rem', maxWidth: '16rem' })
       th.scope = 'row'
       if (names) {
         th.appendChild(el('span', { display: '-webkit-box', webkitLineClamp: '2', webkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere' }, name))
@@ -281,7 +294,7 @@ export function createRosterOverlay(options: RosterOverlayOptions): RosterOverla
       return
     }
     if (!s.search) {
-      const bar = el('div', { height: `${ROSTER_SEARCH_PX}px`, display: 'flex', alignItems: 'center', padding: '0 10px', boxSizing: 'border-box' })
+      const bar = el('div', { height: `${ROSTER_SEARCH_PX}px`, display: 'flex', alignItems: 'center', padding: '0 16px', boxSizing: 'border-box' })
       const input = el('input', { ...controlStyle(false, null), cursor: 'text', width: '100%', maxWidth: '320px', font: `400 15px/1.2 ${FONT}`, boxSizing: 'border-box' })
       input.type = 'search'
       input.placeholder = 'Search students'

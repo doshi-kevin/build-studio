@@ -2,4 +2,4 @@
 // public/studio-runtime/<version>/vendor.js. Pinned: a released version never changes
 // (rule 8.7).
 export const VENDOR_V1_SHA256 = '1ff14b349e3a46ba9461dfb5bffaea43ec78c6c4e4a4cfaa859b8d1eed981618'
-export const VENDOR_V2_SHA256 = 'd61ff5c4e980d69977a97d848b674f1d19483489d0752c9b5bfe193a65025518'
+export const VENDOR_V2_SHA256 = 'b10ad6c27c1ce974ca26339de405a687abe1668f551efccc678b22b580b480a2'

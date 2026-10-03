@@ -267,7 +267,7 @@ describe('answering a question', () => {
 describe('the ending card', () => {
   const ready = progress({
     status: 'preview_ready',
-    ending: 'Preview ready. Your saved tool hasn’t changed until you save this draft as a version.',
+    ending: 'Preview ready. Students won’t see this until you save it as a version and add it to the course.',
     result: result({ summary: 'I built flashcards.', previewHash: 'h'.repeat(64), passed: true, filesChanged: ['views/student.tsx'] }),
   })
   it('lists the course material Athena read, marking what students can’t see yet', () => {

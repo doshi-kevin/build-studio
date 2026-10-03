@@ -120,6 +120,41 @@ function sampleRecords(name: string, collection: CollectionDef, list: PreviewSam
   return out
 }
 
+// A bare calendar day in a text field. Sample dates are invented once, so the preview moves
+// them all by the same number of days: the newest lands on today, in the viewer's zone.
+const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** Days since the epoch for a real YYYY-MM-DD, else null. */
+function dayNumber(value: unknown): number | null {
+  const m = typeof value === 'string' ? DAY_RE.exec(value) : null
+  if (!m) return null
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const d = new Date(ms)
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? ms / DAY_MS : null
+}
+
+function shiftSampleDates(sample: PreviewSample): PreviewSample {
+  const days = Object.values(sample).flatMap((list) => list.flatMap((item) => Object.values(item.data ?? {}).map(dayNumber)))
+  const newest = Math.max(...days.filter((d): d is number => d !== null))
+  if (!Number.isFinite(newest)) return sample
+  const now = new Date()
+  const shift = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS - newest
+  if (shift === 0) return sample
+  const moved = (value: unknown) => {
+    const day = dayNumber(value)
+    if (day === null) return value
+    const d = new Date((day + shift) * DAY_MS)
+    return `${String(d.getUTCFullYear()).padStart(4, '0')}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+  }
+  return Object.fromEntries(
+    Object.entries(sample).map(([name, list]) => [
+      name,
+      list.map((item) => ({ ...item, data: Object.fromEntries(Object.entries(item.data ?? {}).map(([k, v]) => [k, moved(v)])) })),
+    ]),
+  )
+}
+
 // ── course.assignments ───────────────────────────────────────────────
 
 function sampleAssignments() {
@@ -145,7 +180,7 @@ export interface PreviewOptions {
 export function createPreviewBridge(manifest: StudioManifest, view: PluginView, options: PreviewOptions = {}): PreviewBridge {
   // Staff preview the professor view as a professor; the student view as student 0.
   const role: ViewerRole = view === 'student' ? 'student' : 'professor'
-  const sample = options.sample ?? null
+  const sample = options.sample ? shiftSampleDates(options.sample) : null
   const store = new Map(
     Object.entries(manifest.collections).map(([name, c]) => [
       name,

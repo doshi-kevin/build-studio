@@ -177,6 +177,17 @@ html, body {
   .kit-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
+/* Stat tiles are compact, so they keep two across on the smallest phones and the full count from 480px. */
+.kit-grid:is(.kit-grid-2, .kit-grid-3, .kit-grid-4):has(> .kit-stat) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 480px) {
+  .kit-grid.kit-grid-3:has(> .kit-stat) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kit-grid.kit-grid-4:has(> .kit-stat) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 639px) {
+  .kit-stat { padding: 12px; }
+  .kit-stat-value { font-size: var(--kit-text-xl); }
+}
+
 .kit-divider { border: 0; border-top: 1px solid var(--kit-border); margin: 0; width: 100%; }
 
 /* ── Text ───────────────────────────────────────────────────────────────── */
@@ -451,6 +462,8 @@ html, body {
 .kit-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .kit-label { font-size: var(--kit-text-sm); font-weight: 500; color: var(--kit-foreground); }
 .kit-hint { margin: 0; font-size: var(--kit-text-sm); color: var(--kit-muted-foreground); }
+/* A field beside a button lines up on the input, not the label. */
+.kit-stack-row.kit-align-center:has(> .kit-field) { align-items: flex-end; }
 
 /* 16px on phones so focusing a field doesn't zoom the page. */
 .kit-input {

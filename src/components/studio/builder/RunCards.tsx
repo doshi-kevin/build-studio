@@ -374,6 +374,19 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
           ))}
         </ul>
       )}
+      {result?.previewHash && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" className="min-h-11 lg:hidden" onClick={onPreview}>
+            <Eye className="h-4 w-4" aria-hidden="true" />
+            Preview
+          </Button>
+          {canSave && !saved?.ok && (
+            <Button type="button" className="min-h-11" disabled={saving} onClick={() => start(async () => setSaved(await onSave()))}>
+              {saving ? 'Checking and saving…' : savesOtherDraft ? 'Save current draft as version' : 'Save as version'}
+            </Button>
+          )}
+        </div>
+      )}
       {(result?.summary || questions.length > 0) && (
         <div className="space-y-2 rounded-xl bg-muted p-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Athena’s note</p>
@@ -392,19 +405,6 @@ export function EndingCard({ progress, canSave, savesOtherDraft = false, onPrevi
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
           {retrying ? 'Sending…' : 'Try again'}
         </Button>
-      )}
-      {result?.previewHash && (
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" className="min-h-11 lg:hidden" onClick={onPreview}>
-            <Eye className="h-4 w-4" aria-hidden="true" />
-            Preview
-          </Button>
-          {canSave && !saved?.ok && (
-            <Button type="button" className="min-h-11" disabled={saving} onClick={() => start(async () => setSaved(await onSave()))}>
-              {saving ? 'Checking and saving…' : savesOtherDraft ? 'Save current draft as version' : 'Save as version'}
-            </Button>
-          )}
-        </div>
       )}
       {result?.previewHash && savesOtherDraft && <p className="text-sm text-muted-foreground">Your current draft isn’t the one this build made. Saving keeps your current draft.</p>}
       {/* No live role: the conversation log around this card announces it. */}

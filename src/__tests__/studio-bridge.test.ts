@@ -813,7 +813,10 @@ describe('preview bridge with the synthetic class', () => {
   if (!parsedClass.ok) throw new Error('class manifest is invalid')
   const CLASS = parsedClass.manifest
   const [FIRST, SECOND] = PREVIEW_ROSTER.map((s) => s.handle)
-  const today = { date: '2026-10-03', status: 'present', note: '' }
+  // Sample dates move so the newest is today; a pinned date would drift out of agreement.
+  const now = new Date()
+  const todayText = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const today = { date: todayText, status: 'present', note: '' }
   const listOf = async (preview: { handleRequest: (m: string, a: unknown) => Promise<unknown> }, collection: string) =>
     ((await preview.handleRequest('records.list', { collection })) as { data: Record<string, unknown>[] }).data
 
@@ -905,5 +908,37 @@ describe('preview bridge with the synthetic class', () => {
     const page = ((await professor.handleRequest('records.list', { collection: 'attendance', limit: 1, offset: 1 })) as { data: unknown[] }).data
     expect(page).toEqual([all[1]])
     expect(await professor.handleRequest('records.list', { collection: 'attendance', extra: true })).toMatchObject({ ok: false, code: 'invalid' })
+  })
+})
+
+describe('preview bridge sample dates', () => {
+  const parsed = parseManifest({
+    ...exitTicket,
+    views: {
+      student: { ...exitTicket.views.student, capabilities: ['context.get'] },
+      professor: { ...exitTicket.views.professor, capabilities: ['context.get', 'course.roster'] },
+    },
+    collections: { ...exitTicket.collections, attendance: { access: 'staffPerStudent', fields: { date: 'text', status: 'text', note: 'text' } } },
+  })
+  if (!parsed.ok) throw new Error('manifest is invalid')
+  const local = (offset: number) => {
+    const d = new Date()
+    d.setDate(d.getDate() + offset)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  it('moves every sample date by the same days so the newest is today, and leaves other text alone', async () => {
+    const professor = createPreviewBridge(parsed.manifest, 'professor', {
+      sample: {
+        attendance: [
+          { student: 0, data: { date: '2024-03-14', status: 'present', note: 'Back on 2024-03-14' } },
+          { student: 1, data: { date: '2024-03-12', status: 'late', note: '' } },
+          { student: 2, data: { date: '2024-02-28', status: 'absent', note: '2024-13-45' } },
+        ],
+      },
+    })
+    const list = ((await professor.handleRequest('records.list', { collection: 'attendance' })) as { data: { data: Record<string, string> }[] }).data
+    expect(list.map((r) => r.data.date)).toEqual([local(0), local(-2), local(-15)])
+    expect(list.map((r) => r.data.note)).toEqual(['Back on 2024-03-14', '', '2024-13-45'])
   })
 })

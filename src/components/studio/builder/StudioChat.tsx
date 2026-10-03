@@ -51,6 +51,8 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
   const [sending, setSending] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // The text a daily limit refused. Sending it again can't work until the draft changes.
+  const [limitedDraft, setLimitedDraft] = useState<string | null>(null)
   // `fromBox`: the text came from the chat box, so a successful send clears it.
   const [replace, setReplace] = useState<{ runId: string; text: string; fromBox: boolean } | null>(null)
   const end = useRef<HTMLDivElement>(null)
@@ -92,6 +94,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
     }
     if (r?.error) {
       setNotice(r.error)
+      if (/try again tomorrow/i.test(r.error)) setLimitedDraft(text)
       return
     }
     setReplace(null)
@@ -99,7 +102,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
   }
   const submit = () => {
     const text = draft.trim()
-    if (text && !sending && !working) void send(text)
+    if (text && !sending && !working && !(notice && limitedDraft === text)) void send(text)
   }
 
   const placeholder = working
@@ -207,7 +210,10 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
             placeholder={placeholder}
             rows={2}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setNotice(null)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -216,7 +222,7 @@ export function StudioChat({ turns, conversation, onReloadConversation, current,
             }}
             className="min-h-0 resize-none border-0 shadow-none focus-visible:ring-0"
           />
-          <Button type="submit" size="icon" className="h-11 w-11 shrink-0" disabled={sending || working || !draft.trim()} aria-label={answering ? 'Send answer' : 'Send'}>
+          <Button type="submit" size="icon" className="h-11 w-11 shrink-0" disabled={sending || working || !draft.trim() || (!!notice && limitedDraft === draft.trim())} aria-label={answering ? 'Send answer' : 'Send'}>
             <ArrowUp className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>

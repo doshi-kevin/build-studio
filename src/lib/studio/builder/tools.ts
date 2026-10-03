@@ -65,7 +65,7 @@ export type RefusalCode =
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit' | 'search_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
   | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
-  | 'sample_invalid'
+  | 'sample_invalid' | 'note_has_code'
 
 /** The refusals a memory proposal can come back with from the database. */
 export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_replaces', 'memory_duplicate', 'memory_full', 'memory_unavailable'] as const satisfies readonly RefusalCode[]
@@ -103,6 +103,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   memory_full: `This tool already has ${STUDIO_MEMORY_MAX_ACTIVE} saved decisions. Replace one (set replaces), or leave it.`,
   memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
   sample_invalid: 'Fix the sample data issues listed and write it again. Each record is { "student"?: number, "data": { ...every field } }; student only for perStudent and staffPerStudent collections.',
+  note_has_code: 'Say it in plain words for a professor: no code, field names or access-mode names.',
 }
 
 /** Progress labels, chosen by the harness when it records a step. */
@@ -196,6 +197,9 @@ export interface ToolSpec {
 
 const path = z.enum(PLUGIN_PATHS)
 const prose = (max: number) => z.string().min(1).max(max)
+/** Backticks, or an access-mode name written as code. */
+const CODE_IN_NOTE = /`|\b(?:perStudent|staffPerStudent|staffOnly)\b/
+
 const refused = (code: RefusalCode, args: Summary, issues?: string[]): ToolOutcome => ({ kind: 'refused', code, args, issues: issues?.slice(0, 5).map((i) => i.slice(0, 160)) })
 
 function budgetRefusal(state: ToolState, bytes: number, args: Summary): ToolOutcome | null {
@@ -591,6 +595,8 @@ const TOOL_LIST: ToolSpec[] = [
       for (const text of [args.summary, ...args.open_questions]) {
         const chars = characterProblem(text)
         if (chars) return refused('bad_characters', summary, [chars])
+        // The note is read by a professor: no backticks, no access-mode identifiers.
+        if (CODE_IN_NOTE.test(text)) return refused('note_has_code', summary)
       }
       return { kind: 'finish', args: summary, status: args.status, summary: args.summary, openQuestions: args.open_questions }
     },
