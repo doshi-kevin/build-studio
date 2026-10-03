@@ -46,7 +46,7 @@ describe('the report endpoint', () => {
   it.each([
     ['the cloud runner', { STUDIO_VALIDATOR_RUNNER: 'cloud' }],
     ['no runner', { STUDIO_VALIDATOR_RUNNER: '' }],
-    ['a production server asked for the local runner', { STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production' }],
+    ['a deployed production server asked for the local runner', { STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://abc.supabase.co' }],
   ])('is closed (404) with %s, without calling the service', async (_label, env) => {
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v)
     const res = await post({ binding: { validationId: ID }, report: {} })
@@ -86,6 +86,11 @@ describe('the local runner', () => {
     expect(runnerMode({})).toBe('unavailable')
     expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'development' })).toBe('local')
     expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production' })).toBe('unavailable')
+    // A deployed server talks to a hosted database: local mode stays refused there, whatever it is told.
+    expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://abc.supabase.co' })).toBe('unavailable')
+    expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'not a url' })).toBe('unavailable')
+    // The guarded local server: a production build on a loopback database.
+    expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'local', NODE_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:54321' })).toBe('local')
     expect(runnerMode({ STUDIO_VALIDATOR_RUNNER: 'container', NODE_ENV: 'development' })).toBe('unavailable')
   })
 

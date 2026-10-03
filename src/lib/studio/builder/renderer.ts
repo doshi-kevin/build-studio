@@ -22,24 +22,13 @@ import { logger } from '@/lib/logger'
 import { STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_REVIEW_IMAGES_MAX } from '../limits'
 import type { StudioManifest } from '../manifest'
 import type { PreviewSample } from '../runtime/preview-bridge'
-import { runnerEnvironment } from '../validator/runtime-runner'
+import { onThisMachine, runnerEnvironment } from '../validator/runtime-runner'
 
 export type RendererMode = 'unavailable' | 'local'
 
-/** True only for a database on this machine: a deployed app never has one. */
-const loopbackDatabase = (url: string | undefined) => {
-  try {
-    return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url ?? '').hostname)
-  } catch {
-    return false
-  }
-}
-
-/** Local rendering runs where a developer machine is the environment: a dev server, or the guarded
- * production build (e2e/serve-guarded.mjs), which talks only to a loopback database. */
+/** Local rendering runs only on a developer machine (onThisMachine), like the local validator. */
 export function rendererMode(env: Record<string, string | undefined> = process.env): RendererMode {
-  const local = env.NODE_ENV !== 'production' || loopbackDatabase(env.NEXT_PUBLIC_SUPABASE_URL)
-  return env.STUDIO_BUILDER_RENDERER === 'local' && local ? 'local' : 'unavailable'
+  return env.STUDIO_BUILDER_RENDERER === 'local' && onThisMachine(env) ? 'local' : 'unavailable'
 }
 
 export interface RenderedImage {

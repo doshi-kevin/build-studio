@@ -34,8 +34,21 @@ export const CLOUD_SETTINGS = [
   'STUDIO_VALIDATOR_RUNNER_DIGEST',
 ] as const
 
+/** Whether this server runs on a developer machine: a dev server, or a production build whose
+ * database is on loopback (the guarded local server, e2e/serve-guarded.mjs). A deployed app always
+ * talks to a hosted database, so it can never pass this. Local runners that execute plugin code in
+ * a child process are allowed only here. */
+export function onThisMachine(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.NODE_ENV !== 'production') return true
+  try {
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(env.NEXT_PUBLIC_SUPABASE_URL ?? '').hostname)
+  } catch {
+    return false
+  }
+}
+
 export function runnerMode(env: Record<string, string | undefined> = process.env): RunnerMode {
-  if (env.STUDIO_VALIDATOR_RUNNER === 'local' && env.NODE_ENV !== 'production') return 'local'
+  if (env.STUDIO_VALIDATOR_RUNNER === 'local' && onThisMachine(env)) return 'local'
   if (env.STUDIO_VALIDATOR_RUNNER === 'cloud' && CLOUD_SETTINGS.every((k) => typeof env[k] === 'string' && env[k]!.length > 0)) return 'cloud'
   return 'unavailable'
 }
@@ -71,7 +84,10 @@ export function runnerEnvironment(env: Record<string, string | undefined> = proc
 /** Runs the local runner on one payload and resolves with its parsed envelope, or null on any failure. */
 export function runLocally(validationId: string, payloadBytes: string): Promise<unknown | null> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [join(process.cwd(), 'validator-runtime', 'cli.mjs')], {
+    // The repository root, when the server runs from a build that doesn't ship validator-runtime.
+    const root = process.env.STUDIO_VALIDATOR_RUNNER_ROOT || process.cwd()
+    const child = spawn(process.execPath, [join(root, 'validator-runtime', 'cli.mjs')], {
+      cwd: root,
       env: runnerEnvironment(),
       stdio: 'pipe',
       windowsHide: true,

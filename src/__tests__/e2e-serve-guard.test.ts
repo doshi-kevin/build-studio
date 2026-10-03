@@ -63,6 +63,13 @@ describe('what a child process may receive', () => {
     expect(passed).not.toHaveProperty('OPENAI_API_KEY')
   })
 
+  it('local Stage 2 validation is switched on only by E2E_STUDIO_VALIDATOR_RUNNER', () => {
+    const source = { STUDIO_VALIDATOR_RUNNER: 'local', E2E_A_URL: 'http://localhost:3000' }
+    expect(childEnv(source, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env).not.toHaveProperty('STUDIO_VALIDATOR_RUNNER')
+    const passed: Record<string, string> = childEnv({ ...source, E2E_STUDIO_VALIDATOR_RUNNER: 'local' }, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env
+    expect(passed.STUDIO_VALIDATOR_RUNNER).toBe('local')
+  })
+
   it('the design-review renderer is switched on only by E2E_STUDIO_BUILDER_RENDERER', () => {
     const source = { STUDIO_BUILDER_RENDERER: 'local', E2E_A_URL: 'http://localhost:3000' }
     expect(childEnv(source, ['A_URL'], PROD, {}, OPTIONAL_SERVER_VARS).env).not.toHaveProperty('STUDIO_BUILDER_RENDERER')

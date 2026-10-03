@@ -17,6 +17,9 @@ export const OPTIONAL_SERVER_VARS = [
   'STUDIO_BUILDER_RENDERER',
   // Where the local renderer finds validator-runtime and Playwright: the standalone build ships neither.
   'STUDIO_BUILDER_RENDERER_ROOT',
+  // Local Stage 2 browser validation, and where it finds validator-runtime and Playwright.
+  'STUDIO_VALIDATOR_RUNNER',
+  'STUDIO_VALIDATOR_RUNNER_ROOT',
 ]
 /** The subset baked into the client bundle at build time. */
 export const BUILD_VARS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SITE_URL']
