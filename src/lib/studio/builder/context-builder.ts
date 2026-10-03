@@ -187,8 +187,8 @@ function materialLog(r: Record<string, unknown>): string {
 function improveGuide(work: Work, modelTurns: number, checkedNow: boolean): string {
   const from = work.review.improveFromTurn
   const left = typeof from === 'number' ? Math.max(0, STUDIO_BUILDER_IMPROVE_MAX_TURNS - (modelTurns - from)) : STUDIO_BUILDER_IMPROVE_MAX_TURNS
-  if (checkedNow && work.review.last && (modelTurns - (from ?? modelTurns)) > 0) {
-    return `Your changes pass every check. Call finish now with your summary. Don't keep polishing: minor issues are optional. (${left} improvement turn${left === 1 ? '' : 's'} left.)`
+  if (checkedNow && work.review.last && typeof from === 'number' && modelTurns - from > 0) {
+    return `Your changes pass every check. Call finish now with your summary: finishing renders the tool again, which is how a fix for a screen that crashed is confirmed. Don't keep polishing: minor issues are optional. (${left} improvement turn${left === 1 ? '' : 's'} left.)`
   }
   return [
     `A reviewer looked at the rendered tool and its code against your plan. You have ${left} turn${left === 1 ? '' : 's'} for this.`,

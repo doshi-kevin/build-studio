@@ -298,6 +298,56 @@ describe('convergence after a design review (live failure, office-hours queue, 2
   })
 })
 
+describe('a view that crashes when rendered (live failure, office-hours queue, 2026-10-03 evening)', () => {
+  // The renderer reports the professor view as crashed while its code still contains CRASHME.
+  const render = vi.fn(async (input: { bundles: { professor: string } }): Promise<RenderOutcome> =>
+    input.bundles.professor.includes('CRASHME')
+      ? { ok: true, images: [jpeg('student-desktop')], failures: [{ label: 'professor-desktop', reason: 'crashed' }] }
+      : { ok: true, images: [jpeg('professor-desktop'), jpeg('student-desktop')], failures: [] },
+  )
+  const crashFirst: ScriptedTurn[] = [
+    readFiles,
+    { calls: [call('edit_file', { path: 'views/professor.tsx', old_text: 'Add card', new_text: 'Add card CRASHME' }), call('run_checks')] },
+    { calls: [finish('completed', 'Built the queue.')] },
+  ]
+  const polish = (n: number) => ({
+    calls: [call('edit_file', { path: 'views/professor.tsx', old_text: `Add card fixed${'!'.repeat(n)}`, new_text: `Add card fixed${'!'.repeat(n + 1)}` }), call('run_checks')],
+  })
+
+  it('a fixed crash is kept once the improvement turns run out, even if the builder never finishes, and never the crashing draft', async () => {
+    const h = harness(
+      [
+        ...crashFirst,
+        (input) => {
+          expect(input.prompt).toMatch(/crashed or didn’t start/)
+          return [call('edit_file', { path: 'views/professor.tsx', old_text: 'Add card CRASHME', new_text: 'Add card fixed' }), call('run_checks')]
+        },
+        (input) => {
+          // Once the fix passes, the builder is told to finish rather than keep editing.
+          expect(input.prompt).toMatch(/Call finish now/)
+          return polish(0).calls
+        },
+        ...Array.from({ length: 12 }, (_, i) => polish(i + 1)),
+      ],
+      { render: render as never },
+    )
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    expect((h.mem.state.run.result as { polish_stopped?: boolean }).polish_stopped).toBe(true)
+    const files = [...h.mem.state.snapshots.values()][0].files as Record<string, string>
+    expect(files['views/professor.tsx']).not.toContain('CRASHME')
+    expect(h.mem.state.run.counters.checkRuns).toBeLessThan(9)
+  })
+
+  it('a crash that is never fixed ends without a draft: nothing that crashes is ever kept', async () => {
+    const elsewhere = (n: number) => ({ calls: [call('edit_file', { path: 'views/professor.tsx', old_text: `CRASHME${'!'.repeat(n)}`, new_text: `CRASHME${'!'.repeat(n + 1)}` }), call('run_checks')] })
+    const h = harness([...crashFirst, ...Array.from({ length: 12 }, (_, i) => elsewhere(i))], { render: render as never })
+    await h.slice()
+    expect(h.mem.state.run.status).not.toBe('preview_ready')
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+})
+
 describe('sample data', () => {
   it('refuses records that don’t match their collection, naming positions, never values', async () => {
     const h = harness([

@@ -405,7 +405,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     extra: Parameters<typeof buildResult>[6] & { snapshot?: Record<string, unknown> | null } = {},
   ): Promise<'stop'> => {
     // A limit reached while polishing never costs the professor a draft that already passed.
-    if (work?.review.good && !settling && SETTLES(status, code)) {
+    if (work && (work.review.good || typeof work.review.improveFromTurn === 'number') && !settling && SETTLES(status, code)) {
       settling = true
       const settled = await settle(run, work, plan)
       if (settled) return settled
@@ -489,7 +489,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
 
       // ── Convergence: a review's improvements get a bounded number of turns ──
       const from = work.review.improveFromTurn
-      if (work.review.good && typeof from === 'number' && run.counters.modelTurns - from >= STUDIO_BUILDER_IMPROVE_MAX_TURNS) {
+      if (typeof from === 'number' && run.counters.modelTurns - from >= STUDIO_BUILDER_IMPROVE_MAX_TURNS) {
         settling = true
         return (await settle(run, work, plan)) ?? (await end(run, work, plan, 'budget_exhausted', 'limit_turns'))
       }
@@ -969,8 +969,9 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         continue
       }
       if (!fresh.passed || !fresh.bundles || !fresh.compiler) continue
-      // The improved draft hasn't been rendered: one that crashes falls back to the reviewed one.
-      if (c.current && good && workHash(c.manifest, c.files, c.sample) !== workHash(good.manifest, good.files, good.sample)) {
+      // A draft that isn't the one the review already rendered is rendered now: one that crashes is
+      // never kept, and the reviewed draft (if any) is tried next.
+      if (c.current && (!good || workHash(c.manifest, c.files, c.sample) !== workHash(good.manifest, good.files, good.sample))) {
         const render = await deps.renderPreview({ manifest: c.manifest, bundles: fresh.bundles, sample: c.sample }).catch(() => null)
         if (render?.ok && render.failures.length > 0) continue
       }
@@ -1076,7 +1077,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       const crash: ReviewRecord = { round, work_hash: current, rendered: true, verdict: 'improve', unmet_requirements: [], major_issues: crashFindings(failures), minor_issues: [] }
       const r = await deps.store.apply({
         runId, token, step: step('tool', id, 'done', 'review.changes', { tool: 'finish', args: { call: id, round }, result: { call: id, unmet: 0, major: crash.major_issues.length, minor: 0, rendered: true, crashed: true } }),
-        expectedWorkRev: work.work_rev, work: { ...work, review: { rounds: round, last: crash } } as unknown as Record<string, unknown>, plan: null, phase: 'improving',
+        expectedWorkRev: work.work_rev, work: { ...work, review: { rounds: round, last: crash, improveFromTurn: c.modelTurns, summary, good: work.review.good ?? null } } as unknown as Record<string, unknown>, plan: null, phase: 'improving',
         delta: { tool_calls: 1, error: false }, caps: CAPS, activeMs: takeActive(),
       })
       return (await stopIf(r)) ? 'stop' : 'improve'
