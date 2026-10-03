@@ -365,3 +365,26 @@ describe('the approval card summary', () => {
     expect(approvalSummary(after as never, after as never)).toEqual([])
   })
 })
+
+describe('the finish note is plain language', () => {
+  const note = async (summary: string) => {
+    const { TOOLS } = await import('@/lib/studio/builder/tools')
+    return TOOLS.finish.execute({} as never, { status: 'completed', summary, open_questions: [] } as never) as { kind: string; code?: string }
+  }
+  it.each([
+    'I moved the join card outside the Empty state component.',
+    'Students now write to the requests collection.',
+    'Added a StatCard and a RosterTable for the queue.',
+    'Positions are kept in sync with useRecords.',
+    'The Bridge now saves the status.',
+  ])('refuses building words: %s', async (summary) => {
+    expect(await note(summary)).toMatchObject({ kind: 'refused', code: 'note_has_code' })
+  })
+  it.each([
+    'Select a date to see who came. Students see their own history and can’t change it.',
+    'You can call the next student with one button, and clearing the queue now asks first.',
+    'Flashcards for this week: students flip each card and mark the ones they know.',
+  ])('accepts plain sentences: %s', async (summary) => {
+    expect((await note(summary)).kind).toBe('finish')
+  })
+})

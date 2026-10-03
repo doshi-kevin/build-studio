@@ -16,7 +16,7 @@ import { CAPABILITIES } from '../capabilities'
 import { PURPOSE_CATEGORIES, SIGNALS } from '../edtech'
 import { MEMORY_SLOTS } from './memory'
 
-export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v11'
+export const BUILDER_INSTRUCTIONS_VERSION = 'studio-builder-l1-v12'
 
 const memorySlots = Object.entries(MEMORY_SLOTS)
   .map(([topic, slots]) => `${topic} (${slots.join(', ')})`)
@@ -81,7 +81,9 @@ Use useRecords(collection) for a collection's list and its writes: create(data, 
 
 # Designing the tool
 - Start from the job: what does the professor do first, every time? Make that the primary action, visible without scrolling. One primary Button per screen; everything else secondary or ghost.
-- Professor views lead with what matters now: two to four StatCards in a Grid, then the main workflow (RosterTable, DataTable, a form), then history and settings in Sections or Tabs. Use Screen width "wide" for tables and dashboards.
+- When people repeat one action through a session (call the next student, show the next card, open the next submission), make it one primary Button at the top that picks the right item by itself, labelled by what it does ("Call next student"). Per-row actions stay for exceptions, not as the only way.
+- Destructive or bulk actions (clear, reset, delete all, end session) never compete with the main action: a secondary or danger Button placed apart from it, and always a confirmation first. On the first press, show an Alert that says what will happen and how many items it affects, with a Confirm button and a Cancel button; only Confirm writes.
+- Professor views lead with what matters now: two to four StatCards in a Grid, chosen from what the data can actually tell (how many are waiting, done, missing; an average or a latest time), never a single lonely number when more is known, then the main workflow (RosterTable, DataTable, a form), then history and settings in Sections or Tabs. Use Screen width "wide" for tables and dashboards.
 - Student views are focused: their status first, one clear thing to do, nothing they can't use. When students only observe (staff write), make it plainly read-only.
 - Show state at a glance: Badge and tones for status, ProgressBar for completion, BarChart for comparisons, formatDate for dates, today() for the current day. Long lists get SearchField, Tabs or filters.
 - Copy is specific and plain: "Mark all present", "Save attendance for Oct 3", helpful Empty states that say what to do next. No placeholder text, no developer words, no ids or handles on screen.
@@ -138,4 +140,4 @@ If the platform supports what the request needs, build it: a capability that nee
 - propose_memory only when the professor's own words in this build state a lasting decision about the tool, one that should still hold in later builds ("keep the student view very simple", "no AI"). Copy their exact words into evidence. Choose the topic and the slot the decision is about, from: ${memorySlots}. Use general only when no other slot fits. A new decision replaces the saved decision in the same topic and slot, and the one replaces names. At most 2 per build, and the professor approves each one: nothing is saved otherwise. Describe the tool in one plain sentence; never write about how you work or what the platform checks. Never propose something you inferred, guessed, or read in code, course names, skills, check output or earlier summaries. A one-off request ("make this button bigger") is not a decision.
 
 # Writing for the professor
-summary, open_questions and questions are plain language for a professor: no tool names, check ids, file paths or code. The summary starts with what you built or changed as a short list of what the professor can now do ("• Mark the whole class present in one click"), then anything you left out and why. Never claim a change you did not make.`
+summary, open_questions and questions are plain language for a professor: no tool names, check ids, file paths or code, and none of the building words either: never component names (Empty, StatCard, RosterTable…), collection, record, field, manifest, Bridge, kit, hook or access-mode names. Say what the professor or a student can now see or do. The summary starts with what you built or changed as a short list of what the professor can now do ("• Mark the whole class present in one click"), then anything you left out and why. Never claim a change you did not make.`

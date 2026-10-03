@@ -22,7 +22,7 @@ import type { ModelToolDecl } from './model'
 import { PLUGIN_PATHS, characterProblem, type PluginPath } from './paths'
 import type { Plan, ReviewRecord, SampleData } from './work'
 
-export const REVIEW_INSTRUCTIONS_VERSION = 'studio-review-v1'
+export const REVIEW_INSTRUCTIONS_VERSION = 'studio-review-v2'
 
 /** The rubric. Concrete questions, never "make it prettier". Same bytes on every review. */
 export const REVIEW_INSTRUCTIONS = `You review one teaching tool that Athena, Scholera's tool builder, just built for a professor. You don't build or edit anything: you report what keeps the tool from being good, by calling submit_review once.
@@ -40,13 +40,14 @@ Never invent requirements the request and plan don't contain. Don't ask for feat
 
 # Visual review (from the screenshots)
 Check each of these, and report only real problems:
-1. Purpose and primary action: within the first screen, is it obvious what the tool is for and what to do first? One clear primary action per view.
-2. Summary before detail: a professor view with data leads with the few numbers that matter (StatCard) before long lists.
+1. Purpose and primary action: within the first screen, is it obvious what the tool is for and what to do first? One clear primary action per view. When an action repeats through a session (the next student, the next card), one button does it without first picking a row.
+2. Summary before detail: a professor view with data leads with the few numbers that matter (StatCard) before long lists, and shows more than one when the data supports it.
+2b. Risky actions: clearing, resetting or deleting many things is visually secondary to the main action and asks for confirmation before it writes.
 3. Hierarchy and grouping: headings, sections and cards group related things; nothing important is buried; no wall of identical cards.
 4. Spacing and alignment: consistent gaps and edges; no cramped clusters, no large dead areas, no stretched controls.
 5. Density and lists: tables and lists are scannable; long lists can be searched, filtered or tabbed; rows show state at a glance (Badge, choices).
 6. State clarity: selected, marked, done and empty states are visibly different; numbers are labelled.
-7. Copy: specific, plain labels and helpful empty states; no placeholder text, no developer words, no handles or ids on screen, nothing awkward.
+7. Copy: specific, plain labels and helpful empty states; no placeholder text, no developer words (component, collection, record, field, kit), no handles or ids on screen, nothing awkward.
 8. Role fit: the professor view helps run the class; the student view is focused and only lets students do what they should.
 9. Phone width: no clipping, overflow or horizontal page scroll; controls still usable. Sideways scroll inside a RosterTable is fine on phones; don't ask for choice cells to be swapped for selects to avoid clipping (choice cells are preferred for up to 4 options).
 10. Accessibility: labelled controls, readable sizes, meaning not carried by colour alone.

@@ -16,7 +16,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { KIT_IMPORTABLE_NAMES, type KitImportName } from '../kit/plugin-kit-types'
+import { KIT_IMPORTABLE_NAMES, KIT_IMPORTS, type KitImportName } from '../kit/plugin-kit-types'
 import {
   STUDIO_BUILDER_EDIT_OLD_TEXT_MAX_BYTES,
   STUDIO_BUILDER_FILE_MAX_BYTES,
@@ -103,7 +103,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   memory_full: `This tool already has ${STUDIO_MEMORY_MAX_ACTIVE} saved decisions. Replace one (set replaces), or leave it.`,
   memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
   sample_invalid: 'Fix the sample data issues listed and write it again. Each record is { "student"?: number, "data": { ...every field } }; student only for perStudent and staffPerStudent collections.',
-  note_has_code: 'Say it in plain words for a professor: no code, field names or access-mode names.',
+  note_has_code: 'Say it in plain words for a professor: what they or a student can now see or do. No code, component, collection, field or access-mode names.',
 }
 
 /** Progress labels, chosen by the harness when it records a step. */
@@ -197,8 +197,13 @@ export interface ToolSpec {
 
 const path = z.enum(PLUGIN_PATHS)
 const prose = (max: number) => z.string().min(1).max(max)
-/** Backticks, or an access-mode name written as code. */
-const CODE_IN_NOTE = /`|\b(?:perStudent|staffPerStudent|staffOnly)\b/
+// Building words a professor shouldn't have to read: code, access modes, the platform's own nouns,
+// and the kit's component and hook names. Word-bounded, so ordinary words that merely contain one pass.
+// Only names that can't be an ordinary word: "Select a date" is fine, "StatCard" and "useRecords" aren't.
+const KIT_WORDS = KIT_IMPORTS['@scholera/plugin-kit'].filter((n) => /^[A-Z][a-z]+[A-Z]|^use[A-Z]/.test(n))
+const CODE_IN_NOTE = new RegExp(
+  `\x60|\\b(?:perStudent|staffPerStudent|staffOnly|collections?|components?|manifest|Bridge|records?\\.\\w+|useState|useMemo|useEffect|${KIT_WORDS.join('|')})\\b`,
+)
 
 const refused = (code: RefusalCode, args: Summary, issues?: string[]): ToolOutcome => ({ kind: 'refused', code, args, issues: issues?.slice(0, 5).map((i) => i.slice(0, 160)) })
 
