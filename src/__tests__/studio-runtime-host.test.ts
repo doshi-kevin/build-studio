@@ -621,7 +621,7 @@ describe('runtime v2', () => {
     const box = m.container.querySelector<HTMLElement>('[data-studio-roster="r1"]')!
     expect(box.style).toMatchObject({ left: '16px', top: '80px', width: '600px', height: '160px' })
 
-    table.querySelector<HTMLButtonElement>('[aria-label="Mark Zoe Quinlan-Ford Absent"]')!.click()
+    table.querySelector<HTMLButtonElement>('[aria-label="Absent, Zoe Quinlan-Ford"]')!.click()
     expect(m.posted.at(-1)).toEqual({
       scholera: 'bridge',
       v: 1,

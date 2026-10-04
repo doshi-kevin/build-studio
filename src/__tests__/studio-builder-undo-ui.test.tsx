@@ -23,6 +23,9 @@ const actions = vi.hoisted(() => ({
   saveMemoryAction: vi.fn(),
   removeMemoryAction: vi.fn(),
   decideMemoryAction: vi.fn(),
+  // The Save card asks what releasing the saved version needs; this suite never gets that far.
+  versionReleaseAction: vi.fn(async () => ({ error: 'not loaded in this test' })),
+  addVersionToCourseAction: vi.fn(),
 }))
 const preview = vi.hoisted(() => ({ props: { snapshotHash: null } as { snapshotHash: string | null; note?: string } }))
 

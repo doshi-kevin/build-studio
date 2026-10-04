@@ -562,9 +562,10 @@ describe('one whole build, through the real harness', () => {
     const snap = await one<{ files: Record<string, string>; student_bundle: string }>('select files, student_bundle from public.studio_plugin_snapshots where project_id = $1 and hash = $2', [pluginProjectId, head.h])
     expect(snap.files['views/student.tsx']).toBe(STUDENT_VIEW)
     expect(snap.student_bundle).toContain('ScholeraKit.render')
-    // The ledger saw every model turn, attributed to the run.
+    // The ledger saw every model turn, attributed to the run: the four scripted ones and the
+    // design review after the checks passed (Step 11), which the script leaves unanswered.
     const spend = await runRow(runId)
-    expect(Number(spend.model_turns)).toBe(4)
+    expect(Number(spend.model_turns)).toBe(5)
     expect(Number(spend.cost_usd)).toBeGreaterThan(0)
 
     // Nothing reached students; saving is a separate professor action.
