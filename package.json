@@ -68,7 +68,7 @@
     "@types/uuid": "^10.0.0",
     "@vladmandic/face-api": "^1.7.15",
     "@xyflow/react": "^12.11.2",
-    "ai": "^6.0.99",
+    "ai": "^7.0.127",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
