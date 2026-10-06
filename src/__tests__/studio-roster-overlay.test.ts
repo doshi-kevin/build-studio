@@ -10,7 +10,9 @@ import { PREVIEW_ROSTER, previewRosterNames } from '@/lib/studio/runtime/preview
 
 const [A, B, C] = PREVIEW_ROSTER.map((s) => s.handle)
 const UNLISTED = `st_${'9'.repeat(20)}`
-const settle = () => new Promise((r) => setTimeout(r, 0))
+/** The table drops aria-busy once the provider has answered (or failed) and the names are drawn. */
+const namesLoaded = (container: HTMLElement) =>
+  vi.waitFor(() => expect(container.querySelector('table')?.hasAttribute('aria-busy')).toBe(false))
 
 afterEach(() => document.body.replaceChildren())
 
@@ -53,16 +55,16 @@ describe('roster overlay', () => {
   it('shows names from the page’s provider, sorted by name, in a labelled table', async () => {
     const { container, overlay, rowNames } = setup()
     overlay.render('r1', payload())
-    await settle()
+    await namesLoaded(container)
     expect(container.querySelector('table')?.getAttribute('aria-label')).toBe('Attendance')
     expect([...container.querySelectorAll('thead th')].map((th) => th.textContent)).toEqual(['Student', 'Today', 'Grade', 'Reminder'])
     expect(rowNames()).toEqual(sortedNames)
   })
 
   it('keeps the plugin’s order when it asks for it, and says “Unknown student” for a handle without a name', async () => {
-    const { overlay, rowNames } = setup()
+    const { container, overlay, rowNames } = setup()
     overlay.render('r1', payload({ sort: 'given', rows: [C, UNLISTED, A].map((student) => ({ student, cells: {} })) }))
-    await settle()
+    await namesLoaded(container)
     expect(rowNames()).toEqual([nameOf(C), UNKNOWN_STUDENT, nameOf(A)])
   })
 
@@ -73,22 +75,20 @@ describe('roster overlay', () => {
     expect(container.querySelector('table')?.getAttribute('aria-busy')).toBe('true')
     expect(container.querySelector('tbody th')?.textContent).toBe('Loading name')
     resolve(previewRosterNames())
-    await settle()
-    expect(container.querySelector('table')?.hasAttribute('aria-busy')).toBe(false)
+    await namesLoaded(container)
     expect(rowNames()).toEqual(sortedNames)
   })
 
   it('falls back to “Unknown student” when names can’t be loaded', async () => {
     const { overlay, rowNames } = setup(() => Promise.reject(new Error('offline')))
     overlay.render('r1', payload())
-    await settle()
-    expect(rowNames()).toEqual([UNKNOWN_STUDENT, UNKNOWN_STUDENT, UNKNOWN_STUDENT])
+    await vi.waitFor(() => expect(rowNames()).toEqual([UNKNOWN_STUDENT, UNKNOWN_STUDENT, UNKNOWN_STUDENT]))
   })
 
   it('searches by name in the page, and the plugin hears nothing about it', async () => {
     const { container, overlay, onAction, rowNames } = setup()
     overlay.render('r1', payload())
-    await settle()
+    await namesLoaded(container)
     const search = container.querySelector<HTMLInputElement>('input[type="search"]')!
     expect(search.getAttribute('aria-label')).toBe('Search students')
     search.value = nameOf(B).split(' ')[0].toUpperCase()
@@ -106,7 +106,7 @@ describe('roster overlay', () => {
   it('a choice says who it marks, shows which is pressed, and sends the handle, column and value', async () => {
     const { container, overlay, onAction } = setup()
     overlay.render('r1', payload())
-    await settle()
+    await namesLoaded(container)
     const present = container.querySelector<HTMLButtonElement>(`[aria-label="Present, ${nameOf(A)}"]`)!
     expect(present.getAttribute('aria-pressed')).toBe('true')
     const absent = container.querySelector<HTMLButtonElement>(`[aria-label="Absent, ${nameOf(B)}"]`)!
@@ -118,7 +118,7 @@ describe('roster overlay', () => {
   it('a select and a button send their values, and nothing carries a name', async () => {
     const { container, overlay, onAction } = setup()
     overlay.render('r1', payload())
-    await settle()
+    await namesLoaded(container)
     const select = container.querySelector<HTMLSelectElement>(`select[aria-label="Grade, ${nameOf(C)}"]`)!
     select.value = 'b'
     select.dispatchEvent(new Event('change'))
@@ -134,7 +134,7 @@ describe('roster overlay', () => {
   it('renders plugin text as text', async () => {
     const { container, overlay } = setup()
     overlay.render('r1', payload({ columns: [{ key: 'note', header: '<b>Note</b>' }], rows: [{ student: A, cells: { note: { kind: 'text', text: '<img src=x onerror=alert(1)>' } } }] }))
-    await settle()
+    await namesLoaded(container)
     expect(container.querySelector('img, b')).toBeNull()
     expect(container.querySelector('tbody td')?.textContent).toBe('<img src=x onerror=alert(1)>')
   })
@@ -142,7 +142,7 @@ describe('roster overlay', () => {
   it('shows the empty text for an empty class', async () => {
     const { container, overlay } = setup()
     overlay.render('r1', payload({ rows: [] }))
-    await settle()
+    await namesLoaded(container)
     expect(container.querySelector('tbody')?.textContent).toBe('Nobody here yet.')
   })
 

@@ -548,7 +548,9 @@ describe('runtime v2', () => {
     m.load()
     return sessionOf(m.frame.snapshot())!
   }
-  const settle = () => new Promise((r) => setTimeout(r, 0))
+  /** The names provider has answered and the table is redrawn with names (aria-busy drops). */
+  const namesDrawn = (m: Mounted) =>
+    vi.waitFor(() => expect(m.container.querySelector('[data-studio-roster] table:not([aria-busy])')).not.toBeNull())
 
   it('welcomes a v2 runtime as v2, and a v1 runtime as v1', () => {
     const v2 = mount()
@@ -591,12 +593,13 @@ describe('runtime v2', () => {
     ['a student view', { ...ROSTER_OPTIONS, view: 'student' as const }],
     ['a professor view without course.roster', { ...ROSTER_OPTIONS, allowedMethods: ['records.list'] }],
     ['a professor view with no allowed methods', { ...ROSTER_OPTIONS, allowedMethods: undefined }],
-  ])('strikes roster messages from %s and draws nothing', async (_label, options) => {
+  ])('strikes roster messages from %s and draws nothing', (_label, options) => {
     const rosterNames = vi.fn(async () => NAMES)
     const m = mount({ ...options, rosterNames })
     const session = readyV2(m)
     m.send(roster(session, 'render', { payload: payload() }))
-    await settle()
+    // The refusal is synchronous, and a render that got past it would ask for names
+    // synchronously too, so there is nothing to wait for.
     expect(m.frame.snapshot().strikes).toBe(1)
     expect(m.container.querySelector('[data-studio-roster]')).toBeNull()
     expect(rosterNames).not.toHaveBeenCalled()
@@ -615,7 +618,7 @@ describe('runtime v2', () => {
     const session = readyV2(m)
     m.send(roster(session, 'render', { payload: payload() }))
     m.send(roster(session, 'place', { rect: { x: 16, y: 80, width: 600, height: 160 } }))
-    await settle()
+    await namesDrawn(m)
     const table = m.container.querySelector('table')!
     expect([...table.querySelectorAll('tbody th')].map((th) => th.textContent)).toEqual(['Arjun Mehra-Castillo', 'Zoe Quinlan-Ford'])
     const box = m.container.querySelector<HTMLElement>('[data-studio-roster="r1"]')!
@@ -639,7 +642,7 @@ describe('runtime v2', () => {
     const m = mount({ ...ROSTER_OPTIONS, rosterNames })
     const session = readyV2(m)
     for (let i = 0; i < 3; i++) m.send(roster(session, 'render', { payload: payload() }))
-    await settle()
+    await namesDrawn(m)
     expect(rosterNames).toHaveBeenCalledTimes(1)
   })
 
@@ -654,12 +657,12 @@ describe('runtime v2', () => {
     const session = readyV2(m)
     m.send(roster(session, 'render', { payload: payload([HANDLE_A]) }))
     m.send(roster(session, 'render', { payload: payload([HANDLE_A, HANDLE_B]) }))
-    await settle()
+    await namesDrawn(m)
     expect(m.container.querySelectorAll('tbody tr')).toHaveLength(1)
     expect(m.frame.snapshot().strikes).toBe(0)
     // The roster used none of the one call this frame has.
     m.send(request(session, 'q1', 'records.list', { collection: 'x' }))
-    await settle()
+    await vi.waitFor(() => expect(m.posted.at(-1)).toMatchObject({ type: 'response', id: 'q1', ok: true }))
     expect(handleRequest).toHaveBeenCalledTimes(1)
   })
 
@@ -667,7 +670,7 @@ describe('runtime v2', () => {
     const m = mount(ROSTER_OPTIONS)
     const session = readyV2(m)
     m.send(roster(session, 'render', { payload: payload() }))
-    await settle()
+    await namesDrawn(m)
     m.send(roster(session, 'remove'))
     expect(m.container.querySelector('[data-studio-roster="r1"]')).toBeNull()
     m.send(roster(session, 'render', { payload: payload() }))
