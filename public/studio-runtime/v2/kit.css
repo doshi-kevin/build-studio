@@ -4,7 +4,8 @@
  * Served from the runtime origin, the only stylesheet a plugin frame's security policy
  * allows (style-src {runtime}/studio-runtime/v2/). The frame is a separate, sandboxed
  * document, so it can't share the app's Tailwind build; the values mirror
- * src/app/globals.css instead. Part of the bridge v2 contract (rule 8.7).
+ * src/app/globals.css and the company design system (docs/reference/design-system.md)
+ * instead. Part of the bridge v2 contract (rule 8.7).
  *
  * Plugins never write CSS. Kit components take no style or className, so these tokens
  * are the only colours a plugin can show (rule 7.1). Every tone ink is AA (4.5:1) on its
@@ -20,7 +21,8 @@
   --kit-muted: oklch(0.967 0.003 247);
   --kit-raised: oklch(1 0 0);
 
-  /* Text */
+  /* Text. Headings use the brand's ink, a step darker than body text. */
+  --kit-ink: oklch(0.148 0.006 248);
   --kit-foreground: oklch(0.21 0.015 255);
   --kit-muted-foreground: oklch(0.47 0.013 257);
 
@@ -31,7 +33,7 @@
 
   /* Actions */
   --kit-primary: oklch(0.56 0.19 260);
-  --kit-primary-hover: oklch(0.5 0.19 260);
+  --kit-primary-hover: oklch(0.508 0.175 260);
   --kit-primary-foreground: oklch(0.99 0 0);
   --kit-secondary: oklch(0.967 0.003 247);
   --kit-secondary-hover: oklch(0.94 0.004 247);
@@ -76,7 +78,10 @@
   --kit-radius-small: 6px;
   --kit-radius-medium: 10px;
   --kit-radius-large: 14px;
-  --kit-shadow: 0 1px 2px oklch(0.21 0.015 255 / 0.06), 0 1px 3px oklch(0.21 0.015 255 / 0.04);
+  /* Soft and wide with a negative spread, plus a tight contact shadow (design system 1.5). */
+  --kit-shadow: 0 12px 28px -18px oklch(0.211 0.014 253 / 0.22), 0 1px 2px oklch(0.211 0.014 253 / 0.05);
+  /* Buttons sit lower: the contact shadow alone. */
+  --kit-shadow-small: 0 1px 2px oklch(0.211 0.014 253 / 0.05);
 
   --kit-target: 44px;
   --kit-duration: 140ms;
@@ -192,8 +197,8 @@ html, body {
 
 /* ── Text ───────────────────────────────────────────────────────────────── */
 
-.kit-heading { margin: 0; font-weight: 600; line-height: 1.3; color: var(--kit-foreground); }
-.kit-heading-1 { font-size: var(--kit-text-xl); letter-spacing: -0.01em; line-height: 1.25; }
+.kit-heading { margin: 0; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: var(--kit-ink); }
+.kit-heading-1 { font-size: var(--kit-text-xl); font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
 .kit-heading-2 { font-size: var(--kit-text-lg); }
 .kit-heading-3 { font-size: var(--kit-text-md); }
 
@@ -381,13 +386,13 @@ html, body {
   transition: background-color var(--kit-duration), border-color var(--kit-duration), color var(--kit-duration);
 }
 .kit-button-full { width: 100%; }
-.kit-button-primary { background: var(--kit-primary); color: var(--kit-primary-foreground); box-shadow: var(--kit-shadow); }
+.kit-button-primary { background: var(--kit-primary); color: var(--kit-primary-foreground); box-shadow: var(--kit-shadow-small); }
 .kit-button-primary:hover:not(:disabled) { background: var(--kit-primary-hover); }
-.kit-button-secondary { background: var(--kit-card); color: var(--kit-secondary-foreground); border-color: var(--kit-border); box-shadow: var(--kit-shadow); }
+.kit-button-secondary { background: var(--kit-card); color: var(--kit-secondary-foreground); border-color: var(--kit-border); box-shadow: var(--kit-shadow-small); }
 .kit-button-secondary:hover:not(:disabled) { background: var(--kit-secondary); }
 .kit-button-ghost { background: transparent; color: var(--kit-foreground); }
 .kit-button-ghost:hover:not(:disabled) { background: var(--kit-secondary-hover); }
-.kit-button-danger { background: var(--kit-danger-solid); color: var(--kit-primary-foreground); box-shadow: var(--kit-shadow); }
+.kit-button-danger { background: var(--kit-danger-solid); color: var(--kit-primary-foreground); box-shadow: var(--kit-shadow-small); }
 .kit-button-danger:hover:not(:disabled) { background: var(--kit-danger-solid-hover); }
 .kit-button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 

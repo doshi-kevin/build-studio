@@ -103,8 +103,9 @@ describe('undo in the builder', () => {
     await waitFor(() => expect(preview.props.snapshotHash).toBe(A))
     expect(preview.props.note).toMatch(/still in your history/)
 
-    // The card says Save now keeps the current draft, not the build it describes.
-    expect(screen.getByText(/Saving keeps your current draft/)).toBeTruthy()
+    // Save says it keeps the current draft, not the build this run made. It returns once
+    // the undo has finished, which can be a render after the preview moves.
+    expect(await screen.findByText(/Saving keeps your current draft/)).toBeTruthy()
     fireEvent.click(await screen.findByRole('button', { name: 'Save current draft as version' }))
     await waitFor(() => expect(actions.saveDraftAsVersionAction).toHaveBeenCalledWith({ sectionId: 's1', pluginProjectId: 'p1', snapshotHash: A }))
   })

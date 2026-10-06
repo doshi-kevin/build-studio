@@ -2,11 +2,11 @@
 
 import { useId } from 'react'
 import { formatDistanceToNowStrict } from 'date-fns'
-import { History } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { Check, History } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { DraftHistoryEntry } from '@/lib/studio/builder/service'
+import { Chip } from './RunCards'
 
 interface DraftHistoryProps {
   entries: DraftHistoryEntry[]
@@ -26,7 +26,7 @@ export function DraftHistory({ entries, failed, onRetry }: DraftHistoryProps) {
           History
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" collisionPadding={16} aria-labelledby={headingId} className="w-80 max-w-(--radix-popover-content-available-width) rounded-2xl p-0">
+      <PopoverContent align="end" collisionPadding={16} aria-labelledby={headingId} className="studio-brand w-80 max-w-(--radix-popover-content-available-width) rounded-2xl p-0">
         <p id={headingId} className="border-b border-border px-4 py-3 text-sm font-medium">
           Draft history
         </p>
@@ -46,9 +46,13 @@ export function DraftHistory({ entries, failed, onRetry }: DraftHistoryProps) {
                 <p className="line-clamp-2 break-words text-sm">{e.request ?? 'Your request'}</p>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {e.createdAt && <time dateTime={e.createdAt}>{formatDistanceToNowStrict(new Date(e.createdAt), { addSuffix: true })}</time>}
-                  {e.current && <Badge>Current draft</Badge>}
-                  {e.undoTarget && <Badge variant="outline">Undo goes back here</Badge>}
-                  {e.savedVersion && <Badge variant="secondary">Saved as version {e.savedVersion}</Badge>}
+                  {e.current && <Chip tone="info">Current draft</Chip>}
+                  {e.undoTarget && <Chip tone="neutral">Undo goes back here</Chip>}
+                  {e.savedVersion && (
+                    <Chip tone="success" icon={Check}>
+                      Saved as v{e.savedVersion}
+                    </Chip>
+                  )}
                 </div>
               </li>
             ))}

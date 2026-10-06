@@ -115,12 +115,13 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="outline" className="min-h-11 gap-2">
+        <Button variant="ghost" className="min-h-11 gap-2" aria-label={items && count > 0 ? `Studio remembers (${count})` : undefined}>
           <Bookmark className="h-4 w-4" aria-hidden="true" />
-          Studio remembers{items ? ` (${count})` : ''}
+          Studio remembers
+          {items && count > 0 && <span className="rounded-full bg-primary/10 px-1.5 text-xs font-semibold tabular-nums text-accent-foreground">{count}</span>}
         </Button>
       </DialogTrigger>
-      <DialogContent showCloseButton={false} className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+      <DialogContent showCloseButton={false} className="studio-brand max-h-[85dvh] overflow-y-auto sm:max-w-lg">
         <DialogHeader className="text-left">
           <div className="flex items-start justify-between gap-2">
             <DialogTitle>Studio remembers</DialogTitle>
@@ -237,7 +238,7 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                   <SelectTrigger id="memory-topic" className="min-h-11 w-full">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="studio-brand">
                     {MEMORY_TOPICS.map((t) => (
                       <SelectItem key={t} value={t}>
                         {TOPIC_LABEL[t]}
@@ -252,7 +253,7 @@ export function MemoryPanel({ sectionId, pluginProjectId, reloadKey }: { section
                   <SelectTrigger id="memory-slot" className="min-h-11 w-full">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="studio-brand">
                     {MEMORY_SLOTS[draft.topic].map((s) => (
                       <SelectItem key={s} value={s}>
                         {SLOT_LABEL[draft.topic][s]}

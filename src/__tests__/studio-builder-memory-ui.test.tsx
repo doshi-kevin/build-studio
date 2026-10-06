@@ -141,20 +141,19 @@ describe('the suggestion card', () => {
 })
 
 describe('the ending card', () => {
-  const base = { canSave: false, onPreview: vi.fn(), onSave: vi.fn(async () => ({ ok: true, message: '' })) }
   it('offers suggestions in the ending, when the chat can act on them', () => {
-    render(<EndingCard {...base} progress={progress({ applied: 0, proposals: [proposal()] })} onDecideMemory={vi.fn(async () => null)} />)
+    render(<EndingCard progress={progress({ applied: 0, proposals: [proposal()] })} onDecideMemory={vi.fn(async () => null)} />)
     expect(screen.getByRole('button', { name: 'Remember' })).toBeTruthy()
   })
   it('says how many saved decisions it applied, in words that don’t claim they changed anything', () => {
-    const { rerender } = render(<EndingCard {...base} progress={progress({ applied: 2, proposals: [] })} />)
+    const { rerender } = render(<EndingCard progress={progress({ applied: 2, proposals: [] })} />)
     expect(screen.getByText('Applied 2 saved decisions.')).toBeTruthy()
-    rerender(<EndingCard {...base} progress={progress({ applied: 1, proposals: [] })} />)
+    rerender(<EndingCard progress={progress({ applied: 1, proposals: [] })} />)
     expect(screen.getByText('Applied 1 saved decision.')).toBeTruthy()
     expect(screen.queryByText(/because|caused|result of/i)).toBeNull()
   })
   it('says nothing when none were applied', () => {
-    render(<EndingCard {...base} progress={progress({ applied: 0, proposals: [] })} />)
+    render(<EndingCard progress={progress({ applied: 0, proposals: [] })} />)
     expect(screen.queryByText(/saved decision/)).toBeNull()
   })
 })

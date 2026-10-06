@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ComponentProps } from 'react'
+import { createRef, type ComponentProps } from 'react'
 import type { ProgressRead } from '@/lib/studio/builder/service'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn(), replace: vi.fn(), back: vi.fn() }) }))
@@ -26,6 +26,9 @@ vi.mock('@/app/(dashboard)/professor/courses/[sectionId]/studio/actions', () => 
   decideMemoryAction: vi.fn(),
   // The preview frame never loads here: these tests are about the builder around it.
   draftPreviewAction: vi.fn(() => new Promise(() => {})),
+  // The header's Save shows the release step; it stays loading here.
+  versionReleaseAction: vi.fn(() => new Promise(() => {})),
+  addVersionToCourseAction: vi.fn(),
 }))
 vi.mock('@/components/studio/runtime/PluginHost', () => ({ PluginHost: () => null }))
 
@@ -61,9 +64,7 @@ function chat(over: Partial<ChatProps> = {}) {
     onDecide: vi.fn(async () => null),
     onAnswer: vi.fn(async () => null),
     onDecideMemory: vi.fn(async () => null),
-    onPreview: vi.fn(),
-    onSave: vi.fn(async () => ({ ok: true, message: '' })),
-    canSave: false,
+    drafts: null,
     ...over,
   }
   return <StudioChat {...props} />
@@ -130,24 +131,36 @@ describe('the approval card', () => {
 })
 
 describe('progress and Stop', () => {
-  it('shows fixed progress lines with consecutive repeats collapsed, and Stop while working', () => {
-    const onStop = vi.fn()
+  it('shows fixed progress lines with consecutive repeats collapsed', () => {
     render(
       <ProgressLines
         working
         loaded
         unreachable={false}
-        stopping={false}
-        onStop={onStop}
         events={[{ seq: 1, label: 'Understanding your request', outcome: 'done' }, { seq: 2, label: 'Editing the student view', outcome: 'done' }, { seq: 3, label: 'Editing the student view', outcome: 'done' }]}
       />,
     )
     expect(screen.getAllByText('Editing the student view')).toHaveLength(1)
+  })
+  it('while Athena works, the chat box’s button is Stop', () => {
+    const onStop = vi.fn(async () => {})
+    render(chat({ current: following(progress()), onStop }))
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
     expect(onStop).toHaveBeenCalledOnce()
   })
+  it('marks the stage the run has reached, including one the phase stepped back from', () => {
+    const current = (container: HTMLElement) => [...container.querySelectorAll('[aria-current="step"]')].map((el) => el.textContent)
+    const { container, rerender } = render(<ProgressLines working loaded unreachable={false} phase="checking" events={[]} />)
+    expect(current(container)).toEqual(['Check'])
+    // An improve round sets the phase back to editing; the run is still polishing.
+    rerender(
+      <ProgressLines working loaded unreachable={false} phase="editing" events={[{ seq: 1, label: 'Checks passed', outcome: 'done' }, { seq: 2, label: 'Found improvements to make', outcome: 'done' }]} />,
+    )
+    expect(current(container)).toEqual(['Polish'])
+  })
   it('says Scholera is unreachable even before the first progress read answers', () => {
-    render(<ProgressLines working={false} loaded={false} unreachable stopping={false} onStop={vi.fn()} events={[]} />)
+    render(<ProgressLines working={false} loaded={false} unreachable events={[]} />)
     expect(screen.getByText(/Can’t reach Scholera right now/)).toBeTruthy()
   })
 })
@@ -210,7 +223,7 @@ describe('Athena’s plan', () => {
 describe('the preview pane', () => {
   type PreviewProps = ComponentProps<typeof StudioPreview>
   const preview = (over: Partial<PreviewProps> = {}) => (
-    <StudioPreview sectionId={SECTION} pluginProjectId="p1" snapshotHash={HEAD} mode="professor" device="desktop" onModeChange={vi.fn()} onDeviceChange={vi.fn()} {...over} />
+    <StudioPreview sectionId={SECTION} pluginProjectId="p1" snapshotHash={HEAD} mode="professor" onModeChange={vi.fn()} {...over} />
   )
 
   it('before the first draft, says what will appear here', () => {
@@ -219,6 +232,12 @@ describe('the preview pane', () => {
     expect(screen.getByText(/the professor view and the student view run here on sample data/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Reload preview' })).toBeNull()
     expect(actions.draftPreviewAction).not.toHaveBeenCalled()
+  })
+  it('when the first build didn’t finish, says there is no draft rather than promising one', () => {
+    render(preview({ snapshotHash: null, lastRunFailed: true }))
+    expect(screen.getByText('No draft yet')).toBeTruthy()
+    expect(screen.queryByText('Your tool appears here')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reload preview' })).toBeNull()
   })
   it('while the first build runs, shows each view as a placeholder, not an empty pane', () => {
     const { container } = render(preview({ snapshotHash: null, building: true, mode: 'split' }))
@@ -280,44 +299,26 @@ describe('the ending card', () => {
   })
   it('lists the course material Athena read, marking what students can’t see yet', () => {
     const withMaterial = { ...ready, result: { ...ready.result!, materialRead: [{ label: 'Week 6: Attention (lecture), page 2', visible: true, opensAt: null }, { label: 'Week 7: Transformers (lecture)', visible: false, opensAt: '2026-10-16T15:00:00Z' }, { label: 'HW3 solutions (reading)', visible: false, opensAt: null }] } }
-    render(<EndingCard progress={withMaterial} canSave onPreview={vi.fn()} onSave={vi.fn()} />)
+    render(<EndingCard progress={withMaterial} />)
     const list = screen.getByRole('list', { name: 'Athena read these from your course:' })
     const items = [...list.querySelectorAll('li')].map((li) => li.textContent)
     expect(items).toEqual(['Week 6: Attention (lecture), page 2', 'Week 7: Transformers (lecture) (students can’t see this until Oct 16)', 'HW3 solutions (reading) (students can’t see this)'])
     expect(screen.getByText('Athena uses material students can’t see yet only to shape the tool, never its wording.')).toBeTruthy()
   })
   it('says nothing about course material when none was read', () => {
-    render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={vi.fn()} />)
+    render(<EndingCard progress={ready} />)
     expect(screen.queryByText('Athena read these from your course:')).toBeNull()
   })
   it('shows the system’s outcome first and Athena’s words as a labelled note', () => {
-    render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={vi.fn()} />)
+    render(<EndingCard progress={ready} />)
     expect(screen.getByText(/Preview ready/)).toBeTruthy()
     expect(screen.getByText('Athena’s note')).toBeTruthy()
-  })
-  it('Save is its own button and runs only when pressed', async () => {
-    const onSave = vi.fn(async () => ({ ok: true, message: 'Saved as version 1.0.0.' }))
-    render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={onSave} />)
-    expect(onSave).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Save as version' }))
-    await waitFor(() => expect(screen.getByText('Saved as version 1.0.0.')).toBeTruthy())
-    // Saved once: the button is gone, so it can't be pressed twice.
-    expect(screen.queryByRole('button', { name: 'Save as version' })).toBeNull()
-  })
-  it('a failed save shows the reason and leaves Save to press again', async () => {
-    render(<EndingCard progress={ready} canSave onPreview={vi.fn()} onSave={vi.fn(async () => ({ ok: false, message: 'This draft is already saved as version 1.0.0.' }))} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Save as version' }))
-    await waitFor(() => expect(screen.getByText(/already saved/)).toBeTruthy())
-    expect(screen.getByRole('button', { name: 'Save as version' })).toBeTruthy()
   })
   it('a blocked run shows what didn’t pass, once per problem, and offers no Save or retry', () => {
     const missing = { check: 'A screen is missing its loading, empty or error state', file: null, count: 1 }
     render(
       <EndingCard
         progress={progress({ status: 'blocked', ending: 'I couldn’t get every check to pass.', result: result({ unresolved: [missing, { ...missing, file: 'views/professor.tsx' }] }) })}
-        canSave={false}
-        onPreview={vi.fn()}
-        onSave={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -327,25 +328,25 @@ describe('the ending card', () => {
   })
   it('a failed or stopped run says what to do next and can send the request again', () => {
     const onRetry = vi.fn()
-    const { rerender } = render(<EndingCard progress={progress({ status: 'failed', ending: 'Something went wrong on our side. Your tool is unchanged.' })} canSave={false} onPreview={vi.fn()} onSave={vi.fn()} onRetry={onRetry} />)
+    const { rerender } = render(<EndingCard progress={progress({ status: 'failed', ending: 'Something went wrong on our side. Your tool is unchanged.' })} onRetry={onRetry} />)
     expect(screen.getByText(/If it keeps happening/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(onRetry).toHaveBeenCalledOnce()
-    rerender(<EndingCard progress={progress({ status: 'cancelled', ending: 'Stopped. Your tool is unchanged.' })} canSave={false} onPreview={vi.fn()} onSave={vi.fn()} onRetry={onRetry} />)
+    rerender(<EndingCard progress={progress({ status: 'cancelled', ending: 'Stopped. Your tool is unchanged.' })} onRetry={onRetry} />)
     expect(screen.getByText(/Send it again, or describe something different/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
   })
   it('a run replaced by a newer request offers nothing to resend', () => {
-    render(<EndingCard progress={progress({ status: 'cancelled', ending: 'Replaced by your newer request. Your tool is unchanged.', endingReason: 'superseded' })} canSave={false} onPreview={vi.fn()} onSave={vi.fn()} onRetry={vi.fn()} />)
+    render(<EndingCard progress={progress({ status: 'cancelled', ending: 'Replaced by your newer request. Your tool is unchanged.', endingReason: 'superseded' })} onRetry={vi.fn()} />)
     expect(screen.queryByText(/Send it again/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
   })
   it('a build that changed nothing says how to get a change, and lists each open question once', () => {
-    const { rerender } = render(<EndingCard progress={progress({ status: 'completed', ending: 'Nothing needed to change.', result: result({ passed: true, summary: 'It already does this.', openQuestions: ['Which week?', 'Which week?'] }) })} canSave={false} onPreview={vi.fn()} onSave={vi.fn()} />)
+    const { rerender } = render(<EndingCard progress={progress({ status: 'completed', ending: 'Nothing needed to change.', result: result({ passed: true, summary: 'It already does this.', openQuestions: ['Which week?', 'Which week?'] }) })} />)
     expect(screen.getByText(/describe it in more detail/)).toBeTruthy()
     expect(screen.getAllByText('Which week?')).toHaveLength(1)
     // Open questions show even when Athena left no summary.
-    rerender(<EndingCard progress={progress({ status: 'completed', ending: 'Nothing needed to change.', result: result({ passed: true, openQuestions: ['Which week?'] }) })} canSave={false} onPreview={vi.fn()} onSave={vi.fn()} />)
+    rerender(<EndingCard progress={progress({ status: 'completed', ending: 'Nothing needed to change.', result: result({ passed: true, openQuestions: ['Which week?'] }) })} />)
     expect(screen.getByText('Which week?')).toBeTruthy()
   })
 })
@@ -355,12 +356,10 @@ describe('screen reader announcements', () => {
     const { container } = render(
       <>
         <ApprovalCard approval={approval} onDecide={vi.fn(async () => 'This card expired.')} />
-        <EndingCard progress={progress({ status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD }) })} canSave onPreview={vi.fn()} onSave={vi.fn(async () => ({ ok: false, message: 'Couldn’t save.' }))} />
+        <EndingCard progress={progress({ status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD }) })} saveAvailable />
       </>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Save as version' }))
-    await waitFor(() => expect(screen.getByText('Couldn’t save.')).toBeTruthy())
     await waitFor(() => expect(screen.getByText('This card expired.')).toBeTruthy())
     expect(container.querySelectorAll('[role="status"], [role="alert"], [aria-live]')).toHaveLength(0)
   })
@@ -390,6 +389,22 @@ describe('the conversation pane', () => {
     rerender(chat({ current: at(3) }))
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
   })
+  it('scrolled up, new progress offers Jump to latest, which scrolls to the end', () => {
+    const e = (seq: number) => ({ seq, label: `Step ${seq}`, outcome: 'done' as const })
+    const at = (n: number) => following(progress({ events: Array.from({ length: n }, (_, i) => e(i + 1)) }))
+    const { rerender } = render(chat({ current: at(1) }))
+    const log = screen.getByRole('log')
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 300 })
+    log.scrollTop = 0
+    fireEvent.scroll(log)
+    // Scrolling up alone is not news.
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull()
+    rerender(chat({ current: at(2) }))
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to latest' }))
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'end' })
+  })
   it('a failed load offers a retry instead of an empty chat', () => {
     const onReloadConversation = vi.fn()
     render(chat({ conversation: 'failed', onReloadConversation }))
@@ -397,6 +412,16 @@ describe('the conversation pane', () => {
     expect(screen.queryByText('Nothing built yet')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(onReloadConversation).toHaveBeenCalledOnce()
+  })
+  it('a held Enter sends once: key repeats are ignored', async () => {
+    const onSend = vi.fn(async () => null)
+    render(chat({ onSend }))
+    const box = screen.getByLabelText('Describe a change')
+    fireEvent.change(box, { target: { value: 'Add a shuffle button' } })
+    fireEvent.keyDown(box, { key: 'Enter', repeat: true })
+    expect(onSend).not.toHaveBeenCalled()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
   })
   it('a tool with no requests yet shows an empty state', () => {
     render(chat())
@@ -411,6 +436,18 @@ describe('the conversation pane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(onSend).toHaveBeenCalledWith('Add a shuffle button', undefined))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false))
+    expect(box.value).toBe('a half-typed idea')
+  })
+  it('Edit request puts a failed run’s request in an empty chat box, and never over what was typed', () => {
+    const composerRef = createRef<HTMLTextAreaElement>()
+    const failed = progress({ status: 'failed', ending: 'Something went wrong on our side. Your tool is unchanged.' })
+    render(chat({ turns: [{ runId: 'r1', request: 'Add a shuffle button', status: 'failed', ending: null, summary: null, createdAt: '2026-10-02T10:00:00Z' }], current: following(failed), composerRef }))
+    const box = screen.getByLabelText('Describe a change') as HTMLTextAreaElement
+    fireEvent.click(screen.getByRole('button', { name: 'Edit request' }))
+    expect(box.value).toBe('Add a shuffle button')
+    expect(document.activeElement).toBe(box)
+    fireEvent.change(box, { target: { value: 'a half-typed idea' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit request' }))
     expect(box.value).toBe('a half-typed idea')
   })
 })
@@ -440,7 +477,8 @@ describe('the builder', () => {
         drafts={[{ pluginProjectId: 'p1', name: 'Flashcards', hasDraft: true, headHash: HEAD, latestRun: { runId: 'run-9', status: 'waiting_for_approval' }, savedVersion: null }]}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: /Flashcards/ }))
+    // A starter idea also mentions flashcards: open the tool card.
+    fireEvent.click(within(screen.getByRole('region', { name: 'Your tools' })).getByRole('button', { name: /Flashcards/ }))
     const dialog = await screen.findByRole('dialog')
     await within(dialog).findByText(/Store "cards"/)
     expect(fetchMock).toHaveBeenCalledWith('/api/studio/builder/runs/run-9?after=0', { cache: 'no-store' })
@@ -449,14 +487,11 @@ describe('the builder', () => {
     expect(within(dialog).getByText(/Waiting for you until/)).toBeTruthy()
   })
 
-  it('the status region stays announceable while the phone shows the preview pane', async () => {
+  it('the builder’s one status region sits outside the Athena panel', async () => {
     serveProgress(progress({ runId: 'run-6', status: 'waiting_for_approval', approval }))
     render(builder('run-6'))
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Athena needs your approval.'))
-    fireEvent.click(screen.getByRole('radio', { name: 'Preview' }))
-    const status = screen.getByRole('status')
-    expect(status.textContent).toBe('Athena needs your approval.')
-    for (let el: HTMLElement | null = status; el; el = el.parentElement) expect(el.classList.contains('hidden')).toBe(false)
+    expect(screen.getByRole('complementary', { name: 'Athena' }).contains(screen.getByRole('status'))).toBe(false)
   })
 
   it('shows the professor’s request as soon as it is sent', async () => {
@@ -470,13 +505,83 @@ describe('the builder', () => {
     await within(screen.getByRole('log')).findByText('Add a shuffle button')
   })
 
-  it('Preview on the ending card moves focus to the preview', async () => {
+  it('Save as version in the header runs only when pressed, then shows the next step with focus on it', async () => {
     serveProgress(progress({ runId: 'run-3', status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD, passed: true }) }))
-    serveHistory(true)
+    serveHistory(false)
+    vi.mocked(actions.saveDraftAsVersionAction).mockResolvedValue({ success: true, versionId: 'v1', version: '1.0.0' })
     render(builder('run-3'))
-    const preview = await within(screen.getByRole('log')).findByRole('button', { name: 'Preview' })
-    fireEvent.click(preview)
-    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Preview' }))
+    const save = await screen.findByRole('button', { name: 'Save as version' })
+    expect(actions.saveDraftAsVersionAction).not.toHaveBeenCalled()
+    fireEvent.click(save)
+    const saved = await screen.findByRole('region', { name: 'Saved as version 1.0.0' })
+    expect(actions.saveDraftAsVersionAction).toHaveBeenCalledOnce()
+    expect(actions.saveDraftAsVersionAction).toHaveBeenCalledWith({ sectionId: SECTION, pluginProjectId: 'p1', snapshotHash: HEAD })
+    await waitFor(() => expect(document.activeElement).toBe(saved))
+    // Saved once: the button is gone, so it can't be pressed twice.
+    expect(screen.queryByRole('button', { name: 'Save as version' })).toBeNull()
+  })
+
+  it('a refused save says why in a toast and leaves Save to press again', async () => {
+    serveProgress(progress({ runId: 'run-3', status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD, passed: true }) }))
+    serveHistory(false)
+    vi.mocked(actions.saveDraftAsVersionAction).mockResolvedValue({ error: 'This draft is already saved as version 1.0.0.' })
+    render(builder('run-3'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as version' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('This draft is already saved as version 1.0.0.'))
+    expect(await screen.findByRole('button', { name: 'Save as version' })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: /Saved as version/ })).toBeNull()
+  })
+
+  it('after a failed follow-up, the header still offers to save the good draft on screen', async () => {
+    serveProgress(progress({ runId: 'run-8', status: 'failed', ending: 'Something went wrong on our side. Your tool is unchanged.' }))
+    serveHistory(false)
+    render(builder('run-8'))
+    expect(await screen.findByRole('button', { name: 'Save as version' })).toBeTruthy()
+  })
+
+  it('a draft that already has a version says so in the header, and Save stays away while the history re-reads', async () => {
+    // Progress answers only after the first history read, so the second read (for the new run
+    // state) is the one left pending: the header has only the older read to go on.
+    let answer!: () => void
+    const answered = new Promise<void>((r) => (answer = r))
+    const p = progress({ runId: 'run-7', status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD, passed: true }) })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      await answered
+      return { ok: true, json: async () => p }
+    }))
+    vi.mocked(actions.loadDraftHistoryAction)
+      .mockResolvedValueOnce({ success: true, entries: [{ hash: HEAD, runId: 'r0', request: 'Flashcards', createdAt: null, current: true, undoTarget: false, savedVersion: '1.0.0' }], head: { hash: HEAD, rev: 3 }, canUndo: false })
+      .mockReturnValue(new Promise(() => {}))
+    const { container } = render(builder('run-7'))
+    const header = container.ownerDocument.querySelector('header')!
+    await within(header).findByText('Saved as v1.0.0')
+    act(() => answer())
+    await within(screen.getByRole('log')).findByText('Preview ready.')
+    // The re-read for the finished run is the pending one.
+    expect(actions.loadDraftHistoryAction).toHaveBeenCalledTimes(2)
+    expect(within(header).getByText('Saved as v1.0.0')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Save/ })).toBeNull()
+  })
+
+  it('Save waits while Athena is working', async () => {
+    serveProgress(progress({ runId: 'run-4', status: 'running' }))
+    serveHistory(false)
+    render(builder('run-4'))
+    await within(document.querySelector('header')!).findByText('Building')
+    expect(screen.queryByRole('button', { name: /Save/ })).toBeNull()
+  })
+
+  it('a new request takes away the last version’s next step', async () => {
+    serveProgress(progress({ runId: 'run-3', status: 'preview_ready', ending: 'Preview ready.', result: result({ previewHash: HEAD, passed: true }) }))
+    serveHistory(false)
+    vi.mocked(actions.saveDraftAsVersionAction).mockResolvedValue({ success: true, versionId: 'v1', version: '1.0.0' })
+    vi.mocked(actions.startBuildAction).mockResolvedValue({ success: true, runId: 'run-10', pluginProjectId: 'p1' })
+    render(builder('run-3'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as version' }))
+    await screen.findByRole('region', { name: 'Saved as version 1.0.0' })
+    fireEvent.change(screen.getByLabelText('Describe a change'), { target: { value: 'Add a shuffle button' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Saved as version 1.0.0' })).toBeNull())
   })
 
   it('while a build is active, Undo says why it waits and does nothing', async () => {
@@ -503,5 +608,35 @@ describe('the builder', () => {
     expect(actions.undoDraftAction).not.toHaveBeenCalled()
     fireEvent.click(within(confirm).getByRole('button', { name: 'Go back' }))
     await waitFor(() => expect(actions.undoDraftAction).toHaveBeenCalledWith({ sectionId: SECTION, pluginProjectId: 'p1', expectedHead: HEAD, expectedRev: 3 }))
+  })
+})
+
+describe('the workspace', () => {
+  const workspace = () => render(<StudioWorkspace sectionId={SECTION} drafts={[]} />)
+
+  it('a starter idea fills the box to edit and builds nothing on its own', () => {
+    workspace()
+    const box = screen.getByLabelText('Describe the tool you want') as HTMLTextAreaElement
+    const ideas = screen.getByRole('group', { name: 'Ideas to start from' })
+    fireEvent.click(within(ideas).getByRole('button', { name: 'Exit ticket' }))
+    expect(box.value).toMatch(/^A one-question exit ticket/)
+    expect(document.activeElement).toBe(box)
+    expect(within(ideas).getByRole('button', { name: 'Exit ticket' }).getAttribute('aria-pressed')).toBe('true')
+    expect(actions.startBuildAction).not.toHaveBeenCalled()
+    // Once the professor rewords it, the ideas step aside.
+    fireEvent.change(box, { target: { value: 'An exit ticket with two questions' } })
+    expect(screen.queryByRole('group', { name: 'Ideas to start from' })).toBeNull()
+  })
+
+  it('a held Enter starts one build: key repeats are ignored', async () => {
+    vi.mocked(actions.startBuildAction).mockReturnValue(new Promise(() => {}))
+    workspace()
+    const box = screen.getByLabelText('Describe the tool you want')
+    fireEvent.change(box, { target: { value: 'An office-hours queue' } })
+    fireEvent.keyDown(box, { key: 'Enter', repeat: true })
+    expect(actions.startBuildAction).not.toHaveBeenCalled()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(actions.startBuildAction).toHaveBeenCalledOnce())
+    expect(vi.mocked(actions.startBuildAction).mock.calls[0][0]).toMatchObject({ sectionId: SECTION, pluginProjectId: null, request: 'An office-hours queue' })
   })
 })

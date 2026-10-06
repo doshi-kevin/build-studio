@@ -10,9 +10,9 @@ interface StudioLandingProps {
 export function StudioLanding({ toolCount }: StudioLandingProps) {
   const tools = toolCount === 1 ? '1 tool' : `${toolCount} tools`
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
+    <div className="studio-brand mx-auto max-w-4xl space-y-8">
       <header>
-        <h1 className="font-[family-name:var(--font-instrument-serif)] text-3xl">Studio</h1>
+        <h1 className="text-3xl font-bold text-ink">Studio</h1>
         <p className="mt-2 max-w-prose text-sm text-muted-foreground">
           Tools built in Studio for this course, from what the course already knows.
         </p>

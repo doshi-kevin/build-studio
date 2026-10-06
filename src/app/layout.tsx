@@ -12,7 +12,7 @@
  */
 
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Geist, Geist_Mono, Inter, Instrument_Serif, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,6 +32,20 @@ const instrumentSerif = Instrument_Serif({
   style: ["normal", "italic"],
 });
 
+// The company design system's type (docs/reference/design-system.md), used by Studio
+// through .studio-brand. Not preloaded: no other page uses them yet.
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+  preload: false,
+});
+
+const jakarta = Plus_Jakarta_Sans({
+  variable: "--font-jakarta",
+  subsets: ["latin"],
+  preload: false,
+});
+
 /** Page metadata shown in browser tab and search results */
 export const metadata: Metadata = {
   title: "Scholera",
@@ -46,7 +60,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-scroll-behavior="smooth">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} ${inter.variable} ${jakarta.variable} antialiased`}
       >
         {children}
       </body>

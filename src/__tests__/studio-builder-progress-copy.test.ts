@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workingCopy } from '@/components/studio/builder/RunCards'
+import { buildStage, workingCopy } from '@/components/studio/builder/RunCards'
 import { endingCopy } from '@/lib/studio/builder/service'
 import { STUDIO_BUILDER_QUEUE_NOTICE_MS } from '@/lib/studio/limits'
 
@@ -31,6 +31,21 @@ describe('the line beside the spinner', () => {
     expect(workingCopy('reviewing', null, 'Rendering the preview')).toBe('Reviewing the design…')
     expect(workingCopy('reviewing', null, 'Design review passed')).toBe('Finishing up…')
     expect(workingCopy('improving', null, 'Found improvements to make')).toBe('Improving the interface…')
+  })
+})
+
+describe('the stage bar', () => {
+  const ev = (label: string, seq = 1) => ({ seq, label, outcome: 'done' as const })
+  it('marks no stage while the run waits for a worker, whatever the phase says', () => {
+    expect(buildStage('editing', [ev('Checks passed')], 1000)).toBe(-1)
+  })
+  it('never moves back when a repair or improve round sets the phase back', () => {
+    expect(buildStage('editing', [ev('Found issues to fix')], null)).toBe(2)
+    expect(buildStage('checking', [ev('Checks passed'), ev('Rendering the preview', 2)], null)).toBe(3)
+  })
+  it('reads an unknown phase or label as the first stage, not a gap', () => {
+    expect(buildStage(null, [], null)).toBe(0)
+    expect(buildStage('something_new', [ev('Some new label')], null)).toBe(0)
   })
 })
 

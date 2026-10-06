@@ -94,6 +94,18 @@
      nothing else in the app should use it. Named rather than inlined only so
      that no raw cubic-bezier survives outside this block. */
   --ease-progress-creep: cubic-bezier(0, 0.6, 0.25, 1);
+
+  /* ── Company design system (docs/reference/design-system.md) ─────────────
+     Studio is the first surface on it; see .studio-brand below. The display
+     face is registered by next/font in app/layout.tsx. Shadows are large and
+     soft with a negative spread, tinted toward the ink or the brand blue,
+     each paired with a tight contact shadow. */
+  --font-display: var(--font-jakarta), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --color-ink: var(--ink);
+  --color-on-athena: var(--on-athena);
+  --shadow-card: 0 12px 28px -18px oklch(0.211 0.014 253 / 0.22), 0 1px 2px oklch(0.211 0.014 253 / 0.05);
+  --shadow-raised: 0 24px 60px -30px oklch(0.211 0.014 253 / 0.28), 0 1px 2px oklch(0.211 0.014 253 / 0.05);
+  --shadow-glow-brand: 0 18px 46px -14px oklch(0.561 0.189 260 / 0.55);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -216,6 +228,11 @@
      WCAG AA (chart-3 on its own /10 tint measured only 4.07:1). */
   --ai-muted: oklch(0.95 0.03 295);
   --ai-muted-foreground: oklch(61.662% 0.1468 244.037);
+
+  /* Heading ink (#090B0D), and the secondary text on the Athena surface:
+     10.1:1 on its darkest stop, 4.59:1 under its highlight, the lightest spot. */
+  --ink: oklch(0.148 0.006 248);
+  --on-athena: oklch(0.95 0.025 250);
 
   /* Crisp hairline borders (zinc-200) + blue focus ring */
   --border: oklch(0.922 0.004 247);
@@ -563,6 +580,44 @@
   .frontier-wash {
     animation: none;
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Studio on the company design system (docs/reference/design-system.md).
+   Scoped, like the live-classroom stage: the rest of the app keeps :root.
+   Radix portals render under <body>, outside this subtree, so Studio's
+   dialogs and popovers carry the class on their content too.
+
+   Colours barely move. :root's primary, ink, muted text and canvas already
+   are the brand values to within rounding. What changes is the accent (the
+   brand's primary-light), the input edge (border-bold), the shape (10px
+   buttons and inputs, 16px cards) and the type: Inter for text, Plus Jakarta
+   Sans for headings.
+   ────────────────────────────────────────────────────────────────────────── */
+@layer base {
+  .studio-brand {
+    --radius: 0.75rem;
+    --accent: oklch(0.961 0.015 251);
+    --border: oklch(0.921 0.005 258);
+    --input: oklch(0.868 0.01 253);
+    font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  }
+  .studio-brand :where(h1, h2, h3) {
+    font-family: var(--font-jakarta), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+}
+
+/* The "Athena blue" surface, for AI moments: Studio's hero. Never a general
+   page background. Text on it is primary-foreground or on-athena. The light
+   end and the highlight are darker than the marketing site's (0.52 and 38%),
+   which left on-athena text at 3.1:1 under the highlight. */
+.athena-surface {
+  background:
+    radial-gradient(75rem 42rem at 70% 10%, color-mix(in oklab, oklch(0.78 0.09 250) 20%, transparent), transparent 68%),
+    radial-gradient(58rem 34rem at 52% 110%, color-mix(in oklab, oklch(0.28 0.18 252) 70%, transparent), transparent 68%),
+    linear-gradient(112deg, oklch(0.34 0.18 252), oklch(0.42 0.19 252) 52%, oklch(0.46 0.17 250));
 }
 
 @keyframes athena-logo-shimmer {

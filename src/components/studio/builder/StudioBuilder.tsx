@@ -1,8 +1,7 @@
 'use client'
 
 import { useEffect, useId, useRef, useState, useTransition } from 'react'
-import { flushSync } from 'react-dom'
-import { Undo2, X } from 'lucide-react'
+import { Check, CheckCircle2, Save, Undo2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -15,11 +14,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { cn } from '@/lib/utils'
 import {
   answerQuestionAction,
   decideApprovalAction,
@@ -32,13 +28,15 @@ import {
   undoDraftAction,
 } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
 import type { DraftHistory as DraftHistoryData } from '@/lib/studio/builder/service'
+import { AthenaMascot } from './AthenaMascot'
 import { DraftHistory } from './DraftHistory'
 import { MemoryPanel } from './MemoryPanel'
+import { Chip, StatusChip } from './RunCards'
 import { SaveReleaseCard } from './SaveReleaseCard'
 import { StudioChat } from './StudioChat'
 import { StudioPreview } from './StudioPreview'
 import { useBuildRun } from './use-build-run'
-import { STATUS_BADGE, statusAnnouncement, type ConversationTurn, type Device, type OpenProject, type ViewMode } from './types'
+import { ENDED_UNBUILT, statusAnnouncement, type ConversationTurn, type OpenProject, type ViewMode } from './types'
 
 const UNDO_WAITS = 'You can undo once this request finishes, or after you stop it.'
 
@@ -54,16 +52,26 @@ interface StudioBuilderProps {
 
 export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose, onChanged }: StudioBuilderProps) {
   const [mode, setMode] = useState<ViewMode>('professor')
-  const [device, setDevice] = useState<Device>('desktop')
-  const [pane, setPane] = useState<'chat' | 'preview'>('chat')
   // The workspace remounts this per project (key), so props only seed state.
   const [runId, setRunId] = useState<string | null>(initialRunId)
   const [turns, setTurns] = useState<ConversationTurn[]>([])
   const [conversation, setConversation] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [conversationReads, setConversationReads] = useState(0)
   const { progress, events, unreachable, sawActive, refresh } = useBuildRun(runId)
-  const previewRef = useRef<HTMLElement>(null)
   const undoReasonId = useId()
+  const saveNoteId = useId()
+  const releaseId = useId()
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const releaseRef = useRef<HTMLElement>(null)
+  // The version the header's Save just made. Its next step shows at the end of the chat.
+  const [saved, setSaved] = useState<{ versionId: string; version: string; hash: string } | null>(null)
+  const [saving, startSaving] = useTransition()
+  // Save unmounts once it succeeds, so focus moves to what it made. Not when the professor sent
+  // a new request while the save ran: they are typing in the chat box.
+  const focusSaved = useRef(true)
+  useEffect(() => {
+    if (saved && focusSaved.current) releaseRef.current?.focus()
+  }, [saved])
 
   const pluginProjectId = project?.pluginProjectId ?? null
   useEffect(() => {
@@ -122,17 +130,29 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
   const canUndo = !!fresh?.canUndo && !!fresh.head.hash && !working && !waiting && !undoing
   // While a build is active, Undo stays visible and says why it can't run yet.
   const undoWaits = (working || waiting) && !!(fresh ?? history)?.canUndo
-  const runBadge = progress && (working || waiting) ? STATUS_BADGE[progress.status] : undefined
   // Save offers the draft the preview shows. After an undo that is the earlier draft, not
   // the one this run built, so it is saveable unless it already has a version.
   const builtShown = !!progress?.result?.previewHash && progress.result.previewHash === headHash
-  const headEntry = fresh?.entries.find((e) => e.current)
-  const canSave = ended && !!headHash && (fresh ? !headEntry?.savedVersion : builtShown)
+  // Found by hash, so an older read still answers: a snapshot only ever goes from unsaved to saved.
+  const headEntry = (fresh ?? history)?.entries.find((e) => e.hash === headHash)
+  const headSaved = !!headEntry?.savedVersion || saved?.hash === headHash
+  // In the header whatever the latest request did: a failed follow-up doesn't strand a good draft.
+  const canSave = !!headHash && !working && !waiting && !undoing && !headSaved && (fresh ? true : ended && builtShown)
+  const savesOtherDraft = !!progress?.result?.previewHash && !builtShown
+  const savedVersion = headEntry?.savedVersion ?? (saved?.hash === headHash ? saved.version : null)
+  const lastRunFailed = !!progress && ENDED_UNBUILT.includes(progress.status)
 
-  // On a phone the chat pane hides once the preview shows, so focus follows the switch.
-  const showPreview = () => {
-    flushSync(() => setPane('preview'))
-    previewRef.current?.focus()
+  const save = async () => {
+    if (!headHash) return
+    focusSaved.current = true
+    const r = await saveDraftAsVersionAction({ sectionId, pluginProjectId: project.pluginProjectId, snapshotHash: headHash })
+    if ('error' in r) {
+      toast.error(r.error)
+      return
+    }
+    setSaved({ versionId: r.versionId, version: r.version, hash: headHash })
+    onChanged()
+    setHistoryReads((n) => n + 1)
   }
 
   const undo = async () => {
@@ -148,29 +168,70 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
     setHistoryReads((n) => n + 1)
   }
 
+  const athenaLine = working
+    ? 'Working on it…'
+    : progress?.status === 'waiting_for_approval'
+      ? 'Waiting for your approval'
+      : progress?.status === 'waiting_for_professor'
+        ? 'Waiting for you'
+        : 'Your build assistant'
+
+  const release = saved && (
+    <section ref={releaseRef} tabIndex={-1} aria-labelledby={releaseId} className="space-y-3 rounded-2xl border border-border bg-card p-4 shadow-card focus:outline-none">
+      <div className="flex items-start gap-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-success-muted text-success-muted-foreground">
+          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <div>
+          <h3 id={releaseId} className="text-sm font-semibold text-ink">
+            Saved as version {saved.version}
+          </h3>
+          <p className="text-sm text-muted-foreground">Saving doesn’t change what students see.</p>
+        </div>
+      </div>
+      <SaveReleaseCard sectionId={sectionId} versionId={saved.versionId} version={saved.version} />
+    </section>
+  )
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
-        className="top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none"
+        onOpenAutoFocus={(e) => {
+          // The preview comes first, so its frames would take the first Tab. Start in the chat box.
+          e.preventDefault()
+          composerRef.current?.focus()
+        }}
+        className="studio-brand top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none"
       >
-
-        <DialogDescription className="sr-only">Chat with Athena on one side and preview the draft on the other.</DialogDescription>
-        {/* Outside both panes: on a phone the hidden pane is display:none and would announce nothing. */}
+        <DialogDescription className="sr-only">Preview your draft on the left and chat with Athena on the right.</DialogDescription>
+        {/* One announcer for the whole builder, outside both columns. */}
         <p role="status" className="sr-only">
           {statusAnnouncement(progress?.status, sawActive)}
         </p>
-        <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card px-4">
           <Button variant="ghost" size="icon" className="h-11 w-11" onClick={onClose} aria-label="Close builder">
             <X className="h-4 w-4" aria-hidden="true" />
           </Button>
-          <DialogTitle className="min-w-0 truncate text-base font-medium">{project.name}</DialogTitle>
-          <Badge variant="secondary">{runBadge ?? (headHash ? 'Draft' : 'New')}</Badge>
-          <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
+          <span className="h-6 w-px bg-border" aria-hidden="true" />
+          <DialogTitle className="min-w-0 truncate font-display text-base font-semibold text-ink">{project.name}</DialogTitle>
+          {progress && (working || waiting) ? (
+            <StatusChip status={progress.status} />
+          ) : savedVersion ? (
+            <Chip tone="success" icon={Check}>
+              Saved as v{savedVersion}
+            </Chip>
+          ) : headHash ? (
+            <Chip tone="neutral">Unsaved draft</Chip>
+          ) : (
+            <Chip tone="neutral">No draft yet</Chip>
+          )}
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <DraftHistory entries={history?.entries ?? []} failed={historyFailed} onRetry={() => setHistoryReads((n) => n + 1)} />
             {undoWaits && !undoing && (
               <>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   className="min-h-11 gap-2 aria-disabled:opacity-50"
                   aria-disabled="true"
                   aria-describedby={undoReasonId}
@@ -187,12 +248,12 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
             {(canUndo || undoing) && (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="outline" className="min-h-11 gap-2" disabled={undoing}>
+                  <Button variant="ghost" className="min-h-11 gap-2" disabled={undoing}>
                     <Undo2 className="h-4 w-4" aria-hidden="true" />
                     {undoing ? 'Going back…' : 'Undo last change'}
                   </Button>
                 </AlertDialogTrigger>
-                <AlertDialogContent>
+                <AlertDialogContent className="studio-brand">
                   <AlertDialogHeader>
                     <AlertDialogTitle>Go back to your previous draft?</AlertDialogTitle>
                     <AlertDialogDescription>
@@ -209,121 +270,127 @@ export function StudioBuilder({ sectionId, project, runId: initialRunId, onClose
                 </AlertDialogContent>
               </AlertDialog>
             )}
-            <MemoryPanel sectionId={sectionId} pluginProjectId={project.pluginProjectId} reloadKey={memoryReads} />
-            <DraftHistory entries={history?.entries ?? []} failed={historyFailed} onRetry={() => setHistoryReads((n) => n + 1)} />
+            {canSave && (
+              <>
+                <span className="mx-1 h-6 w-px bg-border" aria-hidden="true" />
+                <Button className="min-h-11 gap-2 shadow-glow-brand" disabled={saving} aria-describedby={savesOtherDraft ? saveNoteId : undefined} onClick={() => startSaving(save)}>
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {saving ? 'Checking and saving…' : savesOtherDraft ? 'Save current draft as version' : 'Save as version'}
+                </Button>
+                {savesOtherDraft && (
+                  <span id={saveNoteId} className="sr-only">
+                    Your current draft isn’t the one this build made. Saving keeps your current draft.
+                  </span>
+                )}
+              </>
+            )}
           </div>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            value={pane}
-            onValueChange={(v) => v && setPane(v as 'chat' | 'preview')}
-            aria-label="Show chat or preview"
-            className="ml-auto lg:hidden"
-          >
-            <ToggleGroupItem value="chat" className="min-h-11 min-w-11">
-              {waiting ? 'Chat (needs you)' : 'Chat'}
-            </ToggleGroupItem>
-            <ToggleGroupItem value="preview" className="min-h-11 min-w-11">
-              Preview
-            </ToggleGroupItem>
-          </ToggleGroup>
         </header>
         <div className="flex min-h-0 flex-1">
-          <aside aria-label="Athena" className={cn('min-h-0 w-full shrink-0 border-r border-border lg:block lg:w-96', pane === 'chat' ? 'block' : 'hidden')}>
-            <StudioChat
-              turns={turns}
-              conversation={conversation}
-              onReloadConversation={() => {
-                setConversation('loading')
-                setConversationReads((n) => n + 1)
-              }}
-              current={runId ? { runId, progress, events, unreachable } : null}
-              canSave={canSave}
-              savesOtherDraft={!builtShown}
-              onSend={async (text, replaceRunId) => {
-                const r = await startBuildAction({
-                  sectionId,
-                  pluginProjectId: project.pluginProjectId,
-                  request: text,
-                  clientRequestId: crypto.randomUUID(),
-                  replaceRunId: replaceRunId ?? null,
-                })
-                if ('success' in r) {
-                  // The request shows at once; the conversation re-read replaces this.
-                  setTurns((prev) => [
-                    ...prev.filter((t) => t.runId !== r.runId),
-                    { runId: r.runId, request: text, status: 'queued', ending: null, summary: null, createdAt: new Date().toISOString() },
-                  ])
-                  setRunId(r.runId)
-                  onChanged()
-                  return null
-                }
-                if (r.conflict?.kind === 'waiting') return { waitingRunId: r.conflict.runId }
-                return { error: r.error }
-              }}
-              onStop={async () => {
-                if (!runId) return
-                const r = await stopBuildAction({ sectionId, runId })
-                if ('error' in r) toast.error(r.error)
-                refresh()
-              }}
-              onDecide={async (approve) => {
-                if (!runId || !progress?.approval) return null
-                const r = await decideApprovalAction({ sectionId, runId, proposalId: progress.approval.proposalId, deltaHash: progress.approval.deltaHash, approve })
-                refresh()
-                return 'error' in r ? r.error : null
-              }}
-              onAnswer={async (answer) => {
-                if (!runId || !progress?.question) return null
-                const r = await answerQuestionAction({ sectionId, runId, questionId: progress.question.id, answer })
-                refresh()
-                return 'error' in r ? r.error : null
-              }}
-              onDecideMemory={async (memoryId, approve) => {
-                if (!runId) return null
-                const r = await decideMemoryAction({ sectionId, runId, memoryId, approve })
-                refresh()
-                setMemoryReads((n) => n + 1)
-                if ('error' in r) return r.error
-                if (approve) toast.success('Saved for this tool.')
-                return null
-              }}
-              onPreview={showPreview}
-              onSave={async () => {
-                if (!headHash) return { ok: false, message: 'There is no draft to save yet.' }
-                const r = await saveDraftAsVersionAction({ sectionId, pluginProjectId: project.pluginProjectId, snapshotHash: headHash })
-                if ('error' in r) return { ok: false, message: r.error }
-                onChanged()
-                setHistoryReads((n) => n + 1)
-                return { ok: true, message: `Saved as version ${r.version}.`, saved: { versionId: r.versionId, version: r.version } }
-              }}
-              afterSave={(saved) => <SaveReleaseCard sectionId={sectionId} versionId={saved.versionId} version={saved.version} />}
-            />
-          </aside>
-          <section
-            ref={previewRef}
-            tabIndex={-1}
-            aria-label="Preview"
-            className={cn('min-h-0 min-w-0 flex-1 focus:outline-none lg:block', pane === 'preview' ? 'block' : 'hidden')}
-          >
+          <section aria-label="Preview" className="flex min-h-0 min-w-0 flex-1 flex-col">
             <StudioPreview
               sectionId={sectionId}
               pluginProjectId={project.pluginProjectId}
               snapshotHash={headHash}
-              building={working || waiting}
+              building={working}
+              noteBusy={working || waiting}
+              lastRunFailed={lastRunFailed}
               note={
                 working && headHash
                   ? 'Athena is still working. This is your draft from before this request.'
-                  : ended && progress?.result?.previewHash && !builtShown && headHash
-                    ? 'This is your current draft. The one this build made is still in your history.'
-                    : undefined
+                  : waiting
+                    ? headHash
+                      ? 'Athena is waiting for you in the chat. This is your draft from before this request.'
+                      : 'Athena is waiting for you in the chat before building your first draft.'
+                    : ended && progress?.result?.previewHash && !builtShown && headHash
+                      ? 'This is your current draft. The one this build made is still in your history.'
+                      : lastRunFailed && headHash
+                        ? 'Your last request didn’t change this draft.'
+                        : undefined
               }
               mode={mode}
-              device={device}
               onModeChange={setMode}
-              onDeviceChange={setDevice}
             />
           </section>
+          <aside aria-label="Athena" className="flex min-h-0 w-(--athena-dock-w) shrink-0 flex-col border-l border-border bg-card">
+            <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+              <AthenaMascot size={32} />
+              <div className="min-w-0 flex-1">
+                <p className="font-display text-sm font-semibold text-ink">Athena</p>
+                {/* The status region already announces state changes. */}
+                <p aria-hidden="true" className="truncate text-xs text-muted-foreground">
+                  {athenaLine}
+                </p>
+              </div>
+              <MemoryPanel sectionId={sectionId} pluginProjectId={project.pluginProjectId} reloadKey={memoryReads} />
+            </div>
+            <div className="min-h-0 flex-1">
+              <StudioChat
+                turns={turns}
+                conversation={conversation}
+                onReloadConversation={() => {
+                  setConversation('loading')
+                  setConversationReads((n) => n + 1)
+                }}
+                current={runId ? { runId, progress, events, unreachable } : null}
+                drafts={(fresh ?? history)?.entries ?? null}
+                saveAvailable={canSave && !savesOtherDraft}
+                composerRef={composerRef}
+                release={release}
+                onSend={async (text, replaceRunId) => {
+                  const r = await startBuildAction({
+                    sectionId,
+                    pluginProjectId: project.pluginProjectId,
+                    request: text,
+                    clientRequestId: crypto.randomUUID(),
+                    replaceRunId: replaceRunId ?? null,
+                  })
+                  if ('success' in r) {
+                    // The request shows at once; the conversation re-read replaces this.
+                    setTurns((prev) => [
+                      ...prev.filter((t) => t.runId !== r.runId),
+                      { runId: r.runId, request: text, status: 'queued', ending: null, summary: null, createdAt: new Date().toISOString() },
+                    ])
+                    setRunId(r.runId)
+                    // The release card belongs to the version before this request.
+                    setSaved(null)
+                    focusSaved.current = false
+                    onChanged()
+                    return null
+                  }
+                  if (r.conflict?.kind === 'waiting') return { waitingRunId: r.conflict.runId }
+                  return { error: r.error }
+                }}
+                onStop={async () => {
+                  if (!runId) return
+                  const r = await stopBuildAction({ sectionId, runId })
+                  if ('error' in r) toast.error(r.error)
+                  refresh()
+                }}
+                onDecide={async (approve) => {
+                  if (!runId || !progress?.approval) return null
+                  const r = await decideApprovalAction({ sectionId, runId, proposalId: progress.approval.proposalId, deltaHash: progress.approval.deltaHash, approve })
+                  refresh()
+                  return 'error' in r ? r.error : null
+                }}
+                onAnswer={async (answer) => {
+                  if (!runId || !progress?.question) return null
+                  const r = await answerQuestionAction({ sectionId, runId, questionId: progress.question.id, answer })
+                  refresh()
+                  return 'error' in r ? r.error : null
+                }}
+                onDecideMemory={async (memoryId, approve) => {
+                  if (!runId) return null
+                  const r = await decideMemoryAction({ sectionId, runId, memoryId, approve })
+                  refresh()
+                  setMemoryReads((n) => n + 1)
+                  if ('error' in r) return r.error
+                  if (approve) toast.success('Saved for this tool.')
+                  return null
+                }}
+              />
+            </div>
+          </aside>
         </div>
       </DialogContent>
     </Dialog>

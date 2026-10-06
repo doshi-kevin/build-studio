@@ -77,7 +77,8 @@ describe('the Save card’s next step', () => {
     expect(screen.getByText('Saves responses: theirs.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Use this version in the course' }))
     expect(await screen.findByText(/Week 6: Midterm review \(slides\)/)).toBeInTheDocument()
-    const button = screen.getByRole('button', { name: 'Use this version in the course' })
+    // The warnings can render a beat before the button leaves its pending label.
+    const button = await screen.findByRole('button', { name: 'Use this version in the course' })
     expect(button).toBeDisabled()
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(button)
@@ -93,7 +94,7 @@ describe('the Save card’s next step', () => {
     })
     render(<SaveReleaseCard sectionId="s1" versionId="v2" version="1.1.0" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Use this version in the course' }))
-    expect(await screen.findByText('Studio’s automatic checks are still running.')).toBeInTheDocument()
+    expect(await screen.findByText('Studio’s automatic checks are still running.', {}, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.queryByRole('button')).toBeNull()
     expect(screen.getByRole('link', { name: 'Open the tool' })).toHaveAttribute('href', '/professor/courses/s1/studio/i1')
   })

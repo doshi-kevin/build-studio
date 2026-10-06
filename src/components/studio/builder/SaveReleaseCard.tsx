@@ -2,12 +2,13 @@
 
 import { useEffect, useId, useState, useTransition } from 'react'
 import Link from 'next/link'
-import { CheckCircle2 } from 'lucide-react'
+import { Check, CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { VersionRelease } from '@/lib/studio/builder/service'
 import type { BlockerCode, Issue, WarningCode } from '@/lib/studio/student-visibility'
 import { IssueWarnings } from '../publication/IssueWarnings'
+import { ReleaseSteps } from './RunCards'
 import { addVersionToCourseAction, versionReleaseAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
 
 /**
@@ -43,9 +44,10 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
   const toolHref = (installationId: string) => `/professor/courses/${sectionId}/studio/${installationId}`
   if (done) {
     return (
-      <section aria-labelledby={headingId} className="space-y-2 rounded-2xl bg-card p-4 shadow-sm" aria-live="polite">
+      <section aria-labelledby={headingId} className="space-y-3 rounded-2xl bg-muted p-4" aria-live="polite">
+        {done.added && <ReleaseSteps step={3} />}
         <div className="flex items-start gap-2">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
           <div className="space-y-1">
             <h3 id={headingId} className="text-sm font-medium">
               {done.added ? 'Added to this course. Students can’t see it until you show it.' : `Your course now uses version ${version}.`}
@@ -53,7 +55,7 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
             <p className="text-sm text-muted-foreground">{done.checks}</p>
           </div>
         </div>
-        <Link href={toolHref(done.installationId)} className="inline-flex min-h-11 items-center rounded-xl px-3 text-sm font-medium text-primary hover:bg-accent">
+        <Link href={toolHref(done.installationId)} className="inline-flex min-h-11 items-center rounded-xl px-3 text-sm font-medium text-accent-foreground hover:bg-accent">
           Open the tool
         </Link>
       </section>
@@ -79,7 +81,8 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
   const lines = add ? [...card.students.map((l) => `Students can: ${l}`), ...card.professors.map((l) => `You can: ${l}`)] : release.added
 
   return (
-    <section aria-labelledby={headingId} className="space-y-3 rounded-2xl bg-card p-4 shadow-sm">
+    <section aria-labelledby={headingId} className="space-y-3 rounded-2xl bg-muted p-4">
+      {add && <ReleaseSteps step={2} />}
       <div className="space-y-1">
         <h3 id={headingId} className="text-sm font-medium">
           {add ? `Add ${card.name} to this course?` : `Use version ${version} in this course?`}
@@ -98,9 +101,12 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
       {lines.length > 0 && (
         <div className="text-sm text-muted-foreground">
           {!add && <p>New in this version:</p>}
-          <ul className="list-disc space-y-1 pl-5">
+          <ul className="space-y-1.5">
             {lines.map((l) => (
-              <li key={l}>{l}</li>
+              <li key={l} className="flex gap-2">
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+                <span className="min-w-0">{l}</span>
+              </li>
             ))}
           </ul>
         </div>
@@ -124,7 +130,7 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
           {release.installationId && (
             <>
               <p className="mt-2 text-muted-foreground">You can use this version later from the tool’s page.</p>
-              <Link href={toolHref(release.installationId)} className="inline-flex min-h-11 items-center rounded-xl text-sm font-medium text-primary hover:underline">
+              <Link href={toolHref(release.installationId)} className="inline-flex min-h-11 items-center rounded-xl text-sm font-medium text-accent-foreground hover:underline">
                 Open the tool
               </Link>
             </>
@@ -133,7 +139,7 @@ export function SaveReleaseCard({ sectionId, versionId, version }: { sectionId: 
       )}
       <IssueWarnings id={`${headingId}-ack`} warnings={warnings} acknowledged={acknowledged} onAcknowledge={blockers.length > 0 ? undefined : setAcknowledged} />
       {blockers.length === 0 && (
-        <Button type="button" className="min-h-11" disabled={pending || (warnings.length > 0 && !acknowledged)} onClick={confirm}>
+        <Button type="button" className="min-h-11 w-full" disabled={pending || (warnings.length > 0 && !acknowledged)} onClick={confirm}>
           {pending ? (add ? 'Adding…' : 'Switching…') : add ? 'Add to this course' : 'Use this version in the course'}
         </Button>
       )}
