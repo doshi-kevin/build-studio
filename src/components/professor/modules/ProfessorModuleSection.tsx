@@ -235,7 +235,13 @@ export function ProfessorModuleSection({
             (no Draft badge) and unpublishing is rare, so that control joins the
             quiet hover cluster instead of shouting on every row. */}
         {!studentPreview && (
-          <div className="flex w-full shrink-0 items-center justify-end gap-1.5 sm:min-w-64">
+          /* The min-width floor keeps this cluster's left edge fixed so the tags
+             in the header button (above) land in the same spot on every row —
+             but it only starts at lg, not sm. min-width beats flex-shrink, so a
+             16rem floor between 640-1023px leaves the title too little room and
+             crushes it toward 0. lg is the narrowest breakpoint verified to
+             always leave the title readable. */
+          <div className="flex w-full shrink-0 items-center justify-end gap-1.5 sm:w-auto lg:min-w-64">
             {/* Published, but not open to students yet. The chip IS the control:
                 clicking it offers the two things wanted here — open it now, or move
                 the date — without leaving the row. Visible at rest rather than in

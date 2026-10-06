@@ -668,7 +668,10 @@ export function ClassroomDashboard({
   // Declared once here rather than at ~48 call sites.
   return (
     <MotionConfig reducedMotion="user">
-    <div className="relative h-full overflow-hidden">
+    {/* A lecture runs for long stretches with no input, and recording and
+        transcript uploads need the session, so the idle timer stands down while
+        the room is live (see IdleTimeout). */}
+    <div className="relative h-full overflow-hidden" data-idle-exempt={snapshot.room.status === 'live' ? '' : undefined}>
       {/* Stage — insets to the left when the sidebar is open so the deck and
           its control bar (End Class / fullscreen on the right) reflow beside
           the wing instead of rendering underneath it. Only the live-presenting

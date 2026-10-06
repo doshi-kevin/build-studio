@@ -39,6 +39,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /* Why the last session ended when nothing went wrong (idle timeout, signed in
+     elsewhere). Shown in a neutral banner, not the red error one. */
+  const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [processingInvite, setProcessingInvite] = useState(false)
   const [supabase] = useState(() => createClient())
@@ -65,7 +68,16 @@ export default function LoginPage() {
       const messages: Record<string, string> = {
         auth_callback_failed: 'Login failed. Please try again or contact support.',
       }
-      setError(messages[queryError] || 'An authentication error occurred. Please try again.')
+      const notices: Record<string, string> = {
+        idle: 'You were signed out after 60 minutes of inactivity.',
+        signed_in_elsewhere: 'You were signed out because your account was signed in on another device.',
+      }
+      // Own-key checks: a plain lookup would let ?error=constructor reach a prototype member.
+      if (Object.hasOwn(notices, queryError)) {
+        setNotice(notices[queryError])
+      } else {
+        setError(Object.hasOwn(messages, queryError) ? messages[queryError] : 'An authentication error occurred. Please try again.')
+      }
       window.history.replaceState(null, '', '/login')
       if (!hash && !code) return
     }
@@ -426,6 +438,15 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
+
+            {notice && !error && (
+              <div
+                role="status"
+                className="px-3.5 py-2.5 rounded-lg bg-muted border border-border text-sm text-muted-foreground"
+              >
+                {notice}
+              </div>
+            )}
 
             {/* Error */}
             <AnimatePresence>

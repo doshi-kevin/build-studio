@@ -163,7 +163,13 @@ function QuizPlayerInner({ sectionId }: { sectionId: string }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-background overflow-y-auto">
+    <div
+      className="fixed inset-0 z-50 bg-background overflow-y-auto"
+      /* A timed attempt's clock keeps running whether or not the student is signed
+         in, and its auto-submit needs the session, so the idle timer stands down
+         (see IdleTimeout). Untimed attempts autosave and need no exemption. */
+      data-idle-exempt={quiz.timeLimitMinutes ? '' : undefined}
+    >
       <div className="mx-auto max-w-6xl px-6 py-4">
       {view === 'review' ? (
         <FlaggedReviewScreen

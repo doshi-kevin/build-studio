@@ -28,6 +28,7 @@ import { CalendarColorsInit } from '@/components/student/calendar/CalendarColors
 import { Toaster } from '@/components/ui/sonner'
 import { MotionProvider } from '@/components/shared/MotionProvider'
 import { RouteProgress } from '@/components/dashboard/RouteProgress'
+import { IdleTimeout } from '@/components/shared/IdleTimeout'
 import { logger } from '@/lib/logger'
 import type { Profile } from '@/lib/supabase/types'
 
@@ -128,6 +129,7 @@ export default async function DashboardLayout({
           </div>
         </div>
         <Toaster richColors position="top-right" />
+        <IdleTimeout />
       </div>
     )
   }
@@ -170,6 +172,8 @@ export default async function DashboardLayout({
       <RealtimeAuthMount />
       {/* Applies the student's saved calendar category colors on load. */}
       <CalendarColorsInit />
+      {/* Signs out after 60 idle minutes, or when the account signs in elsewhere. */}
+      <IdleTimeout />
     </div>
     </MotionProvider>
   )

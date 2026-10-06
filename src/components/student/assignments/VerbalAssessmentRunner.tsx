@@ -82,6 +82,10 @@ export function VerbalAssessmentRunner({ sectionId, assignmentId, studentName, t
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const recordedBlobRef = useRef<Blob | null>(null)
+  /* Mirrors "recordedBlobRef holds a recording" for render. The blob exists only
+     in memory until the upload lands, so while it does the idle timer must not
+     sign out (see IdleTimeout): that would throw away a single-attempt recording. */
+  const [hasRecording, setHasRecording] = useState(false)
   const recordStartRef = useRef(0)
   const cellOffsetRef = useRef(0)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
@@ -313,6 +317,7 @@ export function VerbalAssessmentRunner({ sectionId, assignmentId, studentName, t
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'video/webm' })
         recordedBlobRef.current = blob
+        setHasRecording(true)
         streamRef.current?.getTracks().forEach((t) => t.stop())
         retryRef.current = () => { void uploadRecording() }
         void uploadRecording()
@@ -451,7 +456,7 @@ export function VerbalAssessmentRunner({ sectionId, assignmentId, studentName, t
 
   if (phase === 'error') {
     return (
-      <div className="rounded-3xl border border-destructive/20 bg-destructive/5 p-6">
+      <div className="rounded-3xl border border-destructive/20 bg-destructive/5 p-6" data-idle-exempt={hasRecording ? '' : undefined}>
         <p className="flex items-center gap-2 font-medium text-destructive"><AlertTriangle className="h-5 w-5" /> Something went wrong</p>
         <p className="mt-1 text-sm text-foreground">{error}</p>
         <Button className="mt-4" variant="outline" onClick={() => retryRef.current()}>Try again</Button>
@@ -461,7 +466,7 @@ export function VerbalAssessmentRunner({ sectionId, assignmentId, studentName, t
 
   if (phase === 'submitting') {
     return (
-      <div className="rounded-3xl border border-border bg-card p-8 text-center">
+      <div className="rounded-3xl border border-border bg-card p-8 text-center" data-idle-exempt="">
         <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-muted-foreground" />
         <p className="text-sm font-medium text-foreground">Uploading your recording…</p>
         <p className="mt-1 text-xs text-muted-foreground">Please keep this tab open.</p>
@@ -518,7 +523,8 @@ export function VerbalAssessmentRunner({ sectionId, assignmentId, studentName, t
   const ss = String(remaining % 60).padStart(2, '0')
 
   return (
-    <div className="w-full space-y-4">
+    /* Hands-free by design: the student speaks and never touches the mouse. */
+    <div className="w-full space-y-4" data-idle-exempt="">
       {/* Top bar */}
       <div className="flex items-center justify-between">
         <span className="inline-flex items-center gap-2 text-xs font-medium text-foreground">

@@ -4,7 +4,14 @@
 //
 // RealtimeAuthMount pushes the Supabase JWT into the realtime client so the
 // private room channel authorizes. Auth redirects are handled in middleware.
+//
+// IdleTimeout is here too: the wall never gets input, but while the presenter's
+// tab is live it keeps the shared activity stamp fresh. Once class is over and
+// nobody touches anything for 60 minutes, the projector signs out with it
+// instead of holding the professor's session open on a classroom PC. Silent:
+// the warning shows on the presenter's screen, not on the wall.
 
+import { IdleTimeout } from '@/components/shared/IdleTimeout'
 import { RealtimeAuthMount } from '@/lib/supabase/realtime-auth'
 
 export default function ProjectorLayout({
@@ -22,6 +29,7 @@ export default function ProjectorLayout({
     <div className="lc-projector h-dvh w-screen overflow-hidden bg-background">
       {children}
       <RealtimeAuthMount />
+      <IdleTimeout silent />
     </div>
   )
 }

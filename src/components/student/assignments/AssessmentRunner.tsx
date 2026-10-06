@@ -467,7 +467,11 @@ export function AssessmentRunner({
   // means retrying is pointless — the banner stops promising a retry and the button disables.
   const retryImpossible = !!submitError && isTerminalSubmitError(submitError)
   return (
-    <div className="space-y-4">
+    /* Timed work and the upload window run on the server's clock and auto-submit
+       with the session, so the idle timer stands down for them (see IdleTimeout).
+       Untimed work has no clock to beat, and once a submit has failed for good
+       there is nothing left to protect. */
+    <div className="space-y-4" data-idle-exempt={(isWork && untimed) || retryImpossible ? undefined : ''}>
       {/* Sticky timer bar */}
       <div className="sticky top-0 z-10 flex items-center justify-between rounded-xl border border-border bg-card/95 px-4 py-2.5 shadow-sm backdrop-blur">
         <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground">

@@ -23,6 +23,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { SURFACE_ENTER, SPRING, ENTER } from '@/lib/motion'
 import { ArrowRight, AlertCircle, CheckCircle2, Eye, EyeOff } from 'lucide-react'
 import { BrandMark } from '@/components/shared/BrandMark'
+import { IdleTimeout } from '@/components/shared/IdleTimeout'
 import { createClient } from '@/lib/supabase/client'
 import { logger } from '@/lib/logger'
 import { Input } from '@/components/ui/input'
@@ -76,6 +77,11 @@ export default function ResetPasswordPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-6 relative overflow-hidden">
+      {/* A recovery link signs the user in. Left open, this form is a signed-in page
+          anyone at the machine could use to set a new password, so it times out like
+          the rest. Unmounted on success: the page signs itself out there, and the timer
+          would otherwise see the session gone and jump to /login over the confirmation. */}
+      {!success && <IdleTimeout />}
       {/* Subtle background glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-foreground/[0.02] rounded-full blur-[100px] pointer-events-none" />
 

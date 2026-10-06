@@ -10,7 +10,7 @@ Protected area for authenticated users. Route group `(dashboard)` wraps all post
 | `layout.tsx` | Server Component | Shared layout: fetches profile, renders header + sidebar |
 | `error.tsx` | Client Component | Error boundary: catches dashboard errors, shows recovery UI |
 | `dashboard/page.tsx` | Server Component | Main dashboard with role-specific metric cards |
-| `dashboard/actions.ts` | Server Actions | `signOut()` |
+| `dashboard/actions.ts` | Server Actions | `signOut()` (Sign out button), `recordSignOut()` (audit row for an idle or signed-in-elsewhere sign-out; the browser then ends its own session) |
 | `admin/layout.tsx` | Server Component | Admin role guard — blocks non-institution_admin users |
 | `admin/departments/page.tsx` | Server Component | Department list page with searchable table |
 | `admin/departments/loading.tsx` | Server Component | Loading skeleton for department list |
@@ -19,6 +19,9 @@ Protected area for authenticated users. Route group `(dashboard)` wraps all post
 | `admin/departments/[departmentId]/loading.tsx` | Server Component | Loading skeleton for department detail |
 | `admin/departments/[departmentId]/not-found.tsx` | Server Component | Not found page for invalid department IDs |
 | `admin/departments/course-actions.ts` | Server Actions | CRUD: create, update, delete course + cascade counts |
+
+## Session timeout
+`components/shared/IdleTimeout.tsx`, mounted in this layout, the `(projector)` layout and `/reset-password`, signs a browser out after 60 minutes with no interaction (warning at 58) and when the account signs in on another device. All tabs share one `scholera_last_active` cookie, so activity in any tab keeps every tab signed in. Surfaces that are busy without input put `data-idle-exempt` on their root while it lasts: a timed quiz attempt, a timed assessment, a verbal recording, a live room (professor and student). A sign-out replaces the stamp with `<reason>.<session_id>`, which that session's other tabs follow and a new session's first page overwrites. If Supabase can't be reached at sign-out, the page stays covered and retries, and a reload finishes the sign-out. The projector mounts it with `silent` (no dialog on the wall). Rules and constants are in `src/lib/auth/idle-timeout.ts`. Supabase's own limits (24h time-box, 2h inactivity, single session per user) are set in the dashboard and mirrored in `supabase/config.toml`. Sign-outs write `auth.signed_out` events with the reason.
 
 ## Database Tables Touched
 - `profiles` — fetched in layout.tsx to get user role, name, avatar

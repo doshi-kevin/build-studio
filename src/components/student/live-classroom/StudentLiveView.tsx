@@ -255,6 +255,10 @@ export function StudentLiveView({
         containerRef.current = el
         setFullscreenEl(el)
       }}
+      /* Watching a lecture is input-free, and the attendance heartbeat needs the
+         session, so the idle timer stands down while the class is live (see
+         IdleTimeout). */
+      data-idle-exempt={room.status === 'live' ? '' : undefined}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={SPRING}
