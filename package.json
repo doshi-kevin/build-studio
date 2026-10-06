@@ -114,7 +114,7 @@
     "three": "^0.184.0",
     "tiptap-pagination-plus": "^2.1.0",
     "typescript": "5.9.3",
-    "uuid": "^13.0.0",
+    "uuid": "^14.0.2",
     "yauzl": "^3.4.0",
     "zod": "^4.4.3"
   },
