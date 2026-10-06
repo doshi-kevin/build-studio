@@ -53,8 +53,17 @@ const isEnvFile = (f) => /(^|\/)\.env[^/]*$/.test(f)
 const list = files.stdout
   .split('\0')
   .filter((f) => f && !isEnvFile(f) && f !== 'package-lock.json' && !f.startsWith('.e2e-build/') && existsSync(join(repo, f)))
+// A file can vanish between the listing and the read (a tool writing temp files into the tree).
+// It isn't part of this build, so it is skipped rather than failing the run.
+const vanished = (e) => e?.code === 'ENOENT'
 const digest = createHash('sha256').update(JSON.stringify(build.env))
-for (const f of list) digest.update(f).update(createHash('sha1').update(readFileSync(join(repo, f))).digest('hex'))
+for (const f of list) {
+  try {
+    digest.update(f).update(createHash('sha1').update(readFileSync(join(repo, f))).digest('hex'))
+  } catch (e) {
+    if (!vanished(e)) throw e
+  }
+}
 const stamp = digest.digest('hex').slice(0, 16)
 const root = join(repo, '.e2e-build', stamp)
 const src = join(root, 'src')
@@ -64,7 +73,11 @@ if (!reuse) {
   mkdirSync(src, { recursive: true })
   for (const f of list) {
     mkdirSync(dirname(join(src, f)), { recursive: true })
-    cpSync(join(repo, f), join(src, f))
+    try {
+      cpSync(join(repo, f), join(src, f))
+    } catch (e) {
+      if (!vanished(e)) throw e
+    }
   }
 }
 const stray = envFilesIn(src)
