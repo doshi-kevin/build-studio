@@ -16,6 +16,8 @@ export const QUALITY_FROZEN = {
   // longer prove something is on screen. v2 credited a "+1 Point" button no screen showed;
   // a prompt-only fix (v3, never frozen) didn't change that. v5: every evidence source has an
   // anchor item a level can cite, and phone screens get a measured cramped-layout check.
+  // Scoring (not the prompt): workflow completeness is none when Pass A records a role's
+  // requested core action as absent, the rubric's own "none" (checkScores, 12A.3 adjudication).
   judgePromptVersion: 'sgq-judge-v5',
   judgePromptSha256: 'dd05017b577cfb5804858a1f43ae1a04df74abea4bce75d778a985d1d7152d13',
 } as const

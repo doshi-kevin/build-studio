@@ -180,7 +180,9 @@ describe('B2: a RosterTable whose columns never render', () => {
     const input = inputFor(B2_LEDGER, files)
     const extraction = checkExtraction(valid(), input)
     if (!extraction.ok) throw new Error(extraction.error)
-    const x = extraction.value
+    // Both core actions marked present, so these rules are tested on their own; the core-action
+    // rule has its own test (H05).
+    const x = { ...extraction.value, core: { professor: { present: true, evidence: [] }, student: { present: true, evidence: [] } } }
     expect(checkScores(scoreReply(), x, input)).toMatchObject({ ok: true })
     // A source cited directly instead of an item is dropped and recorded; the level rests on the real item.
     const direct = checkScores(scoreReply({ problem_understanding: { level: 'acceptable', evidence: ['e1', 'manifest'] } }), x, input)
@@ -209,7 +211,9 @@ describe('B2: a RosterTable whose columns never render', () => {
     const input = inputFor(B2_LEDGER, files)
     const extraction = checkExtraction(valid(), input)
     if (!extraction.ok) throw new Error(extraction.error)
-    const x = extraction.value
+    // Both core actions marked present, so these rules are tested on their own; the core-action
+    // rule has its own test (H05).
+    const x = { ...extraction.value, core: { professor: { present: true, evidence: [] }, student: { present: true, evidence: [] } } }
     const refused = (key: DimensionKey, level: Level, evidence: string[]) => checkScores(scoreReply({ [key]: { level, evidence } }), x, input)
     // e1 is the check and the RosterTable's source lines: nothing the professor can see.
     expect(refused('professor_experience', 'acceptable', ['e1'])).toMatchObject({ ok: false, error: 'professor_experience must cite an item backed by the professor’s rendered evidence' })
@@ -682,5 +686,69 @@ describe('C: a phone layout that squeezes the form', () => {
     })
     expect(checkScores(reply([phoneAnchor]), checked.value, input)).toMatchObject({ ok: false, error: expect.stringMatching(/responsiveness_accessibility is excellent but doesn’t address check:student:1/) })
     expect(checkScores(reply([phoneAnchor, 'e2']), checked.value, input)).toMatchObject({ ok: true })
+  })
+})
+
+describe('H05: a requested core action that is absent', () => {
+  // The degraded office-hours queue: students join, but the professor can't call anyone. The
+  // judge's own Pass A said so (core.professor.present false) and still gave workflow weak.
+  const professor = 'export default function Professor() { return <Screen title="Office Hours Queue"><DataTable label="Queue" columns={[]} rows={[]} /></Screen> }'
+  const student = 'export default function Student() { return <Screen title="Office Hours"><Button onPress={join}>Join Queue</Button></Screen> }'
+  const ledger: RenderLedger = {
+    format: RENDER_FORMAT,
+    shots: [
+      renderShot('professor-desktop-normal', [renderItem('heading', 'Office Hours Queue', { level: 1 }), renderItem('table', 'Student | Topic', { label: 'Queue', headers: ['Student', 'Topic'], rowCount: 3 })]),
+      renderShot('student-desktop-normal', [renderItem('heading', 'Office Hours', { level: 1 }), renderItem('button', 'Join Queue')]),
+      renderShot('student-desktop-empty', [renderItem('state', 'Queue is empty', { state: 'empty' })]),
+    ],
+  }
+  const extract = (professorPresent: boolean) => ({
+    items: [
+      { id: 'e1', role: 'student', kind: 'action', text: 'Join the queue.', sources: [render('student-desktop-normal:button'), 'views/student.tsx:1'] },
+      { id: 'e2', role: 'professor', kind: 'data', text: 'The queue as a table.', sources: [render(':table:')] },
+      { id: 'e3', role: 'professor', kind: 'absence', text: 'No way to call the next student.', sources: ['views/professor.tsx:1'] },
+      { id: 'e4', role: 'student', kind: 'state', text: 'An empty queue says so.', sources: [render(':state:')] },
+    ],
+    core: { professor: { present: professorPresent, evidence: ['e3'] }, student: { present: true, evidence: ['e1'] } },
+  })
+  const input = () => inputFor(ledger, { professor, student })
+  const render = (needle: string) => input().render!.items.find((i) => i.id.includes(needle))!.id
+  const reply = (workflow: Level) => ({
+    dimensions: Object.fromEntries(
+      DIMENSION_KEYS.map((k) => [
+        k,
+        k === 'workflow_completeness'
+          ? { level: workflow, evidence: ['e1', 'e3'], reasoning: 'Students can join; the professor cannot call anyone.' }
+          : k === 'visual_quality'
+            ? { level: 'acceptable', evidence: [] as string[], reasoning: 'r' }
+            : { level: 'none', evidence: ['e3'], reasoning: 'r' },
+      ]),
+    ),
+    professorAssessment: 'p',
+    studentAssessment: 's',
+  })
+  const scored = (professorPresent: boolean, workflow: Level) => {
+    const x = checkExtraction(extract(professorPresent), input())
+    if (!x.ok) throw new Error(x.error)
+    const r = reply(workflow)
+    const anchor = x.value.items.find((i) => i.sources[0] === 'shot:professor-desktop-normal')!.id
+    ;(r.dimensions.visual_quality as { evidence: string[] }).evidence = [anchor]
+    return checkScores(r, x.value, input())
+  }
+
+  it('workflow completeness becomes none, and the change is recorded', () => {
+    const r = scored(false, 'weak')
+    if (!r.ok) throw new Error(r.error)
+    expect(r.value.dimensions.workflow_completeness.level).toBe('none')
+    expect(r.repairs).toContain('workflow_completeness: weak set to none, the professor core action is absent')
+    // No other dimension is touched.
+    expect(r.value.dimensions.visual_quality.level).toBe('acceptable')
+  })
+
+  it('applies only when Pass A established the absence', () => {
+    const r = scored(true, 'weak')
+    if (!r.ok) throw new Error(r.error)
+    expect(r.value.dimensions.workflow_completeness.level).toBe('weak')
+    expect(r.repairs ?? []).not.toContain(expect.stringMatching(/core action is absent/))
   })
 })

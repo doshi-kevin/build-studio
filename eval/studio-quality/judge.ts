@@ -248,6 +248,15 @@ export function checkScores(raw: unknown, extraction: Extraction, input: Pick<Ju
   // an item nor a source with one is dropped when the dimension still cites a real one.
   const problems: string[] = []
   const repairs: string[] = []
+  // The rubric's workflow "none" is "the core action is missing". When Pass A has established
+  // that a role's requested core action is absent, that is the level, whatever the reply gave.
+  // Nothing else is inferred here, and no other dimension is touched.
+  const absentCore = (['professor', 'student'] as const).filter((role) => !extraction.core[role].present)
+  const workflow = parsed.data.dimensions.workflow_completeness
+  if (absentCore.length && workflow.level !== null && workflow.level !== 'none') {
+    repairs.push(`workflow_completeness: ${workflow.level} set to none, the ${absentCore.join(' and ')} core action is absent`)
+    workflow.level = 'none'
+  }
   for (const d of DIMENSIONS) {
     const entry = parsed.data.dimensions[d.key]
     const problem = (() => {
@@ -706,7 +715,7 @@ export function createPlumbingJudge(): JudgeModel & { requests: JudgeRequest[] }
             { id: 'e2', role: 'student', kind: 'data', text: 'The student view as written.', sources: ['views/student.tsx'] },
             ...shots.map((s, i) => ({ id: `e${i + 3}`, role: 'both', kind: 'layout', text: `Screenshot ${s}.`, sources: [s] })),
           ]
-          return { items, core: { professor: { present: false, evidence: ['e1'] }, student: { present: false, evidence: ['e2'] } } }
+          return { items, core: { professor: { present: true, evidence: ['e1'] }, student: { present: true, evidence: ['e2'] } } }
         }
         const role = (view: string) => {
           const control = forView(view, true)
@@ -723,7 +732,7 @@ export function createPlumbingJudge(): JudgeModel & { requests: JudgeRequest[] }
           { id: 'e5', role: 'both', kind: 'layout', text: 'The phone layout as rendered.', sources: [phone ?? shots[0]] },
           ...checks.map((c, i) => ({ id: `e${i + 6}`, role: c.view, kind: 'absence', text: `Plumbing judge: ${c.id}.`, sources: [c.id] })),
         ]
-        return { items, core: { professor: { present: false, evidence: ['e1'] }, student: { present: false, evidence: ['e2'] } } }
+        return { items, core: { professor: { present: true, evidence: ['e1'] }, student: { present: true, evidence: ['e2'] } } }
       }
       const visual = shots.length > 0
       // With rendered evidence: each dimension cites what it may rest on, or gives "none" when
