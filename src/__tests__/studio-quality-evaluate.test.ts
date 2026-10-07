@@ -19,7 +19,7 @@ const INVARIANTS = { terminal: true, onlyTwoFiles: true, catalogCapabilitiesOnly
 function artifact(overrides: Partial<Artifact> = {}, build: Partial<Artifact['build']> = {}): Artifact {
   return {
     provenance: 'live-build',
-    case: { id: 'Q01-attendance', prompt: 'I want to take attendance in my lectures this semester.', category: 'Staff tracking', set: 'dev', variance: true, inPattern: true },
+    case: { id: 'Q01-attendance', prompt: 'I want to take attendance in my lectures this semester.', category: 'Staff tracking', tier: 'core', set: 'dev', variance: true, inPattern: true },
     judgeContext: { professorGoal: 'Record each session.', studentGoal: 'See their record.', hints: ['sessions or dates'] },
     rerun: { groupId: 'group-1', generation: 1 },
     dir: mkdtempSync(join(tmpdir(), 'sgq-')),

@@ -6,7 +6,7 @@ Status: the framework is built (Step 12A.2). The evaluator is calibrated against
 
 ## What a run does
 
-For each canonical case (`cases.ts`, Q01 to Q20):
+For each canonical case (`cases.ts`): Tier 1, Core Educational Workflows (Q01 to Q20, the tools professors ask for most) and Tier 2, Complex Product Reasoning (D01 to D08, deeper products on the same platform). Both tiers use the same rubric.
 
 1. **Build** (live only). The frozen Step 11 builder builds the professor's request with the real harness and check worker, against an in-memory run store. A scripted professor approves every card and answers any question with "Use your judgement for a typical university course".
 2. **Gates.** The draft gate runs again on the committed snapshot, then Stage 2 runs through the real local runner. A build that didn't end Preview ready, broke a harness invariant, or failed the draft gate or Stage 2 boot or isolation gets no quality score and counts 0 in the suite mean.
@@ -42,14 +42,15 @@ The live judge is Gemini (`--judge=google:gemini-3.1-pro-preview`), the only fam
 
 A live build needs `--max-usd` (a hard cap over building and judging), `--yes`, and only `GOOGLE_GENERATIVE_AI_API_KEY` in the environment. It refuses any Supabase secret, and it refuses to start if the builder's instructions, review instructions, model or thinking level differ from Step 11's (`freeze.ts`). Never run it with the root `.env` loaded.
 
-Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`. Holdout cases are refused everywhere unless `--allow-holdout` is given, which only the 12A.4 baseline does. Repeats for the variance cases reuse the baseline group: `--group=<id> --start-generation=2 --repeat=4`. Judging: `--judge-passes` (default 3) and `--allow-code-only` for a diagnostic evaluation when screenshots fail.
+Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`, narrowed with `--tier=core|deep`. Holdout cases are refused everywhere unless `--allow-holdout` is given, which only the 12A.4 baseline does. Repeats for the variance cases reuse the baseline group: `--group=<id> --start-generation=2 --repeat=4`. Judging: `--judge-passes` (default 3) and `--allow-code-only` for a diagnostic evaluation when screenshots fail.
 
 ## Files
 
 | File | What it holds |
 |---|---|
 | `rubric.ts` | The nine dimensions, their levels, evidence and what not to reward; scoring and the median |
-| `cases.ts` | The 20 canonical requests, goals, hints, the five variance cases and six holdouts |
+| `cases.ts` | The 28 canonical requests in two tiers, goals, hints, Tier 2 review guidance, the six variance cases and nine holdouts |
+| `sealed.ts` | Loads the sealed Tier 2 holdouts' goals and hints from a local file, for the baseline only |
 | `build.ts` | One live build; takes only the request text |
 | `freeze.ts` | The Step 11 builder's accepted hashes, model and thinking level |
 | `platform-card.ts` | What a plugin can do, derived from the platform's constants, for the judge |
@@ -60,11 +61,17 @@ Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`. Holdout cases are r
 | `quality-freeze.ts` | The frozen rubric and judge-prompt fingerprints |
 | `gates.ts`, `evaluate.ts` | Gates, comparability, and one artifact to one result |
 | `artifacts.ts` | Saved artifact folders, and the importer for Step 11 benchmark folders |
-| `aggregate.ts` | Suite statistics, nondeterminism measures, baseline comparison |
+| `aggregate.ts` | Suite statistics, the per-tier report and outcomes, nondeterminism measures, baseline comparison |
 | `run.ts` | The command line |
 
 Tests: `src/__tests__/studio-quality-*.test.ts`. The contamination guards there fail if the builder changes, if production code imports this folder, or if a hint or goal reaches the model during a build.
 
 ## Holdout
 
-Q07, Q10, Q13, Q15, Q17 and Q20 are a process holdout. While tuning Step 12, don't read their detailed results to decide changes, and don't tune against one of their failures. Report them only in aggregate.
+Tier 1's Q07, Q10, Q13, Q15, Q17 and Q20 and Tier 2's D02, D05 and D06 are a process holdout. While tuning Step 12, don't read their detailed results to decide changes, and don't tune against one of their failures. Report them only in aggregate.
+
+The Tier 2 holdouts are sealed as well: `cases.ts` has only their prompt and category. Their goals, hints and guidance are in `docs/designs/studio/sealed/studio-quality-tier2-holdouts.json`, which git ignores. A run with `--allow-holdout` loads it (or `--sealed-spec=<path>`), and stops if it is missing. Don't open it while tuning. A baseline run also writes each holdout's goals and hints into that artifact's `artifact.json` under `--out`, so don't open holdout artifact folders while tuning either.
+
+## Reading a report
+
+`report` writes `report.json` with a `tiers` section: Tier 1 and Tier 2 side by side, each with its development and holdout means, hard-gate pass rate, quality and dimension statistics, failure classes and outcomes. Each canonical case counts once, as its first generation. Outcomes separate a builder that ran out of budget, a broken invariant or isolation, a failed build or gate, an evaluation that couldn't score, a low score (below 55) and a scored build. The overall line is the plain mean of all 28 cases. It is descriptive only: a change is an improvement only if neither tier regressed.

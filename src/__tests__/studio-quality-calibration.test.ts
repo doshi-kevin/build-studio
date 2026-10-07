@@ -46,7 +46,7 @@ async function judged(runs: Partial<Record<DimensionKey, Level>>[], files = { pr
   const dir = tmp()
   const a: Artifact = {
     provenance: 'imported-artifact',
-    case: { id: caseId, prompt: 'Build an attendance tracker.', category: 'imported', set: 'imported', variance: false, inPattern: null },
+    case: { id: caseId, prompt: 'Build an attendance tracker.', category: 'imported', tier: null, set: 'imported', variance: false, inPattern: null },
     judgeContext: { professorGoal: null, studentGoal: null, hints: [] },
     rerun: { groupId: 'g', generation: 1 },
     dir,
@@ -349,7 +349,11 @@ describe('evidence the preview can’t produce', () => {
 describe('the holdout stays sealed in calibration', () => {
   it('refuses holdout cases unless the baseline explicitly allows them', () => {
     const holdout = QUALITY_CASES.filter((c) => c.set === 'holdout')
-    expect(holdout.map((c) => c.id)).toEqual(['Q07-lab-checkoff', 'Q10-extension-requests', 'Q13-equipment-booking', 'Q15-rubric-scoring', 'Q17-student-progress', 'Q20-predict-reveal'])
+    expect(holdout.map((c) => c.id)).toEqual([
+      'Q07-lab-checkoff', 'Q10-extension-requests', 'Q13-equipment-booking', 'Q15-rubric-scoring', 'Q17-student-progress', 'Q20-predict-reveal',
+      'D02-branching-stories', 'D05-review-game', 'D06-final-grade-calculator',
+    ])
+    expect(() => assertNoHoldout([QUALITY_CASES.find((c) => c.id === 'D01-form-builder')!, QUALITY_CASES.find((c) => c.id === 'D05-review-game')!], false)).toThrow(/D05-review-game are sealed/)
     expect(() => assertNoHoldout([QUALITY_CASES[0], holdout[0]], false)).toThrow(/Q07-lab-checkoff are sealed until Step 12A.4/)
     expect(() => assertNoHoldout(QUALITY_CASES.filter((c) => c.set === 'dev'), false)).not.toThrow()
     expect(() => assertNoHoldout(holdout, true)).not.toThrow()

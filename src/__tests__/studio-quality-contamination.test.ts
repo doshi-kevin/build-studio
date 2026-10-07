@@ -2,7 +2,7 @@
  * The Step 12A baseline is honest only if the builder runs exactly as it did at Step 11
  * acceptance and learns nothing from the evaluation. These guards check the specific ways
  * it could: the builder and review instructions changing, the canonical prompts leaking
- * into the builder's instructions, evaluator hints or goals reaching a model input during
+ * into the builder's instructions, evaluator hints, goals or Tier 2 guidance reaching a model input during
  * a build, and production code or the build importing the evaluator.
  *
  * They deliberately don't compare generic vocabulary: words like "attendance" belong in
@@ -86,8 +86,10 @@ describe('the evaluation can’t reach the builder', () => {
     expect(model.prompts.at(-1)!.prompt).toContain(NEUTRAL_ANSWER)
     // Distinctive phrases only (four words or more): a single word such as "totals" is ordinary
     // vocabulary the builder's own prompt uses, not a leak.
-    const phrases = QUALITY_CASES.flatMap((q) => [q.professorGoal, q.studentGoal, ...q.hints]).filter((text) => text.split(/\s+/).length >= 4)
-    expect(phrases.length).toBeGreaterThan(50)
+    // Tier 2 review guidance too: it is for people reading results, never for the builder.
+    const guidance = QUALITY_CASES.flatMap((q) => (q.guidance ? [...q.guidance.constraints, q.guidance.shallow, q.guidance.strong, ...q.guidance.capabilities, ...q.guidance.mustNotAssume] : []))
+    const phrases = [...QUALITY_CASES.flatMap((q) => [q.professorGoal, q.studentGoal, ...q.hints]), ...guidance].filter((text): text is string => text !== null && text.split(/\s+/).length >= 4)
+    expect(phrases.length).toBeGreaterThan(100)
     expect(phrases.filter((text) => seen.includes(text))).toEqual([])
   })
 })

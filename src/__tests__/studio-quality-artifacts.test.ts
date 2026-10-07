@@ -10,6 +10,7 @@ import { artifactDirs, loadArtifact, saveLiveArtifact } from '../../eval/studio-
 import { harnessInvariants, type BuildOutcome } from '../../eval/studio-quality/build'
 import { QUALITY_CASES } from '../../eval/studio-quality/cases'
 import { artifactHash } from '../../eval/studio-quality/evaluate'
+import { parseSealedSpec, withSealedGuidance } from '../../eval/studio-quality/sealed'
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'sgq-art-'))
 
@@ -45,6 +46,32 @@ describe('artifact folders', () => {
     expect(a.files).toEqual({ student: 'S', professor: 'P' })
     expect(a.build).toMatchObject({ statuses: ['preview_ready'], snapshotHash: 'h'.repeat(64), toolCalls: 14, tokens: { input: 10 } })
     expect(() => loadArtifact(dir, join(dir, 'out'), [])).toThrow(/not in the canonical suite/)
+  })
+
+  it('a saved sealed holdout won’t load with the development case list, and loads with its tier once the sealed guidance joins', () => {
+    const dir = tmp()
+    const builder = { model: 'm', thinkingLevel: 'low', maxOutputTokens: 1, instructionsVersion: 'v', instructionsSha256: 'x', reviewVersion: 'r', reviewSha256: 'y', rendererMode: 'local' as const }
+    const entry = { professorGoal: 'Sealed professor goal.', studentGoal: 'Sealed student goal.', hints: ['sealed hint one', 'sealed hint two'], guidance: { constraints: ['a rule'], shallow: 's', strong: 's', capabilities: [], mustNotAssume: [] } }
+    const ids = QUALITY_CASES.filter((c) => c.sealed).map((c) => c.id)
+    const baselineCases = withSealedGuidance(QUALITY_CASES, parseSealedSpec({ format: 'studio-quality-sealed-holdouts-v1', cases: Object.fromEntries(ids.map((id) => [id, entry])) }, QUALITY_CASES))
+    // The baseline saves its build with the sealed guidance joined, as run.ts does under --allow-holdout.
+    saveLiveArtifact({ dir, case: baselineCases.find((c) => c.id === 'D05-review-game')!, rerun: { groupId: 'g', generation: 1 }, outcome: OUTCOME, git: { commit: 'abc', dirty: false }, builder })
+
+    expect(() => loadArtifact(dir, join(dir, 'out'), QUALITY_CASES)).toThrow(/D05-review-game: its judge guidance is sealed/)
+    const a = loadArtifact(dir, join(dir, 'out'), baselineCases)
+    expect(a.case).toMatchObject({ id: 'D05-review-game', tier: 'deep', set: 'holdout' })
+    expect(a.judgeContext.hints).toEqual(['sealed hint one', 'sealed hint two'])
+    // Nothing of the guidance is written into the artifact folder.
+    expect(readFileSync(join(dir, 'artifact.json'), 'utf8')).not.toMatch(/sealed (hint|professor|student)/i)
+  })
+
+  it('a Tier 2 development build reads back as Tier 2, with its goals and hints', () => {
+    const dir = tmp()
+    const d01 = QUALITY_CASES.find((c) => c.id === 'D01-form-builder')!
+    saveLiveArtifact({ dir, case: d01, rerun: { groupId: 'g', generation: 1 }, outcome: OUTCOME, git: { commit: 'abc', dirty: false }, builder: { model: 'm', thinkingLevel: 'low', maxOutputTokens: 1, instructionsVersion: 'v', instructionsSha256: 'x', reviewVersion: 'r', reviewSha256: 'y', rendererMode: 'local' } })
+    const a = loadArtifact(dir, join(dir, 'out'), QUALITY_CASES)
+    expect(a.case).toMatchObject({ id: 'D01-form-builder', tier: 'deep', set: 'dev', variance: true })
+    expect(a.judgeContext).toEqual({ professorGoal: d01.professorGoal, studentGoal: d01.studentGoal, hints: d01.hints })
   })
 
   it('a saved build records the hash of what it wrote, so a file from another generation is caught on reload', () => {

@@ -9,20 +9,23 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   bootstrapMeanDifference,
+  canonicalResults,
   caseVariance,
   compareSuites,
   generationsOf,
   jaccard,
   meanPairwiseJaccard,
+  outcomeOf,
   sd,
   stats,
   summarize,
+  tierSummary,
   wilson,
 } from '../../eval/studio-quality/aggregate'
 import { evaluateArtifact, type Artifact, type EvaluateDeps } from '../../eval/studio-quality/evaluate'
 import { createScriptedJudge } from '../../eval/studio-quality/judge'
 import type { Level } from '../../eval/studio-quality/rubric'
-import type { QualityResult } from '../../eval/studio-quality/schema'
+import { qualityResultSchema, type QualityResult } from '../../eval/studio-quality/schema'
 import { NORMAL_SHOTS, PROFESSOR_SRC, STUDENT_SRC, extraction, scores } from './helpers/quality-fixtures'
 
 const INVARIANTS = { terminal: true, onlyTwoFiles: true, catalogCapabilitiesOnly: true, noUnapprovedCapability: true, noUnapprovedMemory: true }
@@ -43,6 +46,12 @@ interface Spec {
   access?: string[]
   scriptedJudge?: boolean
   capped?: boolean
+  tier?: 'core' | 'deep' | null
+  /** How the build ended; preview_ready unless given. */
+  status?: string
+  isolationFails?: boolean
+  bootFails?: boolean
+  draftFails?: boolean
 }
 
 async function result(spec: Spec): Promise<QualityResult> {
@@ -62,7 +71,7 @@ async function result(spec: Spec): Promise<QualityResult> {
   )
   const a: Artifact = {
     provenance: 'live-build',
-    case: { id: spec.caseId ?? 'Q01-attendance', prompt: 'p', category: spec.category ?? 'Staff tracking', set: spec.set ?? 'dev', variance: true, inPattern: true },
+    case: { id: spec.caseId ?? 'Q01-attendance', prompt: 'p', category: spec.category ?? 'Staff tracking', tier: spec.tier === undefined ? 'core' : spec.tier, set: spec.set ?? 'dev', variance: true, inPattern: true },
     judgeContext: { professorGoal: null, studentGoal: null, hints: [] },
     rerun: { groupId: spec.group ?? 'g', generation: spec.generation ?? 1 },
     dir: mkdtempSync(join(tmpdir(), 'sgq-agg-')),
@@ -73,7 +82,7 @@ async function result(spec: Spec): Promise<QualityResult> {
     git: { commit: 'abc', dirty: false },
     builder: { model: 'm', thinkingLevel: 'low', maxOutputTokens: 1, instructionsVersion: 'v', instructionsSha256: 's', reviewVersion: 'r', reviewSha256: 's', rendererMode: 'local' },
     build: {
-      statuses: ['preview_ready'],
+      statuses: [spec.status ?? 'preview_ready'],
       errorCode: null,
       cappedByEval: spec.capped ?? false,
       snapshotHash: null,
@@ -91,8 +100,14 @@ async function result(spec: Spec): Promise<QualityResult> {
     },
   }
   const deps: EvaluateDeps = {
-    draftGate: async () => ({ passed: true, failing: [], bundles: { student: 's', professor: 'p' }, compiler: 'c' }),
-    stage2: async () => ({ checks: STAGE2, runner: { name: 'r', version: '1' }, bound: true }),
+    draftGate: async () => ({ passed: !spec.draftFails, failing: spec.draftFails ? ['student.compile'] : [], bundles: { student: 's', professor: 'p' }, compiler: 'c' }),
+    stage2: async () => ({
+      checks: STAGE2.map((c) =>
+        (c.checkId === 'runtime.isolation' && spec.isolationFails) || (c.checkId === 'runtime.boot' && spec.bootFails) ? { ...c, status: 'failed', views: { student: 'failed', professor: 'passed' } } : c,
+      ),
+      runner: { name: 'r', version: '1' },
+      bound: true,
+    }),
     capture: async () => (spec.codeOnly ? { shots: [], failures: [], missing: ['professor-desktop-normal'], bound: true } : { shots: NORMAL_SHOTS, failures: [], missing: [], bound: true }),
     readImage: () => new Uint8Array([1]),
     judge,
@@ -221,5 +236,122 @@ describe('comparing a candidate with the baseline', () => {
     const brokeOne = [...better.slice(0, 2), await result({ failInvariant: true, caseId: 'Q03-participation' })]
     expect(compareSuites(base, brokeOne).improved).toBe(false)
     expect(compareSuites(base, base).improved).toBe(false)
+  })
+})
+
+describe('the two tiers', () => {
+  it('reports Tier 1 and Tier 2 apart, each with development, holdout, gate rate and outcomes, and the overall as the plain mean of canonical cases', async () => {
+    const rows = await Promise.all([
+      result({ caseId: 'Q01-attendance', level: 'acceptable' }),
+      result({ caseId: 'Q03-participation', failInvariant: true }),
+      result({ caseId: 'Q07-lab-checkoff', set: 'holdout', level: 'weak' }),
+      result({ caseId: 'D01-form-builder', tier: 'deep', level: 'acceptable' }),
+      // A repeat for the variance experiment: never counted as a second case.
+      result({ caseId: 'D01-form-builder', tier: 'deep', level: 'excellent', generation: 2 }),
+      result({ caseId: 'D03-spaced-practice', tier: 'deep', status: 'budget_exhausted' }),
+      result({ caseId: 'D04-staged-case', tier: 'deep', isolationFails: true }),
+      result({ caseId: 'D02-branching-stories', tier: 'deep', set: 'holdout', level: 'excellent' }),
+    ])
+    const t = tierSummary(rows)
+
+    expect(t.core).toMatchObject({ label: 'Tier 1, Core Educational Workflows', cases: 3, suiteMean: (70 + 0 + 40) / 3 })
+    expect(t.core.dev).toMatchObject({ cases: 2, suiteMean: 35 })
+    expect(t.core.holdout).toMatchObject({ cases: 1, suiteMean: 40 })
+    expect(t.core.gatePass.rate).toBeCloseTo(2 / 3)
+    expect(t.core.outcomes).toEqual({ budget_exhausted: 0, invariant_or_security: 1, build_or_gate: 0, eval_failure: 0, low_quality: 1, scored: 1 })
+    expect(t.core.missing).toHaveLength(17)
+
+    expect(t.deep).toMatchObject({ label: 'Tier 2, Complex Product Reasoning', cases: 4 })
+    expect(t.deep.dev.suiteMean).toBeCloseTo((70 + 0 + 0) / 3)
+    expect(t.deep.holdout).toMatchObject({ cases: 1, suiteMean: 100 })
+    expect(t.deep.gatePass.rate).toBe(0.5)
+    expect(t.deep.outcomes).toEqual({ budget_exhausted: 1, invariant_or_security: 1, build_or_gate: 0, eval_failure: 0, low_quality: 0, scored: 2 })
+    expect(t.deep.failureClasses).toEqual({ none: 2, budget_exhausted: 1, stage2_failed: 1 })
+    expect(t.deep.missing).toEqual(['D05-review-game', 'D06-final-grade-calculator', 'D07-peer-feedback', 'D08-lab-notebook'])
+    expect(t.deep.quality.mean).toBe(85)
+
+    // Seven canonical cases, each once: the plain mean, failures counted as 0.
+    expect(t.overall.cases).toBe(7)
+    expect(t.overall.suiteMean).toBeCloseTo((70 + 0 + 40 + 70 + 0 + 0 + 100) / 7)
+    expect(t.overall.gatePass.rate).toBeCloseTo(4 / 7)
+    expect(Object.values(t.overall.outcomes).reduce((a, b) => a + b, 0)).toBe(7)
+    expect(summarize(rows).tiers).toEqual(t)
+  })
+
+  it('a canonical case is its first generation, and anything outside the case list is left out', async () => {
+    const rows = await Promise.all([
+      result({ caseId: 'D01-form-builder', tier: 'deep', level: 'weak', generation: 3 }),
+      result({ caseId: 'D01-form-builder', tier: 'deep', level: 'acceptable', generation: 1 }),
+      result({ caseId: 'import:G-attendance', tier: null }),
+    ])
+    expect(canonicalResults(rows).map((r) => [r.case.id, r.rerun.generation])).toEqual([['D01-form-builder', 1]])
+  })
+
+  it('tells running out of budget, a broken invariant or isolation, a failed gate, an evaluation gap and a low score apart', async () => {
+    const outcome = async (spec: Parameters<typeof result>[0]) => outcomeOf(await result(spec))
+    expect(await outcome({ status: 'budget_exhausted' })).toBe('budget_exhausted')
+    expect(await outcome({ failInvariant: true })).toBe('invariant_or_security')
+    expect(await outcome({ isolationFails: true })).toBe('invariant_or_security')
+    // A Stage 2 failure is a security outcome only when isolation failed; a view that won't boot is a gate failure.
+    expect(await outcome({ bootFails: true })).toBe('build_or_gate')
+    expect(await outcome({ draftFails: true })).toBe('build_or_gate')
+    expect(await outcome({ status: 'failed' })).toBe('build_or_gate')
+    expect(await outcome({ status: 'blocked' })).toBe('build_or_gate')
+    expect(await outcome({ codeOnly: true })).toBe('eval_failure')
+    expect(await outcome({ capped: true })).toBe('eval_failure')
+    expect(await outcome({ level: 'weak' })).toBe('low_quality')
+    expect(await outcome({ level: 'acceptable' })).toBe('scored')
+  })
+
+  it('a Tier 2 regression blocks "improved" even when the overall mean rose clearly', async () => {
+    const coreIds = ['Q01-attendance', 'Q02-office-hours-booking', 'Q03-participation', 'Q04-peer-review', 'Q05-exit-ticket', 'Q06-vocab-study', 'Q08-group-formation', 'Q09-reading-reflections', 'Q11-anonymous-qa', 'Q12-project-milestones', 'Q14-help-queue', 'Q16-course-pulse']
+    const suite = (coreLevel: Level, deepLevel: Level) =>
+      Promise.all([
+        ...coreIds.map((caseId) => result({ caseId, level: coreLevel })),
+        ...['D01-form-builder', 'D03-spaced-practice'].map((caseId) => result({ caseId, tier: 'deep', level: deepLevel })),
+      ])
+    const baseline = await suite('acceptable', 'acceptable')
+    const worseDeep = compareSuites(baseline, await suite('excellent', 'weak'))
+    expect(worseDeep.suiteMean.low).toBeGreaterThan(0)
+    expect(worseDeep.tiers.deep.regressed).toBe(true)
+    expect(worseDeep.tiers.core.regressed).toBe(false)
+    expect(worseDeep.improved).toBe(false)
+    expect(compareSuites(baseline, await suite('excellent', 'acceptable')).improved).toBe(true)
+  })
+
+  it('a tier whose gate pass rate fell regressed, even when its score interval and the overall gate rate held', async () => {
+    const coreIds = ['Q01-attendance', 'Q02-office-hours-booking', 'Q03-participation', 'Q04-peer-review', 'Q05-exit-ticket', 'Q06-vocab-study', 'Q08-group-formation', 'Q09-reading-reflections', 'Q11-anonymous-qa', 'Q12-project-milestones', 'Q14-help-queue', 'Q16-course-pulse']
+    // Baseline: one Tier 1 gate failure. Candidate: Tier 1 fixed and better, one Tier 2 gate failure.
+    const baseline = await Promise.all([
+      ...coreIds.map((caseId, i) => result({ caseId, level: 'acceptable', failInvariant: i === 0 })),
+      ...['D01-form-builder', 'D03-spaced-practice'].map((caseId) => result({ caseId, tier: 'deep', level: 'acceptable' })),
+    ])
+    const candidate = await Promise.all([
+      ...coreIds.map((caseId) => result({ caseId, level: 'excellent' })),
+      result({ caseId: 'D01-form-builder', tier: 'deep', level: 'acceptable' }),
+      result({ caseId: 'D03-spaced-practice', tier: 'deep', failInvariant: true }),
+    ])
+    const c = compareSuites(baseline, candidate)
+    expect(c.gatePassRate.candidate).toBe(c.gatePassRate.baseline)
+    expect(c.suiteMean.low).toBeGreaterThan(0)
+    expect(c.tiers.deep.gatePassRate).toEqual({ baseline: 1, candidate: 0.5 })
+    // Two cases can't put the interval below zero, so the gate rate alone marks the regression.
+    expect(c.tiers.deep.suiteMean.high).toBeGreaterThanOrEqual(0)
+    expect(c.tiers.deep.regressed).toBe(true)
+    expect(c.tiers.core.regressed).toBe(false)
+    expect(c.improved).toBe(false)
+  })
+
+  it('a result written before Tier 2 has no tier, and is still counted in its case’s tier', async () => {
+    const written = await Promise.all([result({ caseId: 'Q01-attendance', level: 'acceptable' }), result({ caseId: 'D01-form-builder', tier: 'deep', level: 'excellent' })])
+    const old = written.map((r) => {
+      const raw = JSON.parse(JSON.stringify(r))
+      delete raw.case.tier
+      return qualityResultSchema.parse(raw)
+    })
+    expect(old.map((r) => r.case.tier)).toEqual([null, null])
+    const t = tierSummary(old)
+    expect([t.core.cases, t.core.suiteMean, t.deep.cases, t.deep.suiteMean]).toEqual([1, 70, 1, 100])
+    expect(tierSummary(old)).toEqual(tierSummary(written))
   })
 })

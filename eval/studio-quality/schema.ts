@@ -110,6 +110,8 @@ export const qualityResultSchema = z.strictObject({
     id: z.string().min(1),
     prompt: z.string().min(1),
     category: z.string(),
+    /** Tier 1 core or Tier 2 deep; null for an imported artifact. Absent in results written before Tier 2. */
+    tier: z.enum(['core', 'deep']).nullable().default(null),
     set: z.enum(['dev', 'holdout', 'imported']),
     variance: z.boolean(),
     inPattern: z.boolean().nullable(),

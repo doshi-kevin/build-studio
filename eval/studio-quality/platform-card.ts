@@ -33,6 +33,10 @@ export interface PlatformFacts {
   limits: Record<string, number>
 }
 
+/** How many records of one collection `useRecords` loads in a view: `RECORDS_MAX` in
+ * src/lib/studio/kit/v2/components.tsx, which doesn't export it. A test checks they match. */
+export const KIT_RECORDS_LOAD_MAX = 1000
+
 const PROBE = '__probe__'
 
 /** A minimal valid manifest v2 with the given collections, to ask the real validator and plugin card. */

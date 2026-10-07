@@ -13,7 +13,10 @@
  * Anything that can spend money (a build, or a live judge) needs --max-usd (one hard cap over
  * everything the command spends) and --yes, refuses any Supabase secret in the environment,
  * and prints its plan and cap first. A build also refuses to start if the builder differs
- * from Step 11's. Holdout cases are refused unless --allow-holdout is given (Step 12A.4 only).
+ * from Step 11's. Holdout cases are refused unless --allow-holdout is given (Step 12A.4 only),
+ * which also loads the sealed Tier 2 holdout guidance (--sealed-spec, default in sealed.ts).
+ *
+ * Cases: --case=ID[,ID] or --set=dev|holdout|variance|all, narrowed by --tier=core|deep.
  *
  * Judges: --judge=plumbing (no spend, no meaning), --judge=google:<model> --judge-reasoning=<low|medium|high>,
  * or --judge=none (build only). Never run with the root .env loaded.
@@ -25,6 +28,7 @@ import { join, relative, resolve } from 'node:path'
 import { leakedSecrets } from '../studio-builder/guard'
 import { artifactDirs, loadArtifact, saveLiveArtifact } from './artifacts'
 import { QUALITY_CASES, type QualityCase } from './cases'
+import { DEFAULT_SEALED_SPEC, loadSealedSpec, withSealedGuidance } from './sealed'
 import { realEvaluateDeps, evaluateArtifact, type Artifact } from './evaluate'
 import { builderIdentity, freezeDrift } from './freeze'
 import { qualityFreezeDrift } from './quality-freeze'
@@ -55,17 +59,29 @@ const args: Record<string, string> = Object.fromEntries(
 )
 const allowHoldout = args['allow-holdout'] === 'true'
 
+/** The case list a command judges with: the sealed guidance joins it only for the baseline. */
+let resolvedCases: readonly QualityCase[] | null = null
+function canonicalCases(): readonly QualityCase[] {
+  resolvedCases ??= allowHoldout ? withSealedGuidance(QUALITY_CASES, loadSealedSpec(args['sealed-spec'] ?? DEFAULT_SEALED_SPEC, QUALITY_CASES)) : QUALITY_CASES
+  return resolvedCases
+}
+
 function selectCases(): QualityCase[] {
+  const all = canonicalCases()
   let cases: QualityCase[]
   if (args.case) {
     const ids = args.case.split(',')
-    const unknown = ids.filter((id) => !QUALITY_CASES.some((c) => c.id === id))
+    const unknown = ids.filter((id) => !all.some((c) => c.id === id))
     if (unknown.length) throw new Error(`Unknown case ${unknown.join(', ')}.`)
-    cases = QUALITY_CASES.filter((c) => ids.includes(c.id))
-  } else if (args.set === 'dev' || args.set === 'holdout') cases = QUALITY_CASES.filter((c) => c.set === args.set)
-  else if (args.set === 'variance') cases = QUALITY_CASES.filter((c) => c.variance)
-  else if (args.set === 'all') cases = [...QUALITY_CASES]
+    cases = all.filter((c) => ids.includes(c.id))
+  } else if (args.set === 'dev' || args.set === 'holdout') cases = all.filter((c) => c.set === args.set)
+  else if (args.set === 'variance') cases = all.filter((c) => c.variance)
+  else if (args.set === 'all') cases = [...all]
   else throw new Error('Choose cases: --case=ID[,ID] or --set=dev|holdout|variance|all.')
+  if (args.tier !== undefined) {
+    if (args.tier !== 'core' && args.tier !== 'deep') throw new Error('--tier must be core or deep.')
+    cases = cases.filter((c) => c.tier === args.tier)
+  }
   assertNoHoldout(cases, allowHoldout)
   return cases
 }
@@ -149,7 +165,7 @@ async function judgeOnly() {
   if (!args.from || !args.out) throw new Error('judge-only needs --from=<artifact folder or parent> and --out=<folder>.')
   const judge = await judgeFromArgs()
   const dirs = args.from.split(',').flatMap((f) => artifactDirs(f).map((d) => ({ from: f, dir: d })))
-  const artifacts = dirs.map(({ from, dir }) => loadArtifact(dir, join(args.out, outName(from, dir)), QUALITY_CASES))
+  const artifacts = dirs.map(({ from, dir }) => loadArtifact(dir, join(args.out, outName(from, dir)), canonicalCases()))
   const overwrite = dirs.find(({ dir }, i) => resolve(dir) === resolve(artifacts[i].dir))
   if (overwrite) throw new Error(`--out would write over the artifact folder ${overwrite.dir}; choose another folder.`)
   const sealed = artifacts.filter(holdoutOf)

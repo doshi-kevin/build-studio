@@ -6,7 +6,12 @@
  * gate, judged by a live judge on visual and code evidence. Code-only, imported and
  * scripted-judge results are counted and listed apart, never mixed in. The suite mean
  * counts a correctness-gate failure as 0.
+ *
+ * Tier 1 (core) and Tier 2 (deep) are reported side by side, each with its development
+ * and holdout halves, gate rate and outcomes. The overall mean is descriptive only: a
+ * tier that got worse must show even when the overall number rose.
  */
+import { QUALITY_CASES, TIER_LABEL, type QualityCase, type Tier } from './cases'
 import { DIMENSIONS, LEVEL_FRACTION, type DimensionKey, type Level } from './rubric'
 import type { QualityResult } from './schema'
 
@@ -176,6 +181,8 @@ export interface SuiteSummary {
   bySet: Record<string, { comparable: Stats; suiteMean: number | null }>
   byCategory: Record<string, { comparable: Stats; suiteMean: number | null }>
   judgeVariance: { totalSd: number | null; meanDimensionSpread: number | null }
+  /** Canonical cases only, one result each, by tier. */
+  tiers: TierSummary
   costUsd: Stats
   judgeCostUsd: Stats
   modelTurns: Stats
@@ -214,6 +221,7 @@ export function summarize(results: readonly QualityResult[]): SuiteSummary {
     bySet: groupBy((r) => r.case.set),
     byCategory: groupBy((r) => r.case.category),
     judgeVariance: { totalSd: mean(numbers(variances.map((v) => v.totalSd))), meanDimensionSpread: mean(numbers(variances.map((v) => v.meanDimensionSpread))) },
+    tiers: tierSummary(results),
     costUsd: stats(numbers(results.map((r) => r.build.costUsd))),
     judgeCostUsd: stats(numbers(results.map((r) => r.evaluation.costUsd))),
     modelTurns: stats(numbers(results.map((r) => r.build.modelTurns))),
@@ -222,6 +230,130 @@ export function summarize(results: readonly QualityResult[]): SuiteSummary {
       .filter((r) => !usable(r))
       .map((r) => ({ caseId: r.case.id, generation: r.rerun.generation, mode: r.evaluation.mode, failureClass: r.failureClass, notes: r.comparabilityNotes })),
   }
+}
+
+// ── Tiers ──
+
+/**
+ * A scored build below this counts as low quality: halfway between every dimension weak
+ * (40) and every dimension acceptable (70).
+ */
+export const LOW_QUALITY_BELOW = 55
+
+/**
+ * What happened to one result, in the terms a tier report needs. A build that ran out of
+ * its generation budget is not a build that produced a poor tool, and neither is a result
+ * the evaluation couldn't score.
+ */
+export const OUTCOMES = ['budget_exhausted', 'invariant_or_security', 'build_or_gate', 'eval_failure', 'low_quality', 'scored'] as const
+export type Outcome = (typeof OUTCOMES)[number]
+
+export function outcomeOf(r: QualityResult): Outcome {
+  switch (r.failureClass) {
+    case 'budget_exhausted':
+      return 'budget_exhausted'
+    case 'invariant_violation':
+      return 'invariant_or_security'
+    case 'stage2_failed':
+      return r.gates.stage2Isolation === 'failed' ? 'invariant_or_security' : 'build_or_gate'
+    case 'build_failed':
+    case 'build_blocked':
+    case 'draft_gate_failed':
+      return 'build_or_gate'
+    case 'integrity_failed':
+    case 'capture_failed':
+    case 'judge_failed':
+    case 'capped_by_eval':
+    case 'metadata_incomplete':
+      return 'eval_failure'
+    case 'none':
+      // Passed everything but has no comparable score (code-only, unpreviewable): the evaluation's gap.
+      if (!usable(r)) return 'eval_failure'
+      return r.qualityScore! < LOW_QUALITY_BELOW ? 'low_quality' : 'scored'
+  }
+}
+
+export const tierOf = (r: QualityResult, cases: readonly QualityCase[] = QUALITY_CASES): Tier | null =>
+  r.case.tier ?? cases.find((c) => c.id === r.case.id)?.tier ?? null
+
+/**
+ * One result per canonical case: its earliest generation, which is the initial build. The
+ * variance experiment's repeats are generations 2 to 5 of the same case, so a case is never
+ * counted more than once. Results of anything outside the case list are left out.
+ */
+export function canonicalResults(results: readonly QualityResult[], cases: readonly QualityCase[] = QUALITY_CASES): QualityResult[] {
+  const ids = new Set(cases.map((c) => c.id))
+  const first = new Map<string, QualityResult>()
+  for (const r of results) {
+    if (!ids.has(r.case.id)) continue
+    const held = first.get(r.case.id)
+    if (!held || r.rerun.generation < held.rerun.generation || (r.rerun.generation === held.rerun.generation && r.createdAt < held.createdAt)) first.set(r.case.id, r)
+  }
+  return [...first.values()]
+}
+
+export interface TierSlice {
+  cases: number
+  /** Correctness gates passed, over results whose gates could all be checked or failed. */
+  gatePass: ReturnType<typeof wilson>
+  /** Comparable scores only. */
+  quality: Stats
+  /** Comparable scores, and 0 for each correctness failure. */
+  suiteMean: number | null
+  outcomes: Record<Outcome, number>
+}
+
+export interface TierReport extends TierSlice {
+  label: string
+  dev: TierSlice
+  holdout: TierSlice
+  /** Canonical cases of this tier with no result yet. */
+  missing: string[]
+  failureClasses: Record<string, number>
+  dimensions: Record<DimensionKey, Stats>
+  costUsd: Stats
+  modelTurns: Stats
+}
+
+export interface TierSummary {
+  core: TierReport
+  deep: TierReport
+  /** Every canonical case weighted equally. Descriptive only: read the tiers for claims. */
+  overall: TierSlice
+}
+
+function tierSlice(rows: readonly QualityResult[]): TierSlice {
+  const decided = rows.filter((r) => r.gates.correctness !== 'unknown')
+  const outcomes = Object.fromEntries(OUTCOMES.map((o) => [o, 0])) as Record<Outcome, number>
+  for (const r of rows) outcomes[outcomeOf(r)] += 1
+  return {
+    cases: rows.length,
+    gatePass: wilson(decided.filter((r) => r.gates.correctness === 'passed').length, decided.length),
+    quality: stats(numbers(rows.filter(usable).map((r) => r.qualityScore))),
+    suiteMean: mean(numbers(rows.map((r) => r.suiteContribution))),
+    outcomes,
+  }
+}
+
+export function tierSummary(results: readonly QualityResult[], cases: readonly QualityCase[] = QUALITY_CASES): TierSummary {
+  const canonical = canonicalResults(results, cases)
+  const report = (tier: Tier): TierReport => {
+    const rows = canonical.filter((r) => tierOf(r, cases) === tier)
+    const comparable = rows.filter(usable)
+    const setOf = (r: QualityResult) => cases.find((c) => c.id === r.case.id)!.set
+    return {
+      label: TIER_LABEL[tier],
+      ...tierSlice(rows),
+      dev: tierSlice(rows.filter((r) => setOf(r) === 'dev')),
+      holdout: tierSlice(rows.filter((r) => setOf(r) === 'holdout')),
+      missing: cases.filter((c) => c.tier === tier && !rows.some((r) => r.case.id === c.id)).map((c) => c.id),
+      failureClasses: tally(rows.map((r) => r.failureClass)),
+      dimensions: Object.fromEntries(DIMENSIONS.map((d) => [d.key, stats(numbers(comparable.map((r) => r.evaluation.dimensions?.[d.key].points)))])) as Record<DimensionKey, Stats>,
+      costUsd: stats(numbers(rows.map((r) => r.build.costUsd))),
+      modelTurns: stats(numbers(rows.map((r) => r.build.modelTurns))),
+    }
+  }
+  return { core: report('core'), deep: report('deep'), overall: tierSlice(canonical) }
 }
 
 // ── Comparing two suites ──
@@ -253,18 +385,39 @@ export function bootstrapMeanDifference(baseline: readonly number[], candidate: 
   return { difference: mean(candidate)! - mean(baseline)!, low: diffs[Math.floor(0.025 * iterations)], high: diffs[Math.ceil(0.975 * iterations) - 1] }
 }
 
+export interface TierComparison {
+  suiteMean: ReturnType<typeof bootstrapMeanDifference>
+  gatePassRate: { baseline: number | null; candidate: number | null }
+  /** The tier's interval is below zero, or its gate pass rate fell. */
+  regressed: boolean
+}
+
 export interface SuiteComparison {
   suiteMean: ReturnType<typeof bootstrapMeanDifference>
   gatePassRate: { baseline: number | null; candidate: number | null }
-  /** True only when the interval is above zero and the gate pass rate didn't fall. */
+  tiers: Record<Tier, TierComparison>
+  /** True only when the interval is above zero, the gate pass rate didn't fall, and no tier regressed. */
   improved: boolean
+}
+
+const contributionsOf = (rows: readonly QualityResult[]) => numbers(rows.map((r) => r.suiteContribution))
+
+function compareTier(baseline: readonly QualityResult[], candidate: readonly QualityResult[], tier: Tier): TierComparison {
+  const pick = (rows: readonly QualityResult[]) => canonicalResults(rows).filter((r) => tierOf(r) === tier)
+  const b = pick(baseline)
+  const c = pick(candidate)
+  const suiteMean = bootstrapMeanDifference(contributionsOf(b), contributionsOf(c))
+  const gatePassRate = { baseline: tierSlice(b).gatePass.rate, candidate: tierSlice(c).gatePass.rate }
+  const fell = gatePassRate.baseline !== null && gatePassRate.candidate !== null && gatePassRate.candidate < gatePassRate.baseline
+  return { suiteMean, gatePassRate, regressed: (suiteMean.high !== null && suiteMean.high < 0) || fell }
 }
 
 /** The Step 12 rule for calling a change an improvement (design section 8). */
 export function compareSuites(baseline: readonly QualityResult[], candidate: readonly QualityResult[]): SuiteComparison {
-  const contributions = (rows: readonly QualityResult[]) => numbers(rows.map((r) => r.suiteContribution))
-  const suiteMean = bootstrapMeanDifference(contributions(baseline), contributions(candidate))
+  const suiteMean = bootstrapMeanDifference(contributionsOf(baseline), contributionsOf(candidate))
   const b = summarize(baseline).gatePass.rate
   const c = summarize(candidate).gatePass.rate
-  return { suiteMean, gatePassRate: { baseline: b, candidate: c }, improved: suiteMean.low !== null && suiteMean.low > 0 && b !== null && c !== null && c >= b }
+  const tiers = { core: compareTier(baseline, candidate, 'core'), deep: compareTier(baseline, candidate, 'deep') }
+  const anyRegressed = tiers.core.regressed || tiers.deep.regressed
+  return { suiteMean, gatePassRate: { baseline: b, candidate: c }, tiers, improved: suiteMean.low !== null && suiteMean.low > 0 && b !== null && c !== null && c >= b && !anyRegressed }
 }

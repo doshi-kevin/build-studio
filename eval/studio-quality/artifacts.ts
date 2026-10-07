@@ -22,9 +22,12 @@ export const ARTIFACT_FORMAT = 'studio-quality-artifact-v1'
 const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'))
 const readText = (path: string): string | null => (existsSync(path) ? readFileSync(path, 'utf8') : null)
 
-export const judgeContextOf = (c: QualityCase): Artifact['judgeContext'] => ({ professorGoal: c.professorGoal, studentGoal: c.studentGoal, hints: [...c.hints] })
+export function judgeContextOf(c: QualityCase): Artifact['judgeContext'] {
+  if (c.sealed && c.hints.length === 0) throw new Error(`${c.id}: its judge guidance is sealed. Only the Step 12A.4 baseline loads it (--allow-holdout).`)
+  return { professorGoal: c.professorGoal, studentGoal: c.studentGoal, hints: [...c.hints] }
+}
 
-export const caseMeta = (c: QualityCase): QualityResult['case'] => ({ id: c.id, prompt: c.prompt, category: c.category, set: c.set, variance: c.variance, inPattern: c.inPattern })
+export const caseMeta = (c: QualityCase): QualityResult['case'] => ({ id: c.id, prompt: c.prompt, category: c.category, tier: c.tier, set: c.set, variance: c.variance, inPattern: c.inPattern })
 
 /** Saves a live build as an artifact folder, and returns it ready to evaluate. */
 export function saveLiveArtifact(input: {
@@ -36,6 +39,8 @@ export function saveLiveArtifact(input: {
   builder: Artifact['builder']
 }): Artifact {
   const { dir, outcome } = input
+  // Before anything is written: a sealed case without its guidance stops here.
+  const judgeContext = judgeContextOf(input.case)
   mkdirSync(dir, { recursive: true })
   const snap = outcome.snapshot
   if (snap) {
@@ -70,7 +75,7 @@ export function saveLiveArtifact(input: {
   return {
     provenance: 'live-build',
     case: caseMeta(input.case),
-    judgeContext: judgeContextOf(input.case),
+    judgeContext,
     rerun: input.rerun,
     dir,
     expectedArtifactSha256: artifactSha256,
@@ -164,6 +169,7 @@ export function loadArtifact(dir: string, outDir: string, cases: readonly Qualit
         id: `import:${r.id}`,
         prompt: [first.request, ...followUps.map((b) => `Then: ${b.request}`)].join('\n\n'),
         category: 'imported',
+        tier: null,
         set: 'imported',
         variance: false,
         inPattern: null,
