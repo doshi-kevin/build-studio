@@ -14,6 +14,7 @@
 // request fails (failing). Each is the whole frame as it lays out, not cut at a fixed
 // height. The frame itself is capped at STUDIO_FRAME_MAX_HEIGHT_PX by the host; a view
 // taller than that is marked truncated.
+import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium } from '@playwright/test'
@@ -46,9 +47,12 @@ for await (const chunk of process.stdin) {
   if (size > INPUT_MAX_BYTES) process.exit(2)
   chunks.push(chunk)
 }
+const raw = Buffer.concat(chunks)
+// Echoed back, so the caller can check these screenshots are of exactly what it sent.
+const inputSha256 = createHash('sha256').update(raw).digest('hex')
 let input
 try {
-  input = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  input = JSON.parse(raw.toString('utf8'))
 } catch {
   process.exit(2)
 }
@@ -136,7 +140,7 @@ async function capture() {
 
 try {
   const result = await capture()
-  process.stdout.write(JSON.stringify(result), () => process.exit(0))
+  process.stdout.write(JSON.stringify({ ...result, inputSha256 }), () => process.exit(0))
 } catch {
   process.exit(1)
 }

@@ -12,7 +12,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
-import type { Artifact } from './evaluate'
+import { artifactHash, type Artifact } from './evaluate'
 import type { BuildOutcome } from './build'
 import type { QualityCase } from './cases'
 import type { QualityResult } from './schema'
@@ -61,9 +61,11 @@ export function saveLiveArtifact(input: {
     approvalsGiven: outcome.approvalsGiven,
     builderReview: outcome.builderReview,
   }
+  const files = { student: snap?.files.student ?? null, professor: snap?.files.professor ?? null }
+  const artifactSha256 = artifactHash(snap?.manifest ?? null, files, snap?.sample ?? null)
   writeFileSync(
     join(dir, 'artifact.json'),
-    `${JSON.stringify({ format: ARTIFACT_FORMAT, provenance: 'live-build', caseId: input.case.id, rerun: input.rerun, git: input.git, builder: input.builder, build }, null, 2)}\n`,
+    `${JSON.stringify({ format: ARTIFACT_FORMAT, provenance: 'live-build', caseId: input.case.id, rerun: input.rerun, artifactSha256, git: input.git, builder: input.builder, build, refusals: outcome.refusals }, null, 2)}\n`,
   )
   return {
     provenance: 'live-build',
@@ -71,6 +73,7 @@ export function saveLiveArtifact(input: {
     judgeContext: judgeContextOf(input.case),
     rerun: input.rerun,
     dir,
+    expectedArtifactSha256: artifactSha256,
     manifest: snap?.manifest ?? null,
     files: { student: snap?.files.student ?? null, professor: snap?.files.professor ?? null },
     sample: snap?.sample ?? null,
@@ -85,9 +88,11 @@ const savedArtifact = z.object({
   provenance: z.literal('live-build'),
   caseId: z.string(),
   rerun: z.object({ groupId: z.string(), generation: z.number().int().min(1) }),
+  artifactSha256: z.string().regex(/^[0-9a-f]{64}$/),
   git: z.object({ commit: z.string().nullable(), dirty: z.boolean().nullable() }),
   builder: z.record(z.string(), z.unknown()),
   build: z.record(z.string(), z.unknown()),
+  refusals: z.array(z.string()).optional(),
 })
 
 const productResult = z.object({
@@ -138,6 +143,7 @@ export function loadArtifact(dir: string, outDir: string, cases: readonly Qualit
       judgeContext: judgeContextOf(c),
       rerun: saved.rerun,
       dir: outDir,
+      expectedArtifactSha256: saved.artifactSha256,
       manifest: manifestRaw,
       files,
       sample,
@@ -165,6 +171,7 @@ export function loadArtifact(dir: string, outDir: string, cases: readonly Qualit
       judgeContext: { professorGoal: null, studentGoal: null, hints: [] },
       rerun: { groupId: `import:${basename(dir)}`, generation: 1 },
       dir: outDir,
+      expectedArtifactSha256: null,
       manifest: manifestRaw,
       files,
       sample,
@@ -192,12 +199,11 @@ export function loadArtifact(dir: string, outDir: string, cases: readonly Qualit
   throw new Error(`${dir}: neither a quality artifact (artifact.json) nor a Step 11 benchmark folder (result.json).`)
 }
 
-/** Every artifact folder under `root`: the root itself, or its direct subfolders. */
+/** Every artifact folder under `root`, at any depth. A folder that is an artifact isn't searched further. */
 export function artifactDirs(root: string): string[] {
   if (existsSync(join(root, 'artifact.json')) || existsSync(join(root, 'result.json'))) return [root]
   return readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory())
-    .map((e) => join(root, e.name))
-    .filter((d) => existsSync(join(d, 'artifact.json')) || existsSync(join(d, 'result.json')))
+    .flatMap((e) => artifactDirs(join(root, e.name)))
     .sort()
 }

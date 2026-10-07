@@ -1,5 +1,6 @@
 /**
- * studio-generation-quality-result-v1: one evaluated generation. Strict: a result with a
+ * studio-generation-quality-result-v2: one evaluated generation. v2 adds `integrity`, the
+ * proof that every piece of evidence is of the same artifact. Strict: a result with a
  * missing, extra or mistyped field is refused, so a baseline never holds a half-made row.
  *
  * Metadata an artifact doesn't have (an imported Step 11 benchmark folder has no token
@@ -8,7 +9,7 @@
 import { z } from 'zod'
 import { DIMENSION_KEYS, LEVELS, RUBRIC_VERSION } from './rubric'
 
-export const RESULT_SCHEMA = 'studio-generation-quality-result-v1'
+export const RESULT_SCHEMA = 'studio-generation-quality-result-v2'
 
 const level = z.enum(LEVELS)
 const count = z.number().int().min(0)
@@ -85,6 +86,7 @@ const judgeAttempt = z.strictObject({
 
 export const failureClass = z.enum([
   'none',
+  'integrity_failed',
   'build_failed',
   'build_blocked',
   'budget_exhausted',
@@ -160,6 +162,17 @@ export const qualityResultSchema = z.strictObject({
     approvalsGiven: nullableCount,
     builderReview: z.strictObject({ rounds: count, rendered: z.boolean(), verdict: z.string().nullable() }).nullable(),
   }),
+  /** That the source, snapshot, Stage 2 report and screenshots all belong to this artifact.
+   * Null where a check doesn't apply (an imported folder has no recorded hash). */
+  integrity: z.strictObject({
+    expectedArtifactSha256: z.string().nullable(),
+    artifactMatches: z.boolean().nullable(),
+    snapshotHashMatches: z.boolean().nullable(),
+    bundleSha256: z.string().nullable(),
+    stage2Bound: z.boolean().nullable(),
+    captureBound: z.boolean().nullable(),
+    ok: z.boolean(),
+  }),
   gates: z.strictObject({
     build: gateStatus,
     invariants: z.strictObject({ status: gateStatus, detail: z.record(z.string(), z.boolean()).nullable() }),
@@ -197,6 +210,9 @@ export const qualityResultSchema = z.strictObject({
     studentAssessment: z.string().nullable(),
     /** Each successful judge run's total, for judge variance. */
     passTotals: z.array(z.number().min(0).max(100).nullable()),
+    /** Declared capabilities the preview can't answer ("view:capability"): the evidence shows an
+     * error where the installed tool would work, so the result isn't comparable. */
+    unpreviewable: z.array(z.string()).default([]),
     costUsd: usd.nullable(),
   }),
   qualityScore: z.number().min(0).max(100).nullable(),

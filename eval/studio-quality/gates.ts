@@ -88,7 +88,8 @@ export function publishable(stage2: Stage2Check[] | null): boolean | null {
 }
 
 /** The first thing that went wrong, in pipeline order. */
-export function failureClassOf(facts: GateFacts, gates: Gates, judge: { ran: boolean; succeeded: boolean }): FailureClass {
+export function failureClassOf(facts: GateFacts, gates: Gates, judge: { ran: boolean; succeeded: boolean }, integrityOk = true): FailureClass {
+  if (!integrityOk) return 'integrity_failed'
   if (facts.cappedByEval) return 'capped_by_eval'
   if (gates.build === 'failed') {
     const first = facts.buildStatuses?.find((s) => !SUCCESS.includes(s)) ?? facts.buildStatuses?.[0]
@@ -119,6 +120,10 @@ export function comparability(input: {
   provenance: GateFacts['provenance']
   /** The eval's own spend cap stopped the build: its outcome says nothing about the builder. */
   cappedByEval: boolean | null
+  /** Every piece of evidence is of this artifact. */
+  integrityOk: boolean
+  /** Declared capabilities the evidence environment can't show. */
+  unpreviewable?: string[]
   gates: Gates
   mode: 'visual+code' | 'code-only' | 'none'
   judgeKind: 'scripted' | 'live' | null
@@ -128,13 +133,17 @@ export function comparability(input: {
   const notes: string[] = []
   if (input.provenance !== 'live-build') notes.push('imported artifact: not built by this framework, metadata incomplete')
   if (input.cappedByEval) notes.push('the eval’s spend cap stopped the build')
+  if (!input.integrityOk) notes.push('evidence integrity failed: some evidence is not of this artifact')
   if (input.gates.correctness === 'failed') notes.push('a correctness gate failed')
   if (input.gates.correctness === 'unknown') notes.push('a correctness gate could not be checked')
   if (input.mode === 'code-only') notes.push('code-only evaluation: visual quality not measured')
+  if (input.unpreviewable?.length) notes.push(`the preview can't serve ${input.unpreviewable.join(', ')}, so the evidence shows an error the installed tool wouldn't`)
   if (input.mode === 'none') notes.push('not judged')
   if (input.judgeKind === 'scripted') notes.push('scripted judge: pipeline check only, not a judgement')
   if (input.mode !== 'none' && !input.judgeSucceeded) notes.push('the judge did not return a valid judgement')
 
+  // Evidence that may belong to another artifact proves nothing either way: no score, no 0.
+  if (!input.integrityOk) return { comparable: false, notes, qualityScore: null, suiteContribution: null }
   // A build the eval's own cap cut short failed for the eval, not the builder: no score, and no 0.
   if (input.cappedByEval) return { comparable: false, notes, qualityScore: null, suiteContribution: null }
   if (input.gates.correctness === 'failed') return { comparable: false, notes, qualityScore: null, suiteContribution: 0 }
@@ -145,6 +154,7 @@ export function comparability(input: {
     input.mode === 'visual+code' &&
     input.judgeKind === 'live' &&
     input.judgeSucceeded &&
-    input.total !== null
+    input.total !== null &&
+    !input.unpreviewable?.length
   return { comparable, notes, qualityScore: input.judgeSucceeded ? input.total : null, suiteContribution: comparable ? input.total : null }
 }

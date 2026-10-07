@@ -15,10 +15,11 @@ import { runDraftChecks } from '../../src/lib/studio/builder/checks'
 import { runWorkerCheck } from '../../src/lib/studio/builder/check-worker'
 import { canonicalJson } from '../../src/lib/studio/validator/artifact'
 import { VENDOR_V2_SHA256, VENDOR_V1_SHA256 } from '../../src/lib/studio/kit/vendor-hash'
+import { snapshotHash } from '../../src/lib/studio/builder/snapshot'
 import { STUDIO_VALIDATOR_RULESET, VALIDATOR_VERSION } from '../../src/lib/studio/validator/ruleset'
-import { captureScreens, evidenceCatalog, runStage2, type Bundled, type CaptureOutcome, type Shot, type Stage2Outcome } from './evidence'
+import { captureScreens, evidenceCatalog, runStage2, unpreviewableCapabilities, type Bundled, type CaptureOutcome, type Shot, type Stage2Outcome } from './evidence'
 import { comparability, computeGates, failureClassOf, publishable, type GateFacts } from './gates'
-import { judgeArtifact, JUDGE_PROMPT_VERSION, type JudgeImage, type JudgeModel } from './judge'
+import { judgeArtifact, JUDGE_PROMPT_VERSION, type JudgeImage, type JudgeModel, type SpendLedger } from './judge'
 import { platformCardSha256 } from './platform-card'
 import { RUBRIC_VERSION } from './rubric'
 import { parseQualityResult, RESULT_SCHEMA, type QualityResult } from './schema'
@@ -31,6 +32,8 @@ export interface Artifact {
   rerun: QualityResult['rerun']
   /** Where the result, the source and the screenshots are written. */
   dir: string
+  /** The artifact hash recorded when the build was saved; null for an imported folder. */
+  expectedArtifactSha256: string | null
   manifest: Record<string, unknown> | null
   files: { student: string | null; professor: string | null }
   sample: unknown
@@ -63,8 +66,8 @@ export interface EvaluateDeps {
   judge: JudgeModel | null
   platformCard: string
   judgePasses: number
-  /** Dollars the judge may still spend on this artifact. */
-  judgeBudgetUsd: () => number
+  /** The spend cap judging runs under; null when the judge costs nothing. */
+  ledger: SpendLedger | null
   /** Run a diagnostic code-only judgement when the screenshots are missing. */
   allowCodeOnly: boolean
   now: () => Date
@@ -73,7 +76,7 @@ export interface EvaluateDeps {
 export const realEvaluateDeps = (
   judge: JudgeModel | null,
   platformCard: string,
-  options: { judgePasses: number; allowCodeOnly: boolean; judgeBudgetUsd: () => number },
+  options: { judgePasses: number; allowCodeOnly: boolean; ledger: SpendLedger | null },
 ): EvaluateDeps => ({
   draftGate: async (artifact) => {
     if (!artifact.manifest) return { passed: false, failing: ['builder.manifest'], bundles: null, compiler: null }
@@ -94,12 +97,16 @@ export const realEvaluateDeps = (
   judge,
   platformCard,
   judgePasses: options.judgePasses,
-  judgeBudgetUsd: options.judgeBudgetUsd,
+  ledger: options.ledger,
   allowCodeOnly: options.allowCodeOnly,
   now: () => new Date(),
 })
 
 const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
+
+/** The hash of what was generated: the manifest, both views and the sample data. */
+export const artifactHash = (manifest: unknown, files: { student: string | null; professor: string | null }, sample: unknown) =>
+  sha256(canonicalJson({ manifest, files: { student: files.student ?? '', professor: files.professor ?? '' }, sample: sample ?? null }))
 
 function signature(manifest: Record<string, unknown> | null): QualityResult['build']['signature'] {
   const views = (manifest?.views ?? {}) as Record<string, { capabilities?: string[] }>
@@ -113,6 +120,15 @@ function signature(manifest: Record<string, unknown> | null): QualityResult['bui
 
 export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): Promise<QualityResult> {
   mkdirSync(artifact.dir, { recursive: true })
+  // The exact source this result judges, kept beside it.
+  const sourceDir = join(artifact.dir, 'source')
+  mkdirSync(sourceDir, { recursive: true })
+  writeFileSync(join(sourceDir, 'manifest.json'), `${JSON.stringify(artifact.manifest, null, 2)}
+`)
+  writeFileSync(join(sourceDir, 'professor.tsx'), artifact.files.professor ?? '')
+  writeFileSync(join(sourceDir, 'student.tsx'), artifact.files.student ?? '')
+  writeFileSync(join(sourceDir, 'sample.json'), `${JSON.stringify(artifact.sample ?? null, null, 2)}
+`)
   const evidenceDir = join(artifact.dir, 'evidence')
   const bridgeVersion = typeof artifact.manifest?.bridgeVersion === 'string' ? artifact.manifest.bridgeVersion : null
 
@@ -139,10 +155,27 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
   }
   const gates = computeGates(facts)
 
+  // Every piece of evidence must be of this artifact: the source as saved, the snapshot it
+  // claims to be, the Stage 2 report of this payload, the screenshots of these bundles.
+  const files0 = { student: artifact.files.student ?? '', professor: artifact.files.professor ?? '' }
+  const artifactSha256 = artifactHash(artifact.manifest, artifact.files, artifact.sample)
+  const integrityChecks = {
+    expectedArtifactSha256: artifact.expectedArtifactSha256,
+    artifactMatches: artifact.expectedArtifactSha256 === null ? null : artifact.expectedArtifactSha256 === artifactSha256,
+    snapshotHashMatches:
+      artifact.build.snapshotHash && gate?.compiler && artifact.manifest && viewsPresent
+        ? snapshotHash(gate.compiler, artifact.manifest, { 'views/student.tsx': files0.student, 'views/professor.tsx': files0.professor }, artifact.sample ?? undefined) === artifact.build.snapshotHash
+        : null,
+    bundleSha256: bundled ? sha256(canonicalJson({ manifest: bundled.manifest, bundles: bundled.bundles, sample: bundled.sample ?? null })) : null,
+    stage2Bound: stage2 ? stage2.bound : null,
+    captureBound: capture ? capture.bound : null,
+  }
+  const integrity = { ...integrityChecks, ok: Object.values(integrityChecks).every((v) => v !== false) }
+
   const shots: Shot[] = capture?.shots ?? []
   const files = { student: artifact.files.student ?? '', professor: artifact.files.professor ?? '' }
   const mode: QualityResult['evaluation']['mode'] =
-    gates.correctness === 'failed' || !deps.judge || !viewsPresent
+    gates.correctness === 'failed' || !deps.judge || !viewsPresent || !integrity.ok
       ? 'none'
       : gates.visualEvidence.status === 'passed'
         ? 'visual+code'
@@ -173,12 +206,15 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
             evidence,
             images,
           },
-          { passes: deps.judgePasses, budgetUsd: deps.judgeBudgetUsd, worstCaseCallUsd: deps.judge.worstCaseCallUsd },
+          { passes: deps.judgePasses, ledger: deps.ledger ?? undefined },
         )
   const judgeSucceeded = !!outcome?.dimensions
+  const unpreviewable = artifact.manifest ? await unpreviewableCapabilities(artifact.manifest) : []
   const verdict = comparability({
+    unpreviewable,
     provenance: artifact.provenance,
     cappedByEval: artifact.build.cappedByEval,
+    integrityOk: integrity.ok,
     gates,
     mode,
     judgeKind: deps.judge?.identity.kind ?? null,
@@ -211,7 +247,7 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
       status: artifact.build.statuses?.at(-1) ?? null,
       errorCode: artifact.build.errorCode,
       snapshotHash: artifact.build.snapshotHash,
-      artifactSha256: sha256(canonicalJson({ manifest: artifact.manifest, files, sample: artifact.sample ?? null })),
+      artifactSha256,
       signature: signature(artifact.manifest),
       costUsd: artifact.build.costUsd,
       tokens: artifact.build.tokens,
@@ -224,6 +260,7 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
       approvalsGiven: artifact.build.approvalsGiven,
       builderReview: artifact.build.builderReview,
     },
+    integrity,
     gates,
     stage2: {
       ran: stage2 !== null,
@@ -242,13 +279,14 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
       professorAssessment: outcome?.professorAssessment ?? null,
       studentAssessment: outcome?.studentAssessment ?? null,
       passTotals: outcome?.passes.map((p) => p.total) ?? [],
+      unpreviewable,
       costUsd: outcome?.costUsd ?? null,
     },
     qualityScore: verdict.qualityScore,
     comparable: verdict.comparable,
     comparabilityNotes: verdict.notes,
     suiteContribution: verdict.suiteContribution,
-    failureClass: failureClassOf(facts, gates, { ran: outcome !== null, succeeded: judgeSucceeded }),
+    failureClass: failureClassOf(facts, gates, { ran: outcome !== null, succeeded: judgeSucceeded }, integrity.ok),
     artifactsDir: artifact.dir,
   }
   const parsed = parseQualityResult(raw)

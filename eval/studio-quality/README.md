@@ -2,7 +2,7 @@
 
 Measures how good the plugins the Studio builder makes are as products, against the rubric `studio-generation-quality-v1`. It exists to freeze an honest baseline of the Step 11 builder before Step 12 changes it. The design and the decisions behind it are in `docs/designs/studio/studio-generation-quality.md` (local only).
 
-Status: the framework is built (Step 12A.2). There is no live judge yet (12A.3) and no baseline yet (12A.4).
+Status: the framework is built (Step 12A.2). The evaluator is calibrated against contrast pairs and repeatability, and awaits blind human scoring (Step 12A.3). There is no baseline yet (12A.4).
 
 ## What a run does
 
@@ -12,7 +12,8 @@ For each canonical case (`cases.ts`, Q01 to Q20):
 2. **Gates.** The draft gate runs again on the committed snapshot, then Stage 2 runs through the real local runner. A build that didn't end Preview ready, broke a harness invariant, or failed the draft gate or Stage 2 boot or isolation gets no quality score and counts 0 in the suite mean.
 3. **Screenshots** (`capture.mjs`). Both views at desktop and phone width on sample data, plus empty, loading and failing states, through the Stage 2 runner's servers. The builder's own renderer is not used.
 4. **Judge** (`judge.ts`). Pass A lists observable evidence, each item citing a screenshot, a view line, the manifest, the sample or a Stage 2 check. Pass B gives each of the nine dimensions one of four levels, citing Pass A items. Several runs judge each artifact; each dimension takes the median level.
-5. **Result** (`schema.ts`). One `studio-generation-quality-result-v1` JSON per generation, validated before it is written.
+5. **Integrity.** The result records that the source, the snapshot, the Stage 2 report and the screenshots are all of the same artifact. If any isn't, the result fails integrity and has no score.
+6. **Result** (`schema.ts`). One `studio-generation-quality-result-v2` JSON per generation, validated before it is written, with the judged source kept beside it.
 
 Only a live build that passed every gate, judged by a live judge on screenshots and code, is **comparable**. Imported folders, code-only evaluations and the plumbing judge are recorded but kept out of the primary statistics.
 
@@ -27,12 +28,21 @@ npm run eval:studio-quality -- judge-only --from=tmp/product-bench4 --out=tmp/st
 npm run eval:studio-quality -- report --results=tmp/studio-quality/trial
 
 # Live builds. Prints the plan and the cap and stops unless --yes is given.
-npm run eval:studio-quality -- build --set=all --max-usd=15 --judge=<provider>:<model> --judge-reasoning=<setting> --yes
+npm run eval:studio-quality -- build --case=Q01-attendance --max-usd=5 --judge=google:gemini-3.1-pro-preview --judge-reasoning=high --yes
+
+# Calibration (Step 12A.3)
+npm run eval:studio-quality -- contrast-prepare                       # original and degraded pairs into tmp/
+npm run eval:studio-quality -- contrast-report --results=<judged contrast folder>
+npm run eval:studio-quality -- repeatability --results=<judged folder>
+npm run eval:studio-quality -- human-pack --items=<result folder>,... --out=<pack> --key=<sealed key outside the pack>
+npm run eval:studio-quality -- human-compare --scores=<pack>/human-scores.json --key=<sealed key>
 ```
+
+The live judge is Gemini (`--judge=google:gemini-3.1-pro-preview`), the only family with a non-production key here. It is the builder's model thinking harder than the builder does: `--judge-reasoning=high` (calibrated in 12A.3) or `medium`. Thinking `low` is the builder's own setting and is refused, and so is any other model, because a smaller one isn't stronger and only this one is calibrated. A live judge also refuses to start if the rubric or judge prompt differs from the frozen pair in `quality-freeze.ts`. Integrity is checked before judging, and an artifact that fails it isn't sent to the judge. Each judge call reserves its worst case (a full prompt and a full reply at the model's rates) against `--max-usd` before it is sent, and a cap too small for the calls that can run at once is refused up front.
 
 A live build needs `--max-usd` (a hard cap over building and judging), `--yes`, and only `GOOGLE_GENERATIVE_AI_API_KEY` in the environment. It refuses any Supabase secret, and it refuses to start if the builder's instructions, review instructions, model or thinking level differ from Step 11's (`freeze.ts`). Never run it with the root `.env` loaded.
 
-Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`. Repeats for the variance cases reuse the baseline group: `--group=<id> --start-generation=2 --repeat=4`. Judging: `--judge-passes` (default 3) and `--allow-code-only` for a diagnostic evaluation when screenshots fail.
+Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`. Holdout cases are refused everywhere unless `--allow-holdout` is given, which only the 12A.4 baseline does. Repeats for the variance cases reuse the baseline group: `--group=<id> --start-generation=2 --repeat=4`. Judging: `--judge-passes` (default 3) and `--allow-code-only` for a diagnostic evaluation when screenshots fail.
 
 ## Files
 
@@ -44,7 +54,10 @@ Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`. Repeats for the var
 | `freeze.ts` | The Step 11 builder's accepted hashes, model and thinking level |
 | `platform-card.ts` | What a plugin can do, derived from the platform's constants, for the judge |
 | `capture.mjs`, `evidence.ts` | Screenshots and Stage 2 |
-| `judge.ts` | The judge interface, the two-pass protocol, the scripted and plumbing judges |
+| `judge.ts` | The judge interface, the two-pass protocol, the spend ledger, the scripted and plumbing judges |
+| `gemini-judge.ts` | The live judge on Gemini |
+| `calibration.ts` | Contrast pairs, repeatability, the blind human pack and the human comparison |
+| `quality-freeze.ts` | The frozen rubric and judge-prompt fingerprints |
 | `gates.ts`, `evaluate.ts` | Gates, comparability, and one artifact to one result |
 | `artifacts.ts` | Saved artifact folders, and the importer for Step 11 benchmark folders |
 | `aggregate.ts` | Suite statistics, nondeterminism measures, baseline comparison |

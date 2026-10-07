@@ -7,7 +7,8 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { evaluateArtifact, type Artifact, type EvaluateDeps } from '../../eval/studio-quality/evaluate'
+import { artifactHash, evaluateArtifact, type Artifact, type EvaluateDeps } from '../../eval/studio-quality/evaluate'
+import { snapshotHash } from '@/lib/studio/builder/snapshot'
 import { createScriptedJudge } from '../../eval/studio-quality/judge'
 import { parseQualityResult, RESULT_SCHEMA } from '../../eval/studio-quality/schema'
 import type { Stage2Check } from '../../eval/studio-quality/gates'
@@ -22,6 +23,7 @@ function artifact(overrides: Partial<Artifact> = {}, build: Partial<Artifact['bu
     judgeContext: { professorGoal: 'Record each session.', studentGoal: 'See their record.', hints: ['sessions or dates'] },
     rerun: { groupId: 'group-1', generation: 1 },
     dir: mkdtempSync(join(tmpdir(), 'sgq-')),
+    expectedArtifactSha256: null,
     manifest: { bridgeVersion: 'v2', views: { student: { capabilities: ['context.get'] }, professor: { capabilities: ['course.roster'] } }, collections: { marks: { access: 'staffPerStudent' } } },
     files: { student: STUDENT_SRC, professor: PROFESSOR_SRC },
     sample: { marks: [] },
@@ -31,7 +33,7 @@ function artifact(overrides: Partial<Artifact> = {}, build: Partial<Artifact['bu
       statuses: ['preview_ready'],
       errorCode: null,
       cappedByEval: false,
-      snapshotHash: 'c'.repeat(64),
+      snapshotHash: null,
       invariants: { ...INVARIANTS },
       costUsd: 0.2,
       tokens: { input: 1000, cachedInput: 0, output: 200, reasoning: 50 },
@@ -62,13 +64,13 @@ function deps(overrides: Partial<EvaluateDeps> = {}, judge = createScriptedJudge
   return {
     calls,
     draftGate: async () => (calls.push('draftGate'), { passed: true, failing: [], bundles: { student: 'S', professor: 'P' }, compiler: 'studio-tsx-v1+ts5.9.3' }),
-    stage2: async () => (calls.push('stage2'), { checks: STAGE2_PASS, runner: { name: 'scholera-local-runner', version: '1.0.0' } }),
-    capture: async () => (calls.push('capture'), { shots: [...NORMAL_SHOTS, shot('student', 'desktop', 'empty')], failures: [], missing: [] }),
+    stage2: async () => (calls.push('stage2'), { checks: STAGE2_PASS, runner: { name: 'scholera-local-runner', version: '1.0.0' }, bound: true }),
+    capture: async () => (calls.push('capture'), { shots: [...NORMAL_SHOTS, shot('student', 'desktop', 'empty')], failures: [], missing: [], bound: true }),
     readImage: () => new Uint8Array([1, 2, 3]),
     judge,
     platformCard: 'card',
     judgePasses: 3,
-    judgeBudgetUsd: () => Infinity,
+    ledger: null,
     allowCodeOnly: false,
     now: () => new Date('2026-10-07T12:00:00Z'),
     ...overrides,
@@ -109,8 +111,8 @@ describe('correctness gates: no score, and 0 in the suite', () => {
     ['a failed build', artifact({}, { statuses: ['failed'] }), {}, 'build_failed', 'build ended failed'],
     ['a first build that found nothing to make', artifact({}, { statuses: ['completed'] }), {}, 'build_failed', 'build ended completed'],
     ['a failed draft gate', artifact(), { draftGate: async () => ({ passed: false, failing: ['code.network'], bundles: null, compiler: null }) }, 'draft_gate_failed', 'draft gate: code.network'],
-    ['a Stage 2 boot failure', artifact(), { stage2: async () => ({ checks: failing('runtime.boot'), runner: { name: 'r', version: '1' } }) }, 'stage2_failed', 'Stage 2 runtime.boot'],
-    ['a Stage 2 isolation failure', artifact(), { stage2: async () => ({ checks: failing('runtime.isolation'), runner: { name: 'r', version: '1' } }) }, 'stage2_failed', 'Stage 2 runtime.isolation'],
+    ['a Stage 2 boot failure', artifact(), { stage2: async () => ({ checks: failing('runtime.boot'), runner: { name: 'r', version: '1' }, bound: true }) }, 'stage2_failed', 'Stage 2 runtime.boot'],
+    ['a Stage 2 isolation failure', artifact(), { stage2: async () => ({ checks: failing('runtime.isolation'), runner: { name: 'r', version: '1' }, bound: true }) }, 'stage2_failed', 'Stage 2 runtime.isolation'],
   ] as const)('%s', async (_name, a, override, failureClass, failure) => {
     const d = deps(override as Partial<EvaluateDeps>)
     const r = await evaluateArtifact(a, d)
@@ -135,7 +137,7 @@ describe('correctness gates: no score, and 0 in the suite', () => {
   })
 
   it('a Stage 2 quality failure is recorded as not publishable, not as a gate', async () => {
-    const r = await evaluateArtifact(artifact(), deps({ stage2: async () => ({ checks: failing('runtime.touch_targets'), runner: { name: 'r', version: '1' } }) }))
+    const r = await evaluateArtifact(artifact(), deps({ stage2: async () => ({ checks: failing('runtime.touch_targets'), runner: { name: 'r', version: '1' }, bound: true }) }))
     expect(r.gates.correctness).toBe('passed')
     expect(r.stage2.publishable).toBe(false)
     expect(r.comparable).toBe(true)
@@ -143,7 +145,7 @@ describe('correctness gates: no score, and 0 in the suite', () => {
 })
 
 describe('missing screenshots', () => {
-  const noShots = { capture: async () => ({ shots: [shot('student', 'desktop')], failures: [{ id: 'professor-desktop-normal', reason: 'crashed' }], missing: ['professor-desktop-normal', 'professor-phone-normal', 'student-phone-normal'] }) }
+  const noShots = { capture: async () => ({ shots: [shot('student', 'desktop')], failures: [{ id: 'professor-desktop-normal', reason: 'crashed' }], missing: ['professor-desktop-normal', 'professor-phone-normal', 'student-phone-normal'], bound: true }) }
 
   it('are recorded, and by default nothing is judged', async () => {
     const r = await evaluateArtifact(artifact(), deps(noShots))
@@ -198,13 +200,57 @@ describe('imported artifacts', () => {
   })
 })
 
+describe('evidence integrity: everything is of the same artifact', () => {
+  it('records the checks, and passes when they all hold', async () => {
+    const a = artifact()
+    const compiler = 'studio-tsx-v1+ts5.9.3'
+    a.build.snapshotHash = snapshotHash(compiler, a.manifest, { 'views/student.tsx': STUDENT_SRC, 'views/professor.tsx': PROFESSOR_SRC }, a.sample)
+    a.expectedArtifactSha256 = artifactHash(a.manifest, a.files, a.sample)
+    const r = await evaluateArtifact(a, deps())
+    expect(r.integrity).toMatchObject({ artifactMatches: true, snapshotHashMatches: true, stage2Bound: true, captureBound: true, ok: true })
+    expect(r.integrity.bundleSha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(r.comparable).toBe(true)
+  })
+
+  it.each([
+    ['source from another generation', (a: Artifact): void => {
+      a.expectedArtifactSha256 = 'f'.repeat(64)
+    }, {}, 'artifactMatches'],
+    ['a snapshot hash of another build', (a: Artifact): void => {
+      a.build.snapshotHash = 'c'.repeat(64)
+    }, {}, 'snapshotHashMatches'],
+    ['a Stage 2 report of another payload', (): void => {}, { stage2: async () => ({ checks: STAGE2_PASS, runner: { name: 'r', version: '1' }, bound: false }) }, 'stage2Bound'],
+    ['screenshots of other bundles', (): void => {}, { capture: async () => ({ shots: NORMAL_SHOTS, failures: [], missing: [], bound: false }) }, 'captureBound'],
+  ] as const)('%s fails integrity: no score, out of the suite, never 0', async (_name, mutate, override, check) => {
+    const a = artifact()
+    mutate(a)
+    const r = await evaluateArtifact(a, deps(override as Partial<EvaluateDeps>))
+    expect(r.integrity[check]).toBe(false)
+    expect(r.integrity.ok).toBe(false)
+    expect(r.failureClass).toBe('integrity_failed')
+    // Never judged: a score it can't keep isn't worth paying for.
+    expect(r.evaluation.mode).toBe('none')
+    expect(r.evaluation.passesSucceeded).toBe(0)
+    expect(r.qualityScore).toBeNull()
+    expect(r.suiteContribution).toBeNull()
+    expect(r.comparable).toBe(false)
+  })
+
+  it('keeps the exact source it judged beside the result', async () => {
+    const a = artifact()
+    await evaluateArtifact(a, deps())
+    expect(readFileSync(join(a.dir, 'source', 'professor.tsx'), 'utf8')).toBe(PROFESSOR_SRC)
+    expect(readFileSync(join(a.dir, 'source', 'student.tsx'), 'utf8')).toBe(STUDENT_SRC)
+  })
+})
+
 describe('the result schema', () => {
   it('round-trips, and refuses a wrong version, a missing field or an extra one', async () => {
     const r = await evaluateArtifact(artifact(), deps())
     const again = parseQualityResult(JSON.parse(JSON.stringify(r)))
     expect(again.ok && again.result).toEqual(r)
     expect(r.schema).toBe(RESULT_SCHEMA)
-    expect(parseQualityResult({ ...r, schema: 'studio-generation-quality-result-v2' }).ok).toBe(false)
+    expect(parseQualityResult({ ...r, schema: 'studio-generation-quality-result-v1' }).ok).toBe(false)
     expect(parseQualityResult({ ...r, rubricVersion: 'studio-generation-quality-v0' }).ok).toBe(false)
     const missing: Record<string, unknown> = { ...r }
     delete missing.failureClass

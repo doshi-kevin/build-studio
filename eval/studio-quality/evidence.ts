@@ -5,11 +5,15 @@
  * process with a model key.
  */
 import { spawn } from 'node:child_process'
-import { randomUUID, randomBytes } from 'node:crypto'
+import { createHash, randomUUID, randomBytes } from 'node:crypto'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { buildPayload, runLocally, runnerEnvironment } from '../../src/lib/studio/validator/runtime-runner'
 import { runtimeEnvelopeSchema, summarizeRuntimeReport } from '../../src/lib/studio/validator/runtime-report'
+import { createPreviewBridge } from '../../src/lib/studio/runtime/preview-bridge'
+import { METHOD_CATALOG } from '../../src/lib/studio/bridge/catalog'
+import { parseManifest } from '../../src/lib/studio/manifest'
 import type { Stage2Check } from './gates'
 import type { EvidenceSource } from './schema'
 
@@ -22,6 +26,30 @@ export interface Bundled {
 export interface Stage2Outcome {
   checks: Stage2Check[]
   runner: { name: string; version: string }
+  /** The runner's report is bound to this run's own payload and validation id. */
+  bound: boolean
+}
+
+/**
+ * Declared capabilities the preview (and so every screenshot and Stage 2 run) can't answer,
+ * as "view:capability". A view that depends on one shows an error in its evidence even though
+ * it works once installed, so its evidence can't show the product honestly.
+ */
+export async function unpreviewableCapabilities(manifest: unknown): Promise<string[]> {
+  const parsed = parseManifest(manifest)
+  if (!parsed.ok) return []
+  const out: string[] = []
+  for (const view of ['student', 'professor'] as const) {
+    const bridge = createPreviewBridge(parsed.manifest, view)
+    for (const capability of parsed.manifest.views[view].capabilities) {
+      const methods = Object.entries(METHOD_CATALOG).filter(([, m]) => m.capability === capability && m.runs === 'server')
+      for (const [name] of methods) {
+        const r = await bridge.handleRequest(name, {})
+        if (!r.ok && r.code === 'unsupported') out.push(`${view}:${capability}`)
+      }
+    }
+  }
+  return [...new Set(out)]
 }
 
 /** Stage 2 on one artifact, or null when the runner itself failed (no browser, a crash). */
@@ -35,7 +63,8 @@ export async function runStage2(artifact: Bundled): Promise<Stage2Outcome | null
   const raw = await runLocally(validationId, payload.bytes)
   const envelope = runtimeEnvelopeSchema.safeParse(raw)
   if (!envelope.success) return null
-  return { checks: summarizeRuntimeReport(envelope.data.report), runner: envelope.data.report.runner }
+  const bound = envelope.data.binding.validationId === validationId && envelope.data.binding.payloadSha256 === payload.sha256
+  return { checks: summarizeRuntimeReport(envelope.data.report), runner: envelope.data.report.runner, bound }
 }
 
 /** The shots every comparable evaluation needs: the normal state of both views at both widths. */
@@ -53,14 +82,26 @@ const shotSchema = z.strictObject({
   stateShown: z.boolean().nullable(),
 })
 export type Shot = z.infer<typeof shotSchema>
-const captureOutput = z.strictObject({ shots: z.array(shotSchema), failures: z.array(z.strictObject({ id: z.string(), reason: z.string() })) })
-export type CaptureOutcome = z.infer<typeof captureOutput> & { missing: string[] }
+const captureOutput = z.strictObject({
+  shots: z.array(shotSchema),
+  failures: z.array(z.strictObject({ id: z.string(), reason: z.string() })),
+  inputSha256: z.string().regex(/^[0-9a-f]{64}$/),
+})
+export type CaptureOutcome = Omit<z.infer<typeof captureOutput>, 'inputSha256'> & {
+  missing: string[]
+  /** The capture process echoed the hash of exactly the input it was sent. */
+  bound: boolean
+}
 
 const CAPTURE_TIMEOUT_MS = 200_000
 
 /** Screenshots into `outDir`. Null when the capture process failed outright. */
 export function captureScreens(artifact: Bundled, outDir: string, root = process.cwd()): Promise<CaptureOutcome | null> {
   const input = JSON.stringify({ manifest: artifact.manifest, studentBundle: artifact.bundles.student, professorBundle: artifact.bundles.professor, sample: artifact.sample ?? null, outDir })
+  const sent = createHash('sha256').update(input, 'utf8').digest('hex')
+  // Nothing from an earlier capture may be mistaken for this one's.
+  rmSync(outDir, { recursive: true, force: true })
+  mkdirSync(outDir, { recursive: true })
   return new Promise((resolve) => {
     let settled = false
     const finish = (value: CaptureOutcome | null) => {
@@ -82,9 +123,9 @@ export function captureScreens(artifact: Bundled, outDir: string, root = process
     child.on('close', (code) => {
       if (code !== 0) return finish(null)
       try {
-        const parsed = captureOutput.parse(JSON.parse(out))
+        const { inputSha256, ...parsed } = captureOutput.parse(JSON.parse(out))
         const have = new Set(parsed.shots.map((s) => s.id))
-        finish({ ...parsed, missing: REQUIRED_SHOTS.filter((id) => !have.has(id)) })
+        finish({ ...parsed, missing: REQUIRED_SHOTS.filter((id) => !have.has(id)), bound: inputSha256 === sent })
       } catch {
         finish(null)
       }

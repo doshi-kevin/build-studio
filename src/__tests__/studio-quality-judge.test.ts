@@ -3,8 +3,10 @@
  * citations that must exist, bounded and recorded retries, the median level over several
  * runs, and code-only evaluations that never score visual quality.
  */
-import { describe, expect, it } from 'vitest'
-import { createJudge, createScriptedJudge, fence, judgeArtifact, parseJudgeConfig, sourceExists } from '../../eval/studio-quality/judge'
+import { describe, expect, it, vi } from 'vitest'
+import { assertCapCoversConcurrency, createJudge, createLedger, createScriptedJudge, fence, judgeArtifact, parseJudgeConfig, sourceExists, type JudgeRequest } from '../../eval/studio-quality/judge'
+import { estimateInputTokens, JUDGE_MAX_INPUT_TOKENS, JUDGE_MAX_OUTPUT_TOKENS } from '../../eval/studio-quality/gemini-judge'
+import { computeCostUsd } from '@/lib/ai/cost'
 import { extraction, judgeInput, scores, validJudge } from './helpers/quality-fixtures'
 
 describe('judging an artifact', () => {
@@ -102,17 +104,58 @@ describe('judging an artifact', () => {
 })
 
 describe('a live judge’s spend', () => {
-  it('stops before the call that could pass the cap, counting a call with no reported cost at the worst case', async () => {
+  it('reserves each call’s worst case before it, and bills a call with no reported cost at that worst case', async () => {
     const respond = validJudge()
-    const judge = { ...createScriptedJudge(respond), worstCaseCallUsd: 0.1 }
     let calls = 0
-    const counted = { ...judge, ask: async (req: Parameters<typeof judge.ask>[0]) => (calls++, { output: respond(req), costUsd: null }) }
-    // Room for three worst-case calls: one full pass (two calls), then one more call, then nothing.
-    const out = await judgeArtifact(counted, judgeInput(), { passes: 3, budgetUsd: () => 0.35, worstCaseCallUsd: 0.1 })
+    const judge = { ...createScriptedJudge(respond), worstCaseCallUsd: 0.1, ask: async (req: JudgeRequest) => (calls++, { output: respond(req), costUsd: null }) }
+    // Room for three worst-case calls: one whole run (two calls), then one more call, then nothing.
+    const ledger = createLedger(0.35)
+    const out = await judgeArtifact(judge, judgeInput(), { passes: 3, ledger })
     expect(calls).toBe(3)
     expect(out.passes).toHaveLength(1)
     expect(out.costUsd).toBeCloseTo(0.3)
-    expect(out.attempts.at(-1)).toMatchObject({ ok: false, error: 'judge spend cap reached' })
+    expect(ledger.spent()).toBeCloseTo(0.3)
+    expect(out.attempts.filter((a) => a.error === 'judge spend cap reached').length).toBeGreaterThan(0)
+  })
+
+  it('the ledger counts calls still in flight against the cap, and settling frees their reserve', () => {
+    const ledger = createLedger(0.25)
+    expect(ledger.reserve(0.1)).toBe(true)
+    expect(ledger.reserve(0.1)).toBe(true)
+    // Nothing spent yet, but two calls are in flight: a third would pass the cap.
+    expect(ledger.reserve(0.1)).toBe(false)
+    ledger.settle(0.1, 0.02)
+    expect(ledger.spent()).toBeCloseTo(0.02)
+    expect(ledger.reserve(0.1)).toBe(true)
+    // A build settles what it spent with nothing reserved.
+    ledger.settle(0, 0.1)
+    expect(ledger.reserve(0.1)).toBe(false)
+    for (const bad of [-1, Number.NaN]) expect(() => createLedger(bad)).toThrow(/spend cap/)
+  })
+
+  it('one cap holds across artifacts judged at the same time', async () => {
+    const respond = validJudge()
+    let calls = 0
+    const judge = { ...createScriptedJudge(respond), worstCaseCallUsd: 0.1, ask: async (req: JudgeRequest) => (calls++, await new Promise((r) => setTimeout(r, 5)), { output: respond(req), costUsd: 0.1 }) }
+    const ledger = createLedger(0.45)
+    await Promise.all([judgeArtifact(judge, judgeInput(), { passes: 2, ledger }), judgeArtifact(judge, judgeInput(), { passes: 2, ledger })])
+    expect(calls).toBe(4)
+    expect(ledger.spent()).toBeCloseTo(0.4)
+  })
+
+  it('refuses a cap too small for the calls that can be in flight at once', () => {
+    // Three artifacts at once, five runs each: the first run alone, then four together, so up to 12 calls.
+    expect(() => assertCapCoversConcurrency(6, 0.521, 3, 5)).toThrow(/can't cover 12 judge calls in flight/)
+    expect(() => assertCapCoversConcurrency(6, 0.521, 1, 5)).not.toThrow()
+  })
+
+  it('a failed call still costs what the provider reports, or the worst case', async () => {
+    const judge = { ...createScriptedJudge(() => null), worstCaseCallUsd: 0.2, ask: async () => Promise.reject(Object.assign(new Error('boom'), { costUsd: 0.05 })) }
+    const ledger = createLedger(10)
+    const out = await judgeArtifact(judge, judgeInput(), { passes: 1, maxAttempts: 2, ledger })
+    expect(out.costUsd).toBeCloseTo(0.1)
+    const unknown = { ...judge, ask: async () => Promise.reject(new Error('boom')) }
+    expect((await judgeArtifact(unknown, judgeInput(), { passes: 1, maxAttempts: 1, ledger: createLedger(10) })).costUsd).toBeCloseTo(0.2)
   })
 })
 
@@ -142,8 +185,31 @@ describe('choosing a judge', () => {
     expect(() => parseJudgeConfig('the builder', undefined)).toThrow(/Unrecognised judge/)
   })
 
-  it('has no live adapter yet, and never falls back to another model', () => {
-    expect(() => createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'high' })).toThrow(/Step 12A.3/)
-    expect(createJudge({ kind: 'scripted', provider: 'scripted', model: 'plumbing', reasoning: null }).identity).toMatchObject({ kind: 'scripted', model: 'plumbing' })
+  it('a live judge must be stronger than the builder, priced, and configured; it never falls back', async () => {
+    vi.stubEnv('GOOGLE_GENERATIVE_AI_API_KEY', 'test-key-not-real')
+    await expect(createJudge({ kind: 'live', provider: 'openai', model: 'gpt-x', reasoning: 'high' })).rejects.toThrow(/No live judge adapter for provider openai/)
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'low' })).rejects.toThrow(/the builder’s own configuration/)
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3-flash-preview', reasoning: 'high' })).rejects.toThrow(/isn't the calibrated judge model/)
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: null })).rejects.toThrow(/thinking level/)
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'max' })).rejects.toThrow(/thinking level max is not one of medium, high/)
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-unpriced-model', reasoning: 'high' })).rejects.toThrow(/has no price/)
+    const judge = await createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'high' })
+    expect(judge.identity).toMatchObject({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'thinkingLevel=high', promptVersion: 'sgq-judge-v2' })
+    expect(judge.identity.config).toMatchObject({ thinkingLevel: 'high', mediaResolution: 'MEDIA_RESOLUTION_HIGH', builderThinking: 'low' })
+    // The worst case is a full prompt and a full reply at the model's rates, never zero.
+    expect(judge.worstCaseCallUsd).toBeCloseTo(computeCostUsd('gemini-3.1-pro-preview', { inputTokens: JUDGE_MAX_INPUT_TOKENS, outputTokens: JUDGE_MAX_OUTPUT_TOKENS }))
+    vi.stubEnv('GOOGLE_GENERATIVE_AI_API_KEY', '')
+    await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'high' })).rejects.toThrow(/GOOGLE_GENERATIVE_AI_API_KEY is not set/)
+    vi.unstubAllEnvs()
+    expect((await createJudge({ kind: 'scripted', provider: 'scripted', model: 'plumbing', reasoning: null })).identity).toMatchObject({ kind: 'scripted', model: 'plumbing' })
+  })
+
+  it('refuses a prompt larger than its input cap before sending it, at no cost', async () => {
+    vi.stubEnv('GOOGLE_GENERATIVE_AI_API_KEY', 'test-key-not-real')
+    const judge = await createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'high' })
+    vi.unstubAllEnvs()
+    const huge = { stage: 'extract' as const, system: 's', prompt: 'x'.repeat(JUDGE_MAX_INPUT_TOKENS * 4), images: [], responseJsonSchema: {} }
+    expect(estimateInputTokens(huge)).toBeGreaterThan(JUDGE_MAX_INPUT_TOKENS)
+    await expect(judge.ask(huge)).rejects.toMatchObject({ costUsd: 0 })
   })
 })

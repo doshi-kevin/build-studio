@@ -2,13 +2,14 @@
  * Artifact folders for the generation-quality eval: a live build saved and read back,
  * and a Step 11 benchmark folder imported with only what it really recorded.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { artifactDirs, loadArtifact, saveLiveArtifact } from '../../eval/studio-quality/artifacts'
 import { harnessInvariants, type BuildOutcome } from '../../eval/studio-quality/build'
 import { QUALITY_CASES } from '../../eval/studio-quality/cases'
+import { artifactHash } from '../../eval/studio-quality/evaluate'
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'sgq-art-'))
 
@@ -28,6 +29,7 @@ const OUTCOME: BuildOutcome = {
   questionsAsked: 0,
   approvalsGiven: 1,
   builderReview: { rounds: 1, rendered: true, verdict: 'ready' },
+  refusals: ['write_sample_data: sample_invalid'],
 }
 
 describe('artifact folders', () => {
@@ -43,6 +45,34 @@ describe('artifact folders', () => {
     expect(a.files).toEqual({ student: 'S', professor: 'P' })
     expect(a.build).toMatchObject({ statuses: ['preview_ready'], snapshotHash: 'h'.repeat(64), toolCalls: 14, tokens: { input: 10 } })
     expect(() => loadArtifact(dir, join(dir, 'out'), [])).toThrow(/not in the canonical suite/)
+  })
+
+  it('a saved build records the hash of what it wrote, so a file from another generation is caught on reload', () => {
+    const dir = tmp()
+    const builder = { model: 'm', thinkingLevel: 'low', maxOutputTokens: 1, instructionsVersion: 'v', instructionsSha256: 'x', reviewVersion: 'r', reviewSha256: 'y', rendererMode: 'local' as const }
+    const saved = saveLiveArtifact({ dir, case: QUALITY_CASES[0], rerun: { groupId: 'g', generation: 1 }, outcome: OUTCOME, git: { commit: 'abc', dirty: false }, builder })
+    const a = loadArtifact(dir, join(dir, 'out'), QUALITY_CASES)
+    expect(a.expectedArtifactSha256).toBe(saved.expectedArtifactSha256)
+    expect(artifactHash(a.manifest, a.files, a.sample)).toBe(a.expectedArtifactSha256)
+    expect(JSON.parse(readFileSync(join(dir, 'artifact.json'), 'utf8')).refusals).toEqual(['write_sample_data: sample_invalid'])
+    // Generation 2's student view copied over generation 1's.
+    writeFileSync(join(dir, 'student.tsx'), 'S from g2')
+    const mixed = loadArtifact(dir, join(dir, 'out'), QUALITY_CASES)
+    expect(artifactHash(mixed.manifest, mixed.files, mixed.sample)).not.toBe(mixed.expectedArtifactSha256)
+    // A saved artifact with no recorded hash can't be checked, so it is refused.
+    const record = JSON.parse(readFileSync(join(dir, 'artifact.json'), 'utf8'))
+    delete record.artifactSha256
+    writeFileSync(join(dir, 'artifact.json'), JSON.stringify(record))
+    expect(() => loadArtifact(dir, join(dir, 'out'), QUALITY_CASES)).toThrow(/artifactSha256/)
+  })
+
+  it('finds artifact folders at any depth, as contrast pairs lay them out', () => {
+    const root = tmp()
+    for (const side of ['original', 'degraded']) {
+      mkdirSync(join(root, 'A-x', side), { recursive: true })
+      writeFileSync(join(root, 'A-x', side, 'result.json'), '{}')
+    }
+    expect(artifactDirs(root)).toEqual([join(root, 'A-x', 'degraded'), join(root, 'A-x', 'original')])
   })
 
   it('a Step 11 benchmark folder imports honestly: unknown stays null, and follow-ups join the prompt', () => {

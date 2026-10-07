@@ -60,6 +60,8 @@ export interface BuildOutcome {
   questionsAsked: number
   approvalsGiven: number
   builderReview: { rounds: number; rendered: boolean; verdict: string | null } | null
+  /** Each refused or failed tool call's reason, in order: why a build failed, never its content. */
+  refusals: string[]
 }
 
 /** The five hard invariants of eval/studio-builder/run.ts, for a build that starts from nothing. */
@@ -187,5 +189,6 @@ export async function buildOnce(prompt: string, options: BuildOptions): Promise<
     questionsAsked,
     approvalsGiven,
     builderReview: review ? { rounds: review.rounds ?? 0, rendered: review.rendered ?? false, verdict: review.verdict ?? null } : null,
+    refusals: mem.state.steps.filter((st) => st.status === 'refused' || st.status === 'error').map((st) => `${st.tool ?? 'step'}: ${String(st.resultSummary.reason ?? st.status)}`),
   }
 }

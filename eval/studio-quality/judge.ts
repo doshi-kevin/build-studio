@@ -19,7 +19,7 @@ import { z } from 'zod'
 import { DIMENSIONS, DIMENSION_KEYS, LEVELS, levelSpread, medianLevel, pointsFor, totalScore, type DimensionKey, type Level } from './rubric'
 import { extractionSchema, type EvidenceSource, type Extraction, type JudgeIdentity } from './schema'
 
-export const JUDGE_PROMPT_VERSION = 'sgq-judge-v1'
+export const JUDGE_PROMPT_VERSION = 'sgq-judge-v2'
 export const DEFAULT_JUDGE_PASSES = 3
 export const DEFAULT_JUDGE_ATTEMPTS = 3
 
@@ -192,14 +192,25 @@ export function judgeSystem(mode: JudgeInput['mode']): string {
   ].join('\n')
 }
 
+/**
+ * Everything every call on one artifact shares, in a fixed order, placed first: a model with
+ * prompt caching reads it once. Pass-specific instructions come after it.
+ */
+export function sharedPrompt(input: JudgeInput, nonce: string): string {
+  return inputBlocks(input, nonce)
+}
+
+const replyShape = (schema: z.ZodType) => `Answer with one JSON object and nothing else. It must match this JSON Schema: ${JSON.stringify(z.toJSONSchema(schema))}`
+
 export function extractPrompt(input: JudgeInput, nonce: string, refusal: string | null): string {
   return [
-    '# Pass A: evidence',
-    'List what you can observe, as items. Each item is one fact about one role: an action the person can take (and what it writes), data shown, a state shown, a layout fact, or something notably absent. Cite where you saw it in `sources`: a screenshot id, a view line such as views/professor.tsx:42 or views/professor.tsx:40-55, manifest, sample, or a stage2 check id. Cite only sources listed below. Then say whether the core action the request needs is present for each role, citing items.',
-    'Give items ids e1, e2, e3 and so on.',
-    refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
+    sharedPrompt(input, nonce),
     '',
-    inputBlocks(input, nonce),
+    '# Pass A: evidence',
+    'List what you can observe, as items. Each item is one fact about one role: an action the person can take (and what it writes), data shown, a state shown, a layout fact, or something notably absent. Cite where you saw it in `sources`: a screenshot id, a view line such as views/professor.tsx:42 or views/professor.tsx:40-55, manifest, sample, or a stage2 check id. Cite only sources listed above. Something you see only in the code is not on screen: say what a screenshot shows only when you see it in that screenshot. Then say whether the core action the request needs is present for each role, citing items.',
+    'Give items ids e1, e2, e3 and so on.',
+    replyShape(extractionSchema),
+    refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
   ]
     .filter((l) => l !== '')
     .join('\n')
@@ -207,12 +218,13 @@ export function extractPrompt(input: JudgeInput, nonce: string, refusal: string 
 
 export function scorePrompt(input: JudgeInput, extraction: Extraction, nonce: string, refusal: string | null): string {
   return [
-    '# Pass B: levels',
-    'Using only these evidence items, give each rubric dimension one level and cite the items that justify it. A dimension with no supporting item can’t be scored above none. Then write one short paragraph each on the professor’s and the student’s experience.',
-    refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
-    fence('evidence-items', JSON.stringify(extraction, null, 1), nonce),
+    sharedPrompt(input, nonce),
     '',
-    inputBlocks(input, nonce),
+    '# Pass B: levels',
+    'Using only the evidence items below, give each rubric dimension one level and cite the items that justify it. A dimension with no supporting item can’t be scored above none. Then write one short paragraph each on the professor’s and the student’s experience.',
+    fence('evidence-items', JSON.stringify(extraction, null, 1), nonce),
+    replyShape(scoreSchema),
+    refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
   ]
     .filter((l) => l !== '')
     .join('\n')
@@ -235,6 +247,48 @@ function inputBlocks(input: JudgeInput, nonce: string): string {
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+// ── Spend ──
+
+/**
+ * A hard cap shared by everything that judges under it, including artifacts judged at the
+ * same time: each call reserves its worst case first and settles to what it really cost
+ * (the worst case again when the cost is unknown).
+ */
+export interface SpendLedger {
+  reserve(usd: number): boolean
+  settle(reserved: number, actual: number): void
+  spent(): number
+}
+
+export function createLedger(capUsd: number): SpendLedger {
+  if (!(capUsd >= 0)) throw new Error('A spend cap must be a number of dollars.')
+  let spent = 0
+  let reserved = 0
+  return {
+    reserve(usd) {
+      if (spent + reserved + usd > capUsd) return false
+      reserved += usd
+      return true
+    },
+    settle(was, actual) {
+      reserved = Math.max(0, reserved - was)
+      spent += actual
+    },
+    spent: () => spent,
+  }
+}
+
+/**
+ * The cap must cover every call that can be in flight at once (each reserves its worst case),
+ * or calls are refused by the cap while real spend is far below it, and runs go missing.
+ */
+export function assertCapCoversConcurrency(cap: number, worstCaseCallUsd: number, artifactsAtOnce: number, passes: number): void {
+  const inFlight = artifactsAtOnce * Math.max(1, passes - 1)
+  if (cap < inFlight * worstCaseCallUsd) {
+    throw new Error(`--max-usd=${cap} can't cover ${inFlight} judge calls in flight at once ($${(inFlight * worstCaseCallUsd).toFixed(2)} reserved). Raise the cap or lower --concurrency.`)
+  }
 }
 
 // ── Running the judge ──
@@ -267,31 +321,35 @@ export interface JudgeOutcome {
   total: number | null
 }
 
+/** A call's cost as the adapter reports it on a reply or on the error it throws. */
+const costOf = (value: unknown): number | null => {
+  const c = (value as { costUsd?: unknown } | null)?.costUsd
+  return typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : null
+}
+
 async function ask<T>(
   judge: JudgeModel,
   build: (refusal: string | null) => JudgeRequest,
   check: (output: unknown) => { ok: true; value: T } | { ok: false; error: string },
   record: (attempt: number, ok: boolean, error: string | null) => void,
-  addCost: (usd: number | null | undefined) => void,
+  charge: (call: () => Promise<JudgeReply>) => Promise<JudgeReply | 'budget'>,
   maxAttempts: number,
-  canAfford: () => boolean,
 ): Promise<T | null | 'budget'> {
   let refusal: string | null = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (!canAfford()) {
-      record(attempt, false, 'judge spend cap reached')
-      return 'budget'
-    }
-    let reply: JudgeReply
+    let reply: JudgeReply | 'budget'
     try {
-      reply = await judge.ask(build(refusal))
+      reply = await charge(() => judge.ask(build(refusal)))
     } catch (error) {
       // SDK errors can echo URLs or headers: keep a short, plain summary only.
       const message = error instanceof Error ? error.message.replace(/https?:\/\/\S+/g, 'a URL') : 'unknown error'
       record(attempt, false, `call failed: ${clamp(message)}`)
       continue
     }
-    addCost(reply.costUsd)
+    if (reply === 'budget') {
+      record(attempt, false, 'judge spend cap reached')
+      return 'budget'
+    }
     const checked = check(reply.output)
     record(attempt, checked.ok, checked.ok ? null : checked.error)
     if (checked.ok) return checked.value
@@ -306,54 +364,68 @@ export async function judgeArtifact(
   options: {
     passes?: number
     maxAttempts?: number
-    /** Dollars the judge may still spend. Checked before every call with `worstCaseCallUsd`
-     * reserved; a call that reports no cost is counted at that worst case. */
-    budgetUsd?: () => number
-    worstCaseCallUsd?: number
+    /** The spend cap this judgement runs under. Without one, nothing is reserved. */
+    ledger?: SpendLedger
   } = {},
 ): Promise<JudgeOutcome> {
   const passesRequested = options.passes ?? DEFAULT_JUDGE_PASSES
   const maxAttempts = options.maxAttempts ?? DEFAULT_JUDGE_ATTEMPTS
   if (!Number.isInteger(passesRequested) || passesRequested < 1) throw new Error('A judgement needs at least one pass.')
   const attempts: JudgeAttempt[] = []
-  const passes: JudgePass[] = []
   let cost: number | null = null
-  const worst = options.worstCaseCallUsd ?? 0
-  const addCost = (usd: number | null | undefined) => {
-    if (typeof usd === 'number') cost = (cost ?? 0) + usd
-    else if (options.budgetUsd) cost = (cost ?? 0) + worst
-  }
-  const canAfford = () => !options.budgetUsd || (cost ?? 0) + worst <= options.budgetUsd()
-  const system = judgeSystem(input.mode)
+  const worst = judge.worstCaseCallUsd
+  const ledger = options.ledger
 
-  for (let pass = 1; pass <= passesRequested; pass++) {
-    // A fresh fence per pass, so no pass can predict another's.
-    const nonce = randomBytes(6).toString('hex')
+  /** Reserve the worst case, call, and settle to the real cost (the worst case when unknown). */
+  const charge = async (call: () => Promise<JudgeReply>): Promise<JudgeReply | 'budget'> => {
+    if (ledger && !ledger.reserve(worst)) return 'budget'
+    let actual: number | null = null
+    try {
+      const reply = await call()
+      actual = costOf(reply)
+      return reply
+    } catch (error) {
+      actual = costOf(error)
+      throw error
+    } finally {
+      const billed = actual ?? (ledger ? worst : null)
+      if (billed !== null) cost = (cost ?? 0) + billed
+      ledger?.settle(worst, billed ?? 0)
+    }
+  }
+  const system = judgeSystem(input.mode)
+  // One fence per artifact: every call shares the same prefix, so it can be cached. Nothing a
+  // pass writes reaches another pass, so a shared nonce gives no run a way into another.
+  const nonce = randomBytes(6).toString('hex')
+
+  const runPass = async (pass: number): Promise<JudgePass | 'budget' | null> => {
     const extraction = await ask(
       judge,
       (refusal) => ({ stage: 'extract', system, prompt: extractPrompt(input, nonce, refusal), images: input.images, responseJsonSchema: z.toJSONSchema(extractionSchema) }),
       (output) => checkExtraction(output, input),
       (attempt, ok, error) => attempts.push({ pass, stage: 'extract', attempt, ok, error }),
-      addCost,
+      charge,
       maxAttempts,
-      canAfford,
     )
-    if (extraction === 'budget') break
-    if (!extraction) continue
+    if (extraction === 'budget' || !extraction) return extraction
     const scores = await ask(
       judge,
       (refusal) => ({ stage: 'score', system, prompt: scorePrompt(input, extraction, nonce, refusal), images: input.images, responseJsonSchema: z.toJSONSchema(scoreSchema) }),
       (output) => checkScores(output, extraction, input),
       (attempt, ok, error) => attempts.push({ pass, stage: 'score', attempt, ok, error }),
-      addCost,
+      charge,
       maxAttempts,
-      canAfford,
     )
-    if (scores === 'budget') break
-    if (!scores) continue
+    if (scores === 'budget' || !scores) return scores
     const levels = Object.fromEntries(DIMENSION_KEYS.map((k) => [k, scores.dimensions[k].level])) as Record<DimensionKey, Level | null>
-    passes.push({ extraction, scores, levels, total: totalScore(levels) })
+    return { extraction, scores, levels, total: totalScore(levels) }
   }
+
+  // The first pass alone, so it fills the cache; the rest together.
+  const first = await runPass(1)
+  const rest = first === 'budget' ? [] : await Promise.all(Array.from({ length: passesRequested - 1 }, (_, i) => runPass(i + 2)))
+  const passes = [first, ...rest].filter((p): p is JudgePass => p !== null && p !== 'budget')
+  attempts.sort((a, b) => a.pass - b.pass || (a.stage === b.stage ? a.attempt - b.attempt : a.stage === 'extract' ? -1 : 1))
 
   if (passes.length === 0) {
     return { attempts, passes, passesRequested, costUsd: cost, dimensions: null, extracted: null, professorAssessment: null, studentAssessment: null, total: null }
@@ -459,8 +531,10 @@ export function parseJudgeConfig(spec: string | undefined, reasoning: string | u
   return { kind: 'live', provider: m[1], model: m[2], reasoning: reasoning ?? null }
 }
 
-/** Live judges are added in Step 12A.3, each behind this same interface. */
-export function createJudge(config: JudgeConfig): JudgeModel {
+/** The live judge for a configuration, or a clear refusal. Never a fallback to another model. */
+export async function createJudge(config: JudgeConfig): Promise<JudgeModel> {
   if (config.kind === 'scripted') return createPlumbingJudge()
-  throw new Error(`No live judge adapter is installed for ${config.provider}:${config.model} yet. Live judges arrive in Step 12A.3.`)
+  if (config.provider !== 'google') throw new Error(`No live judge adapter for provider ${config.provider}. Only google has a non-production key on this project.`)
+  const { createGeminiJudge } = await import('./gemini-judge')
+  return createGeminiJudge({ model: config.model, thinking: config.reasoning })
 }

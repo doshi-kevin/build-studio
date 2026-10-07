@@ -66,6 +66,7 @@ async function result(spec: Spec): Promise<QualityResult> {
     judgeContext: { professorGoal: null, studentGoal: null, hints: [] },
     rerun: { groupId: spec.group ?? 'g', generation: spec.generation ?? 1 },
     dir: mkdtempSync(join(tmpdir(), 'sgq-agg-')),
+    expectedArtifactSha256: null,
     manifest: { bridgeVersion: 'v2', views: { student: { capabilities: [] }, professor: { capabilities: ['course.roster'] } }, collections: Object.fromEntries((spec.access ?? ['staffPerStudent']).map((m, i) => [`c${i}`, { access: m }])) },
     files: { student: STUDENT_SRC, professor: PROFESSOR_SRC },
     sample: null,
@@ -91,13 +92,13 @@ async function result(spec: Spec): Promise<QualityResult> {
   }
   const deps: EvaluateDeps = {
     draftGate: async () => ({ passed: true, failing: [], bundles: { student: 's', professor: 'p' }, compiler: 'c' }),
-    stage2: async () => ({ checks: STAGE2, runner: { name: 'r', version: '1' } }),
-    capture: async () => (spec.codeOnly ? { shots: [], failures: [], missing: ['professor-desktop-normal'] } : { shots: NORMAL_SHOTS, failures: [], missing: [] }),
+    stage2: async () => ({ checks: STAGE2, runner: { name: 'r', version: '1' }, bound: true }),
+    capture: async () => (spec.codeOnly ? { shots: [], failures: [], missing: ['professor-desktop-normal'], bound: true } : { shots: NORMAL_SHOTS, failures: [], missing: [], bound: true }),
     readImage: () => new Uint8Array([1]),
     judge,
     platformCard: 'card',
     judgePasses: levels.length,
-    judgeBudgetUsd: () => Infinity,
+    ledger: null,
     allowCodeOnly: true,
     now: () => new Date('2026-10-07T00:00:00Z'),
   }
