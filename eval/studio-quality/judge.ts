@@ -159,60 +159,62 @@ export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence'
 const isCode = (ref: string) => LINE_REF.test(ref) || ref === 'views/professor.tsx' || ref === 'views/student.tsx'
 
 /** The v4 evidence contract on Pass A: null when every item keeps it. */
+/** Every problem at once, so one retry can fix them all; a few at most, so a refusal stays short. */
+export function joinProblems(problems: readonly string[]): string | null {
+  if (problems.length === 0) return null
+  const shown = problems.slice(0, 8).join('; ')
+  return problems.length > 8 ? `${shown}; and ${problems.length - 8} more like these` : shown
+}
+
 function checkRenderContract(extraction: Extraction, render: JudgeRender): string | null {
   const rendered = new Map(render.items.map((i) => [i.id, i]))
   const forRole = (role: string, ref: string) => {
     const r = rendered.get(ref)
     return !!r && (role === 'both' || r.view === role)
   }
+  const problems: string[] = []
   for (const item of extraction.items) {
     const id = clamp(item.id)
     if (item.kind === 'action') {
       const control = item.sources.some((s) => forRole(item.role, s) && CONTROL_KINDS.has(rendered.get(s)!.kind))
-      if (!control || !item.sources.some(isCode)) return `item ${id} is an action: cite the rendered control (a render id of a ${item.role} button, control, tab, option or link) and the source line that handles it`
+      if (!control || !item.sources.some(isCode)) problems.push(`item ${id} is an action: cite the rendered control (a render id of a ${item.role} button, control, tab, option or link) and the source line that handles it`)
     }
     if ((item.kind === 'data' || item.kind === 'state') && !item.sources.some((s) => forRole(item.role, s))) {
-      return `item ${id} describes what a ${item.role === 'both' ? 'person' : item.role} sees: cite the render id where it appears`
+      problems.push(`item ${id} describes what a ${item.role === 'both' ? 'person' : item.role} sees: cite the render id where it appears`)
     }
-    if (item.kind === 'write' && !item.sources.some(isCode)) return `item ${id} describes a write: cite the source line that does it`
+    if (item.kind === 'write' && !item.sources.some(isCode)) problems.push(`item ${id} describes a write: cite the source line that does it`)
     if (item.kind !== 'absence') {
       const said = quotesIn(item.text)
-      for (const check of render.checks) {
-        if (check.kind !== 'missing-from-render' || (item.role !== 'both' && check.view !== item.role)) continue
-        const absent = check.missing.find((m) => said.includes(normText(m)))
-        if (absent) return `item ${id} quotes something ${check.id} says is not on screen: record it as an absence`
-      }
+      const check = render.checks.find((c) => c.kind === 'missing-from-render' && (item.role === 'both' || c.view === item.role) && c.missing.some((m) => said.includes(normText(m))))
+      if (check) problems.push(`item ${id} quotes something ${check.id} says is not on screen: record it as an absence`)
     }
   }
   const cited = new Set(extraction.items.flatMap((i) => i.sources))
-  const unaddressed = render.checks.find((c) => !cited.has(c.id))
-  if (unaddressed) return `${unaddressed.id} isn’t addressed: add an item that cites it`
-  return null
+  for (const c of render.checks) if (!cited.has(c.id)) problems.push(`${c.id} isn’t addressed: add an item that cites it`)
+  return joinProblems(problems)
 }
 
 export function checkScores(raw: unknown, extraction: Extraction, input: Pick<JudgeInput, 'evidence' | 'mode' | 'render'>): { ok: true; value: ScoreReply } | { ok: false; error: string } {
   const parsed = scoreSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: `not the score shape: ${issuesOf(parsed.error)}` }
   const items = new Map(extraction.items.map((i) => [i.id, i]))
+  // One problem per dimension at most, all of them reported together.
+  const problems: string[] = []
   for (const d of DIMENSIONS) {
     const entry = parsed.data.dimensions[d.key]
-    if (d.visualOnly && input.mode === 'code-only') {
-      if (entry.level !== null) return { ok: false, error: `${d.key} can't be scored without screenshots; give level null` }
-      continue
-    }
-    if (entry.level === null) return { ok: false, error: `${d.key} needs a level` }
-    if (entry.evidence.length === 0) return { ok: false, error: `${d.key} cites no evidence` }
-    const unknown = entry.evidence.find((id) => !items.has(id))
-    if (unknown) return { ok: false, error: `${d.key} cites ${clamp(unknown)}, which isn't an evidence item` }
-    if (d.visualOnly && !entry.evidence.some((id) => items.get(id)!.sources.some((s) => isScreenshot(s, input.evidence)))) {
-      return { ok: false, error: `${d.key} must cite at least one item backed by a screenshot` }
-    }
-    if (input.render) {
-      const contract = checkRenderLevel(d.key, entry.level, entry.evidence, items, input.render, input.evidence)
-      if (contract) return { ok: false, error: contract }
-    }
+    const problem = (() => {
+      if (d.visualOnly && input.mode === 'code-only') return entry.level !== null ? `${d.key} can't be scored without screenshots; give level null` : null
+      if (entry.level === null) return `${d.key} needs a level`
+      if (entry.evidence.length === 0) return `${d.key} cites no evidence`
+      const unknown = entry.evidence.find((id) => !items.has(id))
+      if (unknown) return `${d.key} cites ${clamp(unknown)}, which isn't an evidence item: cite items such as e1`
+      if (d.visualOnly && !entry.evidence.some((id) => items.get(id)!.sources.some((s) => isScreenshot(s, input.evidence)))) return `${d.key} must cite at least one item backed by a screenshot`
+      return input.render ? checkRenderLevel(d.key, entry.level, entry.evidence, items, input.render, input.evidence) : null
+    })()
+    if (problem) problems.push(problem)
   }
-  return { ok: true, value: parsed.data }
+  const error = joinProblems(problems)
+  return error ? { ok: false, error } : { ok: true, value: parsed.data }
 }
 
 type Rendered = JudgeRender['items'][number]

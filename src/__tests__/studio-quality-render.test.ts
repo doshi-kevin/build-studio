@@ -548,6 +548,10 @@ describe('the quote guard and levels of none', () => {
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'The professor\'s roster shows "Points Today".', sources: [table] }), input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e2 quotes .*check:professor:1/) })
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster shows 'Points Today'.", sources: [table] }), input)).toMatchObject({ ok: false })
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'layout', text: 'Shows “Points Today” beside each name.', sources: [table] }), input)).toMatchObject({ ok: false })
+    // Several problems come back in one refusal, so one retry can fix them all.
+    const two = base({ id: 'e2', role: 'professor', kind: 'data', text: 'Totals per student.', sources: ['views/professor.tsx:14'] })
+    two.items.push({ id: 'e3', role: 'professor', kind: 'action', text: 'Award a point.', sources: ['views/professor.tsx:15'] })
+    expect(checkExtraction(two, input)).toMatchObject({ ok: false, error: expect.stringMatching(/^item e2 describes what a professor sees.*; item e3 is an action/) })
     // Possessives alone are not quotes.
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster lists students' names.", sources: [table] }), input)).toMatchObject({ ok: true })
   })
