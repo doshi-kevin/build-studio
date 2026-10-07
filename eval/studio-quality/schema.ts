@@ -225,7 +225,7 @@ export const qualityResultSchema = z.strictObject({
       .strictObject({
         items: count,
         screens: count,
-        checks: z.array(z.strictObject({ id: z.string(), view: z.enum(['professor', 'student']), kind: z.enum(['missing-from-render', 'screen-contradiction']), detail: z.string() })),
+        checks: z.array(z.strictObject({ id: z.string(), view: z.enum(['professor', 'student']), kind: z.enum(['missing-from-render', 'screen-contradiction', 'phone-layout']), detail: z.string() })),
         notSeen: count,
       })
       .nullable()

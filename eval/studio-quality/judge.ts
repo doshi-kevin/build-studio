@@ -27,7 +27,7 @@ import { DIMENSIONS, DIMENSION_KEYS, LEVELS, levelSpread, medianLevel, pointsFor
 import { extractionSchema, type EvidenceSource, type Extraction, type JudgeIdentity } from './schema'
 import type { RenderCheck } from './render'
 
-export const JUDGE_PROMPT_VERSION = 'sgq-judge-v4'
+export const JUDGE_PROMPT_VERSION = 'sgq-judge-v5'
 export const DEFAULT_JUDGE_PASSES = 3
 export const DEFAULT_JUDGE_ATTEMPTS = 3
 
@@ -158,6 +158,9 @@ export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence'
 const isCode = (ref: string) => LINE_REF.test(ref) || ref === 'views/professor.tsx' || ref === 'views/student.tsx'
 
 /** The v4 evidence contract on Pass A: null when every item keeps it. */
+/** Evidence sources that get an anchor item when no item cites them. */
+const ANCHOR_KINDS = new Set<EvidenceSource['kind']>(['screenshot', 'source', 'manifest', 'sample', 'stage2'])
+
 /** Every problem at once, so one retry can fix them all; a few at most, so a refusal stays short. */
 export function joinProblems(problems: readonly string[]): string | null {
   if (problems.length === 0) return null
@@ -208,12 +211,19 @@ function applyRenderContract(extraction: Extraction, render: JudgeRender, eviden
   const added: Extraction['items'] = render.checks
     .filter((c) => !cited.has(c.id))
     .map((c, n) => ({ id: `e9${String(n).padStart(2, '0')}`, role: c.view, kind: 'absence' as const, text: c.detail.slice(0, 400), sources: [c.id] }))
-  // Visual quality is judged on the screenshots and must cite an item backed by one. When the
-  // items cite rendered evidence instead, each normal screenshot gets an item to anchor that.
-  if (!kept.some((i) => i.sources.some((s) => isScreenshot(s, evidence)))) {
-    const shots = evidence.filter((e) => e.kind === 'screenshot' && e.id.endsWith('-normal'))
-    added.push(...shots.map((e, n) => ({ id: `e8${String(n).padStart(2, '0')}`, role: e.id.includes('professor') ? ('professor' as const) : ('student' as const), kind: 'layout' as const, text: `The screen as captured: ${e.id}.`, sources: [e.id] })))
-  }
+  // Every evidence source no item cites gets an anchor item, so a level can rest on that source
+  // through an item: visual quality on a screenshot, responsiveness on Stage 2, understanding on
+  // the manifest. Anchors cite no rendered evidence, so they back nothing that needs it.
+  const anchored = evidence.filter((e) => ANCHOR_KINDS.has(e.kind) && !cited.has(e.id)).slice(0, 100)
+  added.push(
+    ...anchored.map((e, n) => ({
+      id: `e8${String(n).padStart(2, '0')}`,
+      role: e.id.includes('professor') ? ('professor' as const) : e.id.includes('student') ? ('student' as const) : ('both' as const),
+      kind: 'layout' as const,
+      text: `Evidence anchor: ${e.label}`.slice(0, 400),
+      sources: [e.id],
+    })),
+  )
   const keptIds = new Set(kept.map((i) => i.id))
   const value: Extraction = {
     items: [...kept, ...added].slice(0, 120),
@@ -229,8 +239,13 @@ export function checkScores(raw: unknown, extraction: Extraction, input: Pick<Ju
   const parsed = scoreSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: `not the score shape: ${issuesOf(parsed.error)}` }
   const items = new Map(extraction.items.map((i) => [i.id, i]))
-  // One problem per dimension at most, all of them reported together. A citation that isn't an
-  // item is dropped when the dimension still cites a real one; the level rests on items only.
+  // A source cited directly (manifest, a screenshot, a view line) stands for the items that cite
+  // it, such as its anchor; a line stands for its file's.
+  const bySource = new Map<string, string[]>()
+  for (const i of extraction.items) for (const s of i.sources) bySource.set(s, [...(bySource.get(s) ?? []), i.id])
+  const itemsFor = (ref: string) => bySource.get(ref) ?? bySource.get(LINE_REF.exec(ref)?.[1] ?? '') ?? []
+  // One problem per dimension at most, all of them reported together. A citation that is neither
+  // an item nor a source with one is dropped when the dimension still cites a real one.
   const problems: string[] = []
   const repairs: string[] = []
   for (const d of DIMENSIONS) {
@@ -240,10 +255,12 @@ export function checkScores(raw: unknown, extraction: Extraction, input: Pick<Ju
       if (entry.level === null) return `${d.key} needs a level`
       if (entry.evidence.length === 0) return `${d.key} cites no evidence`
       const unknown = entry.evidence.filter((id) => !items.has(id))
-      if (unknown.length === entry.evidence.length) return `${d.key} cites ${clamp(unknown[0])}, which isn't an evidence item: cite items such as e1`
       if (unknown.length) {
-        entry.evidence = entry.evidence.filter((id) => items.has(id))
-        repairs.push(`${d.key}: dropped ${unknown.map(clamp).join(', ')}, not evidence items`)
+        const mapped = unknown.flatMap((ref) => itemsFor(ref).slice(0, 2))
+        const kept = [...new Set([...entry.evidence.filter((id) => items.has(id)), ...mapped])]
+        if (kept.length === 0) return `${d.key} cites ${clamp(unknown[0])}, which isn't an evidence item: cite items such as e1`
+        entry.evidence = kept
+        repairs.push(`${d.key}: ${unknown.map(clamp).join(', ')} ${mapped.length ? `read as ${[...new Set(mapped)].join(', ')}` : 'dropped, not evidence items'}`)
       }
       if (d.visualOnly && !entry.evidence.some((id) => items.get(id)!.sources.some((s) => isScreenshot(s, input.evidence)))) return `${d.key} must cite at least one item backed by a screenshot`
       return input.render ? checkRenderLevel(d.key, entry.level, entry.evidence, items, input.render, input.evidence) : null
@@ -279,15 +296,27 @@ function checkRenderLevel(
   const rendered = new Map(render.items.map((i) => [i.id, i]))
   const sources = cites.flatMap((id) => items.get(id)!.sources)
   const backing = RENDER_BACKING[key]
-  if (backing && !sources.some((s) => rendered.has(s) && backing.ok(rendered.get(s)!))) return `${key} must cite an item backed by ${backing.need}`
+  if (backing && !sources.some((s) => rendered.has(s) && backing.ok(rendered.get(s)!))) {
+    const possible = [...items.values()].some((i) => i.sources.some((s) => rendered.has(s) && backing.ok(rendered.get(s)!)))
+    return `${key} must cite an item backed by ${backing.need}${possible ? '' : '; no item is, so its level can only be none'}`
+  }
   if (key === 'responsiveness_accessibility') {
     const phone = sources.some((s) => rendered.get(s)?.device === 'phone' || (isScreenshot(s, evidence) && s.includes('-phone-')) || s.startsWith('stage2:'))
     if (!phone) return `${key} must cite an item backed by a phone screen, its rendered evidence or Stage 2`
   }
   // Excellent can't stand beside a check it never mentions.
-  const role = key === 'professor_experience' ? 'professor' : key === 'student_experience' ? 'student' : key === 'workflow_completeness' ? 'any' : null
-  if (level === 'excellent' && role) {
-    const open = render.checks.filter((c) => role === 'any' || c.view === role)
+  if (level === 'excellent') {
+    const open = render.checks.filter((c) =>
+      key === 'responsiveness_accessibility'
+        ? c.kind === 'phone-layout'
+        : key === 'workflow_completeness'
+          ? c.kind !== 'phone-layout'
+          : key === 'professor_experience'
+            ? c.view === 'professor'
+            : key === 'student_experience'
+              ? c.view === 'student'
+              : false,
+    )
     if (open.length && !open.some((c) => sources.includes(c.id))) return `${key} is excellent but doesn’t address ${open.map((c) => c.id).join(', ')}`
   }
   return null
@@ -352,7 +381,7 @@ const EVIDENCE_CONTRACT = [
   '- visual_quality: the screenshots only.',
   '- information_design: only information that is rendered.',
   '- edge_states: the empty, loading and failing screens, with the source only to explain what they show.',
-  '- responsiveness_accessibility: Stage 2, the phone screens and their rendered evidence (clipped, scrolled-out or cut-off text).',
+  '- responsiveness_accessibility: Stage 2, the phone screens and their rendered evidence. A phone-layout check (fields squeezed narrow, button labels wrapping, text cut off) is measured on the page: weigh it as you would the same thing seen in a screenshot.',
 ].join('\n')
 
 /**
@@ -389,7 +418,7 @@ export function scorePrompt(input: JudgeInput, extraction: Extraction, nonce: st
     '# Pass B: levels',
     'Using only the evidence items below, give each rubric dimension one level and cite the items that justify it. A dimension with no supporting item can’t be scored above none. Then write one short paragraph each on the professor’s and the student’s experience.',
     input.render
-      ? 'Follow the evidence contract. Every dimension about what a person experiences rests on items backed by rendered evidence. Workflow completeness or a role’s experience can be excellent only if it cites the items that address that role’s checks.'
+      ? 'Follow the evidence contract. Every dimension about what a person experiences rests on items backed by rendered evidence. Workflow completeness or a role’s experience can be excellent only if it cites the items that address that role’s checks, and responsiveness only if it cites those that address the phone-layout checks. Items numbered from e800 are anchors for the screenshots, the source, the manifest, the sample and Stage 2: cite them when a level rests on one of those.'
       : '',
     fence('evidence-items', JSON.stringify(extraction, null, 1), nonce),
     replyShape(scoreSchema),

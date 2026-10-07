@@ -327,7 +327,7 @@ async function capture() {
           stateShown,
         })
         // What is actually on screen, read after the screenshot so reading can't change the image.
-        renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, tab: null, ...(await readOrFail(s)) })
+        renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, width, tab: null, ...(await readOrFail(s)) })
         if (shot.scenario === 'normal' && shot.device === 'desktop' && frame) {
           // A tab's content exists only once it is chosen: open each one, so nothing behind a
           // tab is mistaken for missing. Desktop only, after the screenshot.
@@ -342,9 +342,9 @@ async function capture() {
               await tab.click({ timeout: 2_000 })
               await waitFor(async () => !(await hasState('loading')()), 3_000)
               await s.page.waitForTimeout(400)
-              renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, tab: label, ...(await readOrFail(s)) })
+              renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, width, tab: label, ...(await readOrFail(s)) })
             } catch {
-              renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, tab: label, items: [], truncated: 0, failed: true })
+              renders.push({ shot: id, view: shot.view, device: shot.device, scenario: shot.scenario, width, tab: label, items: [], truncated: 0, failed: true })
             }
           }
         }

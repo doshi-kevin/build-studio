@@ -194,7 +194,7 @@ describe('choosing a judge', () => {
     await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'max' })).rejects.toThrow(/thinking level max is not one of medium, high/)
     await expect(createJudge({ kind: 'live', provider: 'google', model: 'gemini-unpriced-model', reasoning: 'high' })).rejects.toThrow(/has no price/)
     const judge = await createJudge({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'high' })
-    expect(judge.identity).toMatchObject({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'thinkingLevel=high', promptVersion: 'sgq-judge-v4' })
+    expect(judge.identity).toMatchObject({ kind: 'live', provider: 'google', model: 'gemini-3.1-pro-preview', reasoning: 'thinkingLevel=high', promptVersion: 'sgq-judge-v5' })
     expect(judge.identity.config).toMatchObject({ thinkingLevel: 'high', mediaResolution: 'MEDIA_RESOLUTION_HIGH', builderThinking: 'low' })
     // The worst case is a full prompt and a full reply at the model's rates, never zero.
     expect(judge.worstCaseCallUsd).toBeCloseTo(computeCostUsd('gemini-3.1-pro-preview', { inputTokens: JUDGE_MAX_INPUT_TOKENS, outputTokens: JUDGE_MAX_OUTPUT_TOKENS }))

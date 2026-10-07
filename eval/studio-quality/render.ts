@@ -56,6 +56,8 @@ const renderShotSchema = z.strictObject({
   view: z.enum(['professor', 'student']),
   device: z.enum(['desktop', 'phone']),
   scenario: z.enum(['normal', 'empty', 'slow', 'failing']),
+  /** The viewport width the screen was read at. */
+  width: z.number().int().min(1).max(10_000).optional(),
   /** The tab opened to read this, or null for the screen as first shown. */
   tab: str(200).nullable(),
   items: z.array(renderItemSchema).max(500),
@@ -338,7 +340,7 @@ const seenAt = (kind: ClaimKind, text: string, items: readonly IndexedItem[]) =>
 export interface RenderCheck {
   id: string
   view: 'professor' | 'student'
-  kind: 'missing-from-render' | 'screen-contradiction'
+  kind: 'missing-from-render' | 'screen-contradiction' | 'phone-layout'
   /** What the judge reads. */
   detail: string
   /** The claim texts that never rendered (missing-from-render), for the citation guard. */
@@ -361,6 +363,15 @@ export interface CrossCheck {
   checks: RenderCheck[]
   notSeen: NotSeen[]
 }
+
+// A phone screen counts as cramped by what can be measured: an entry field narrower than this
+// share of the screen, a button taller than the same button on desktop (its label wrapped),
+// or an element cut off or pushed off screen. A table that scrolls sideways in its own box is
+// the kit's phone layout, not a fault.
+const NARROW_SHARE = 0.4
+const WRAP_EXTRA_PX = 8
+const PHONE_WIDTH = 390
+const ENTRY_CONTROLS = new Set(['text', 'textarea', 'select', 'email', 'number', 'date', 'search', 'tel', 'url', 'password'])
 
 // An action whose purpose needs the thing the screen says isn't there.
 const UNAVAILABLE = /\b(no (options|choices|answers|data|items|questions|records|entries|results|slots|stages|steps)( (available|yet|found|left))?|nothing (to show|here|available)|not available|unavailable)\b/i
@@ -424,6 +435,41 @@ export function crossCheck(ledger: RenderLedger, files: { professor: string; stu
           detail: `On ${shot}, ${quoted(msg.item.text)} is shown in the same container as an enabled ${quoted(action.item.text)} button.`,
           missing: [],
           renderIds: [msg.id, action.id],
+          lines: [],
+        })
+      }
+    }
+
+    // Phone screens where controls are squeezed, button labels wrap or something is cut off.
+    for (const shot of new Set(items.filter((x) => x.device === 'phone').map((x) => x.key))) {
+      const onShot = items.filter((x) => x.key === shot)
+      const width = ledger.shots.find((s) => shotKey(s) === shot)?.width ?? PHONE_WIDTH
+      const desktop = items.filter((x) => x.device === 'desktop' && x.scenario === onShot[0].scenario && x.tab === null)
+      const facts: string[] = []
+      const ids: string[] = []
+      const note = (id: string, fact: string) => {
+        facts.push(fact)
+        ids.push(id)
+      }
+      for (const x of onShot) {
+        const i = x.item
+        if (i.kind === 'control' && ENTRY_CONTROLS.has(i.control ?? '') && i.rect.w / width < NARROW_SHARE) {
+          note(x.id, `the ${i.control} ${quoted(i.label || i.text || 'field')} is ${i.rect.w} px wide (${Math.round((i.rect.w / width) * 100)}% of the ${width} px screen)`)
+        }
+        if (i.kind === 'button') {
+          const twin = desktop.find((d) => d.item.kind === 'button' && norm(d.item.text) === norm(i.text))
+          if (twin && i.rect.h >= twin.item.rect.h + WRAP_EXTRA_PX) note(x.id, `the button ${quoted(i.text)} wraps (${i.rect.h} px tall, ${twin.item.rect.h} px on desktop)`)
+        }
+        if (i.visibility === 'clipped' || i.visibility === 'offscreen' || i.textCut) note(x.id, `${i.kind} ${quoted((i.text || i.label || '').slice(0, 60))} is ${i.textCut ? 'cut off' : i.visibility === 'clipped' ? 'partly off screen' : 'off screen'}`)
+      }
+      if (facts.length) {
+        checks.push({
+          id: counter(),
+          view,
+          kind: 'phone-layout',
+          detail: `On ${shot}, ${facts.slice(0, 6).join('; ')}${facts.length > 6 ? `; and ${facts.length - 6} more` : ''}.`,
+          missing: [],
+          renderIds: ids.slice(0, 6),
           lines: [],
         })
       }

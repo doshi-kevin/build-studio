@@ -14,9 +14,10 @@ export const QUALITY_FROZEN = {
   rubricSha256: '4ea17162ae25725d5faaac6aa3d92c922e3946d7caf8f4ff0795c3247f13b0db',
   // v4 (12A.3): the judge reads what each screen actually renders, and the source can no
   // longer prove something is on screen. v2 credited a "+1 Point" button no screen showed;
-  // a prompt-only fix (v3, never frozen) didn't change that.
-  judgePromptVersion: 'sgq-judge-v4',
-  judgePromptSha256: 'e7b61d1f673492727f83a22363595737a2d52a61d764a3b0bf58bc7eb4e89d2a',
+  // a prompt-only fix (v3, never frozen) didn't change that. v5: every evidence source has an
+  // anchor item a level can cite, and phone screens get a measured cramped-layout check.
+  judgePromptVersion: 'sgq-judge-v5',
+  judgePromptSha256: 'dd05017b577cfb5804858a1f43ae1a04df74abea4bce75d778a985d1d7152d13',
 } as const
 
 const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')

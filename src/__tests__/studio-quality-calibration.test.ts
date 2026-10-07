@@ -398,9 +398,9 @@ describe('the rubric and judge prompt freeze', () => {
       )
       expect(rubric).toContain('rubric version studio-generation-quality-v2, frozen studio-generation-quality-v1')
       const prompt = await driftWith(() =>
-        vi.doMock(JUDGE, async (importOriginal) => ({ ...(await importOriginal<typeof import('../../eval/studio-quality/judge')>()), JUDGE_PROMPT_VERSION: 'sgq-judge-v5' })),
+        vi.doMock(JUDGE, async (importOriginal) => ({ ...(await importOriginal<typeof import('../../eval/studio-quality/judge')>()), JUDGE_PROMPT_VERSION: 'sgq-judge-v6' })),
       )
-      expect(prompt).toEqual(['judge prompt version sgq-judge-v5, frozen sgq-judge-v4'])
+      expect(prompt).toEqual(['judge prompt version sgq-judge-v6, frozen sgq-judge-v5'])
     })
   })
 })

@@ -184,8 +184,9 @@ describe('B2: a RosterTable whose columns never render', () => {
     expect(checkScores(scoreReply(), x, input)).toMatchObject({ ok: true })
     // A source cited directly instead of an item is dropped and recorded; the level rests on the real item.
     const direct = checkScores(scoreReply({ problem_understanding: { level: 'acceptable', evidence: ['e1', 'manifest'] } }), x, input)
-    expect(direct).toMatchObject({ ok: true, repairs: ['problem_understanding: dropped manifest, not evidence items'] })
-    if (direct.ok) expect(direct.value.dimensions.problem_understanding.evidence).toEqual(['e1'])
+    // A source cited directly is read as the item that anchors it.
+    expect(direct).toMatchObject({ ok: true, repairs: [expect.stringMatching(/^problem_understanding: manifest read as e8\d\d$/)] })
+    if (direct.ok) expect(direct.value.dimensions.problem_understanding.evidence).toEqual(['e1', expect.stringMatching(/^e8\d\d$/)])
     // Credit for the roster that ignores the check.
     expect(checkScores(scoreReply({ professor_experience: { level: 'excellent', evidence: ['e2', 'e4'] } }), x, input)).toMatchObject({
       ok: false,
@@ -568,7 +569,7 @@ describe('the quote guard and levels of none', () => {
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster lists students' names.", sources: [table] }), input)).toMatchObject({ ok: true })
   })
 
-  it('items that cite only rendered evidence get a screenshot anchor each, so visual quality can still rest on the screenshots', () => {
+  it('every evidence source no item cites gets an anchor item, which backs nothing that needs rendered evidence', () => {
     const input = inputFor(B2_LEDGER, files)
     const table = input.render!.items.find((i) => i.id.includes(':table:'))!.id
     const r = checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'Names in a roster.', sources: [table] }), input)
@@ -578,11 +579,34 @@ describe('the quote guard and levels of none', () => {
       ['professor', 'layout', 'shot:professor-phone-normal'],
       ['student', 'layout', 'shot:student-desktop-normal'],
       ['student', 'layout', 'shot:student-phone-normal'],
+      ['professor', 'layout', 'views/professor.tsx'],
+      ['student', 'layout', 'views/student.tsx'],
+      ['both', 'layout', 'manifest'],
     ])
-    // Not when an item already cites a screenshot.
+    expect(r.value.items.filter((i) => /^e8\d\d$/.test(i.id)).every((i) => !i.sources.some((s) => s.startsWith('render:')))).toBe(true)
+    // A source an item already cites gets no anchor.
     const cites = base({ id: 'e2', role: 'both', kind: 'layout', text: 'Cards.', sources: ['shot:professor-desktop-normal'] })
     const kept = checkExtraction(cites, input)
-    expect(kept.ok && kept.value.items.some((i) => /^e8\d\d$/.test(i.id))).toBe(false)
+    expect(kept.ok && kept.value.items.filter((i) => /^e8\d\d$/.test(i.id)).map((i) => i.sources[0])).not.toContain('shot:professor-desktop-normal')
+  })
+
+  it('a sparse reply that cites raw sources in scoring is read through their anchors, and still can’t credit what never rendered', () => {
+    const input = inputFor(B2_LEDGER, files)
+    const table = input.render!.items.find((i) => i.id.includes(':table:'))!.id
+    // B2's v4 failure: a few items, then levels citing manifest, a screenshot and Stage 2 directly.
+    const extracted = checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'Names in a roster.', sources: [table] }), input)
+    if (!extracted.ok) throw new Error(extracted.error)
+    const scores = (overrides: Partial<Record<DimensionKey, { level: Level; evidence: string[] }>>) => ({
+      dimensions: Object.fromEntries(DIMENSION_KEYS.map((k) => [k, { level: 'none' as Level, evidence: ['manifest'], reasoning: 'r', ...overrides[k] }])),
+      professorAssessment: 'p',
+      studentAssessment: 's',
+    })
+    const ok = checkScores(scores({ visual_quality: { level: 'acceptable', evidence: ['shot:professor-desktop-normal'] }, problem_understanding: { level: 'weak', evidence: ['manifest', 'e1'] } }), extracted.value, input)
+    expect(ok).toMatchObject({ ok: true })
+    if (ok.ok) expect(ok.repairs).toEqual(expect.arrayContaining([expect.stringMatching(/^visual_quality: shot:professor-desktop-normal read as e8\d\d$/)]))
+    // Professor experience resting on the manifest's anchor is still refused: an anchor is not rendered evidence.
+    const credit = checkScores(scores({ visual_quality: { level: 'acceptable', evidence: ['shot:professor-desktop-normal'] }, professor_experience: { level: 'acceptable', evidence: ['manifest'] } }), extracted.value, input)
+    expect(credit).toMatchObject({ ok: false, error: expect.stringMatching(/professor_experience must cite an item backed by the professor’s rendered evidence/) })
   })
 
   it('a level of none needs no rendered backing, and the plumbing judge keeps the contract on a screen with no control at all', async () => {
@@ -595,5 +619,68 @@ describe('the quote guard and levels of none', () => {
     expect(outcome.dimensions!.workflow_completeness.level).toBe('none')
     expect(outcome.dimensions!.edge_states.level).toBe('none')
     expect(outcome.dimensions!.professor_experience.level).toBe('acceptable')
+  })
+})
+
+describe('C: a phone layout that squeezes the form', () => {
+  const student = `export default function Student() {
+  return <Screen title="Feedback"><Card><Select label="Topic" value={t} options={[]} onChange={setT} /><TextField label="Your Feedback" multiline value={v} onChange={setV} /><Button onPress={send}>Submit Feedback</Button></Card></Screen>
+}`
+  const professor = 'export default function Professor() { return <Screen title="Feedback log" /> }'
+  const form = (phone: { select: number; text: number; button: [number, number] }) => [
+    renderItem('heading', 'Feedback', { level: 1 }),
+    renderItem('control', 'Topic', { control: 'select', label: 'Topic', rect: { x: 33, y: 100, w: phone.select, h: 44 } }),
+    renderItem('control', 'Your Feedback', { control: 'textarea', label: 'Your Feedback', rect: { x: 33, y: 160, w: phone.text, h: 96 } }),
+    renderItem('button', 'Submit Feedback', { rect: { x: 33, y: 270, w: phone.button[0], h: phone.button[1] } }),
+  ]
+  // Measured on the real artifacts: the original stacks the form; the degraded one forces it into a row.
+  const ledger = (phone: { select: number; text: number; button: [number, number] }): RenderLedger => ({
+    format: RENDER_FORMAT,
+    shots: [
+      renderShot('professor-desktop-normal', [renderItem('heading', 'Feedback log', { level: 1 })]),
+      { ...renderShot('student-desktop-normal', form({ select: 600, text: 600, button: [160, 44] })), width: 1280 },
+      { ...renderShot('student-phone-normal', form(phone)), width: 390 },
+    ],
+  })
+  const original = ledger({ select: 324, text: 324, button: [324, 44] })
+  const degraded = ledger({ select: 101, text: 108, button: [82, 55] })
+
+  it('the squeezed phone form is a check with its measurements; the stacked one is not', () => {
+    expect(crossCheck(original, { professor, student }).checks).toEqual([])
+    const checks = crossCheck(degraded, { professor, student }).checks
+    expect(checks).toHaveLength(1)
+    expect(checks[0]).toMatchObject({ id: 'check:student:1', kind: 'phone-layout', view: 'student' })
+    expect(checks[0].detail).toBe(
+      'On student-phone-normal, the select “Topic” is 101 px wide (26% of the 390 px screen); the textarea “Your Feedback” is 108 px wide (28% of the 390 px screen); the button “Submit Feedback” wraps (55 px tall, 44 px on desktop).',
+    )
+  })
+
+  it('responsiveness can’t be excellent without addressing it', () => {
+    const input = inputFor(degraded, { professor, student })
+    const r = (needle: string) => input.render!.items.find((i) => i.id.includes(needle))!.id
+    const checked = checkExtraction(
+      {
+        items: [
+          { id: 'e1', role: 'student', kind: 'action', text: 'Submit feedback.', sources: [r('student-desktop-normal:button'), 'views/student.tsx:2'] },
+          { id: 'e2', role: 'student', kind: 'layout', text: 'On the phone the form sits in one row.', sources: [r('student-phone-normal:button'), 'check:student:1'] },
+        ],
+        core: { professor: { present: false, evidence: [] }, student: { present: true, evidence: ['e1'] } },
+      },
+      input,
+    )
+    if (!checked.ok) throw new Error(checked.error)
+    const phoneAnchor = checked.value.items.find((i) => i.sources[0] === 'shot:student-phone-normal')!.id
+    const reply = (evidence: string[]) => ({
+      dimensions: Object.fromEntries(
+        DIMENSION_KEYS.map((k) => [
+          k,
+          k === 'responsiveness_accessibility' ? { level: 'excellent', evidence, reasoning: 'r' } : { level: 'none', evidence: k === 'visual_quality' ? [phoneAnchor] : ['e1'], reasoning: 'r' },
+        ]),
+      ),
+      professorAssessment: 'p',
+      studentAssessment: 's',
+    })
+    expect(checkScores(reply([phoneAnchor]), checked.value, input)).toMatchObject({ ok: false, error: expect.stringMatching(/responsiveness_accessibility is excellent but doesn’t address check:student:1/) })
+    expect(checkScores(reply([phoneAnchor, 'e2']), checked.value, input)).toMatchObject({ ok: true })
   })
 })
