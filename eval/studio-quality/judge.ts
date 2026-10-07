@@ -151,7 +151,7 @@ export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence'
     const bad = parsed.data.core[role].evidence.find((id) => !ids.has(id))
     if (bad) return { ok: false, error: `core.${role} cites ${clamp(bad)}, which isn't an item` }
   }
-  if (input.render) return applyRenderContract(parsed.data, input.render)
+  if (input.render) return applyRenderContract(parsed.data, input.render, input.evidence)
   return { ok: true, value: parsed.data }
 }
 
@@ -193,7 +193,7 @@ function contractProblem(item: Extraction['items'][number], render: JudgeRender,
  * ones. The reply is refused only when a role is left with nothing it said. Each check
  * gets an absence item of its own, so it is always on the list a level must cite.
  */
-function applyRenderContract(extraction: Extraction, render: JudgeRender): Checked<Extraction> {
+function applyRenderContract(extraction: Extraction, render: JudgeRender, evidence: readonly EvidenceSource[]): Checked<Extraction> {
   const rendered = new Map(render.items.map((i) => [i.id, i]))
   const problems: string[] = []
   const kept = extraction.items.filter((item) => {
@@ -205,9 +205,15 @@ function applyRenderContract(extraction: Extraction, render: JudgeRender): Check
   const emptied = (['professor', 'student'] as const).some((role) => extraction.items.some((i) => i.role === role) && !kept.some((i) => i.role === role || i.role === 'both'))
   if (kept.length === 0 || emptied) return { ok: false, error: joinProblems(problems)! }
   const cited = new Set(kept.flatMap((i) => i.sources))
-  const added = render.checks
+  const added: Extraction['items'] = render.checks
     .filter((c) => !cited.has(c.id))
     .map((c, n) => ({ id: `e9${String(n).padStart(2, '0')}`, role: c.view, kind: 'absence' as const, text: c.detail.slice(0, 400), sources: [c.id] }))
+  // Visual quality is judged on the screenshots and must cite an item backed by one. When the
+  // items cite rendered evidence instead, each normal screenshot gets an item to anchor that.
+  if (!kept.some((i) => i.sources.some((s) => isScreenshot(s, evidence)))) {
+    const shots = evidence.filter((e) => e.kind === 'screenshot' && e.id.endsWith('-normal'))
+    added.push(...shots.map((e, n) => ({ id: `e8${String(n).padStart(2, '0')}`, role: e.id.includes('professor') ? ('professor' as const) : ('student' as const), kind: 'layout' as const, text: `The screen as captured: ${e.id}.`, sources: [e.id] })))
+  }
   const keptIds = new Set(kept.map((i) => i.id))
   const value: Extraction = {
     items: [...kept, ...added].slice(0, 120),

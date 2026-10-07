@@ -568,6 +568,23 @@ describe('the quote guard and levels of none', () => {
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster lists students' names.", sources: [table] }), input)).toMatchObject({ ok: true })
   })
 
+  it('items that cite only rendered evidence get a screenshot anchor each, so visual quality can still rest on the screenshots', () => {
+    const input = inputFor(B2_LEDGER, files)
+    const table = input.render!.items.find((i) => i.id.includes(':table:'))!.id
+    const r = checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'Names in a roster.', sources: [table] }), input)
+    if (!r.ok) throw new Error(r.error)
+    expect(r.value.items.filter((i) => /^e8\d\d$/.test(i.id)).map((i) => [i.role, i.kind, i.sources[0]])).toEqual([
+      ['professor', 'layout', 'shot:professor-desktop-normal'],
+      ['professor', 'layout', 'shot:professor-phone-normal'],
+      ['student', 'layout', 'shot:student-desktop-normal'],
+      ['student', 'layout', 'shot:student-phone-normal'],
+    ])
+    // Not when an item already cites a screenshot.
+    const cites = base({ id: 'e2', role: 'both', kind: 'layout', text: 'Cards.', sources: ['shot:professor-desktop-normal'] })
+    const kept = checkExtraction(cites, input)
+    expect(kept.ok && kept.value.items.some((i) => /^e8\d\d$/.test(i.id))).toBe(false)
+  })
+
   it('a level of none needs no rendered backing, and the plumbing judge keeps the contract on a screen with no control at all', async () => {
     const readOnly: RenderLedger = {
       format: RENDER_FORMAT,
