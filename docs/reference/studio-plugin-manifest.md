@@ -79,7 +79,7 @@ A plugin's manifest is the file `plugin.manifest.json` at the root of its source
 | `id` | Lowercase words joined by hyphens, up to 40 characters. | A readable name for the project that stays the same across versions. It isn't a database key. The platform gives each project its own ID, so two professors can both have an `exit-ticket`. |
 | `name`, `description` | 1 to 80 and 1 to 300 characters. | Shown on the plugin card and the course tab. |
 | `version` | `MAJOR.MINOR.PATCH`, like `1.2.0`. No `v` prefix, no leading zeros, no `-beta`. | See [Versions](#versions). |
-| `bridgeVersion` | One the platform serves. Today only `v1`. | This is the Scholera SDK compatibility field. It names the bridge protocol and plugin kit the code was built against. The platform keeps every served version working (rule 8.7). |
+| `bridgeVersion` | One the platform serves: `v1` or `v2`. New drafts are `v2`. | This is the Scholera SDK compatibility field. It names the bridge protocol and plugin kit the code was built against. The platform keeps every served version working (rule 8.7). |
 | `views.student`, `views.professor` | Both required. No other view is accepted. | Every plugin has a student view and a professor view. TAs and graders see the professor view, and the bridge limits what their role can write. A plugin can't invent a role (rule 9.4). |
 | `views.*.entry` | A relative `.tsx` path inside the plugin's source, lowercase, like `views/student.tsx`. | The file the build compiles for that view. The pattern rules out `..`, absolute paths, backslashes and URLs, so an entry can't point outside the plugin. |
 | `views.*.capabilities` | Names from the capability list, allowed for that view. | See [Capabilities](#capabilities). |
@@ -93,13 +93,15 @@ Capabilities are declared per view, not once for the whole plugin. That's what l
 
 | Capability | What the professor reads | Student view | Professor view |
 |---|---|---|---|
-| `context.get` | See this course's name and your role in it | yes | yes |
+| `context.get` | See this course's name and whether the person using it is a student or staff | yes | yes |
 | `course.skills` | Read this course's skill list | yes | yes |
 | `course.weakSpots` | See which skills the class is struggling with | **no** (rule 4.1) | yes |
 | `course.roster` | See which students are in this course. Names are shown by Scholera and never given to the tool | **no** (rule 4.1) | yes |
 | `course.assignments` | Read this course's published assignments and due dates | yes | yes |
 | `ui.resize` | Fit itself to the page | yes | yes |
 | `ui.toast` | Show short notifications | yes | yes |
+
+`course.weakSpots` is registered, so a manifest that declares it parses, but no Bridge method exists for it yet. The builder refuses it (`capability_unavailable`), and a call to it is answered `unsupported`.
 
 Data reads and writes are not capabilities. Declaring a collection is what grants access to it, on the terms of its `access` rule. That avoids asking the professor to approve the same thing twice.
 

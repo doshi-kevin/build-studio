@@ -1,21 +1,31 @@
 # e2e/
 
 End-to-end testing. Three different kinds live here, because they answer different questions.
+Studio's two browser suites are Playwright specs too, each with its own config.
 
 | Folder | What it is | Runs in CI |
 |---|---|---|
 | [`tests/`](./tests/) | Playwright specs. Assert on things you can express in code. | No, run by hand |
 | [`visual/`](./visual/) | Browser walkthroughs Claude drives, one markdown file per feature. Check what a person actually sees. | No |
 | [`load/`](./load/) | k6 load test for Live Classroom, 100 concurrent students. | No |
+| [`studio-runtime/`](./studio-runtime/) | Playwright probe of the Studio plugin sandbox in Chromium, Firefox and WebKit, on runtimes `v1` and `v2`: what a plugin frame can and can't reach. It serves its own pages (`harness.mjs`), so it needs no database or app server. `npm run e2e:studio-runtime` | No |
+| [`studio-validator/`](./studio-validator/) | The Studio validator's Stage 2 runner, driven through its CLI on a known-good plugin and on broken ones. No database or app server. `npm run e2e:studio-validator` | No |
 
 Unit tests are not here. They are Vitest, in `src/__tests__/`, and they are the ones CI runs on
 every push.
 
 Supporting files:
 
-- `playwright.config.ts` is the shared config. Tests come from `./tests`, the base URL is
-  `E2E_BASE_URL` or `http://localhost:3000`, and it starts a dev server itself if one is not
-  already up.
+- `playwright.config.ts` is the shared config. Tests come from `./tests` and the base URL is
+  `E2E_BASE_URL` or `http://localhost:3000`. It refuses to run unless `.env.test` exists with a
+  loopback Supabase URL, and it starts its own server with `serve-guarded.mjs`, never reusing one
+  it didn't start.
+- `serve-guarded.mjs` builds and serves a production build with no production configuration in
+  reach: it copies the tree without any `.env*` file, builds with loopback `NEXT_PUBLIC_*` values
+  only, refuses to start if the build mentions the production project ref or a hosted Supabase
+  host, and gives the server only the
+  variables `serve-guard.mjs` allows, read from `E2E_<NAME>`. The Studio walkthroughs in
+  `visual/` run against it too.
 - `global-setup.ts` seeds the database before the suite runs.
 - `helpers/` holds login, database, invite, and test-id helpers. Use these rather than writing a
   fresh login flow in each spec.

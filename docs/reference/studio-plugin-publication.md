@@ -4,7 +4,7 @@ How a professor shows an installed plugin to a section's students, and everythin
 
 | | |
 |---|---|
-| **Status** | Built locally (Steps 5B and 5C). **Student access is off in production** behind `STUDIO_STUDENT_ACCESS` until every item in [Release gate](#release-gate) passes. Showing a plugin needs a passed verdict from the pre-publish validator (Step 6). Its browser stage has no production runner, so in production nothing can pass yet |
+| **Status** | Built locally (Steps 5B and 5C). **Student access is off in production** behind `STUDIO_STUDENT_ACCESS` until every item in [Release gate](#release-gate) passes. Showing a plugin needs a passed verdict from the pre-publish validator (Step 6). Its browser stage's production runner is written but not deployed, so in production nothing can pass yet |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-10-01 |
 | **Code** | `src/lib/studio/` (`access.ts`, `publication.ts`, `prepublish.ts`, `student-visibility.ts`, `plugin-card.ts`, `navigation.ts`, `bridge/status.ts`); migrations `20261001181829_studio_publication.sql` and `20261001192059_studio_student_quota.sql`; the student route `src/app/(dashboard)/student/courses/[sectionId]/tools/[installationId]/page.tsx`; the professor's actions next to `studio/[installationId]/page.tsx`; `src/components/studio/publication/`; the kill switch on `/super-admin/ai-controls` |
@@ -123,7 +123,7 @@ Both are folded into `studioAccess(institutionId)`: `full`, `read_only` or `off`
 | Open frames | Stop at their next call or heartbeat | Become read-only at their next heartbeat |
 | Course tabs | Students: none. Professors: unchanged | Unchanged |
 
-So "plugins stop taking new work but historical results remain readable" means: frames load, `records.list`, `records.get`, `context.get` and `course.skills` answer, and `records.create`, `records.update` and `records.delete` are refused for everyone, professors included.
+So "plugins stop taking new work but historical results remain readable" means: frames load, the read methods (`records.list`, `records.get`, `context.get`, `course.skills`, `course.roster` and `course.assignments`) answer, and the write methods (`records.create`, `records.update`, `records.delete` and `records.batch`) are refused for everyone, professors included.
 
 ## Who may write
 
@@ -185,7 +185,8 @@ The limits are named settings in one database row, `studio_plugin_limits` (serve
 **Who counts against what.**
 
 - Every record counts toward its installation.
-- A record with an owner, a `perStudent` record (one student's own work), also counts toward that student. Students only ever write their own `perStudent` records, so the owner is the author.
+- A record a student wrote themselves, a `perStudent` record (owner and author are the same student, `owner_id = author_id`), also counts toward that student.
+- A `staffPerStudent` record has a student as its owner but staff as its author, so it counts toward the installation only. A professor marking attendance can't fill a student's allowance.
 - A record with no owner (`shared` or `staffOnly`, written by staff) counts toward the installation only. Staff content is the course itself.
 
 **Why these values.** At 1 MiB, one student's whole allowance is 2% of the installation's bytes, so filling a class's storage takes 50 students each at their limit instead of one. 1,000 records covers several saves a day for a whole term. A student at the Bridge's write limit reaches their own cap in a couple of minutes and is stopped there, without touching classmates. The cost: a heavy legitimate user can hit their cap. If that happens, raise `student_max_*` in the row.
@@ -200,7 +201,7 @@ The limits are named settings in one database row, `studio_plugin_limits` (serve
 - A student's first record creates their counter row; a concurrent first write by the same student waits on the key and then finds it.
 - If the limits row is missing, the trigger refuses every write rather than allowing everything.
 
-**Why counters, not a count query or server memory.** Counting before inserting lets two concurrent requests both see 49,999 and both succeed. Server memory is per Cloud Run instance. The row lock on the counter makes writers to one installation queue for the length of one insert, so exactly one of two racing writers gets the last slot. The cost: writes to the same installation are serialized for the length of a single insert. At the Bridge's own limit (30 writes per user per minute), a 300-student section peaks at 150 writes a second on one row, which Postgres handles. Different installations never contend.
+**Why counters, not a count query or server memory.** Counting before inserting lets two concurrent requests both see 49,999 and both succeed. Server memory is per Cloud Run instance. The row lock on the counter makes writers to one installation queue for the length of one insert, so exactly one of two racing writers gets the last slot. The cost: writes to the same installation are serialized for the length of a single insert. At the Bridge's own limit (30 writes per user per minute), a 300-student section peaks at 150 writes a second on one row, which Postgres handles. A `records.batch` call is charged one write per five items, so batches can carry up to five times as many record writes, 750 a second on one row; that rate hasn't been measured. Different installations never contend.
 
 A refused write reaches the plugin as the Bridge error `full`. The message says which allowance: "This tool has run out of storage space, so this wasn't saved" for the installation, "You've used all the storage this tool gives you, so this wasn't saved" for the student's own. It is logged as `studio.record.quota_refused` with identifiers and which limit, never contents.
 

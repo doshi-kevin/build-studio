@@ -4,10 +4,10 @@ Where plugin code runs, how it is isolated, and how it talks to Scholera. Rule n
 
 | | |
 |---|---|
-| **Status** | Runtime shell (4B), bridge (4C), runtime capabilities and hardening (4D), and student access with the status heartbeat (5B) built. Student access is off in production behind `STUDIO_STUDENT_ACCESS`; see [studio-plugin-publication.md](./studio-plugin-publication.md) |
+| **Status** | Runtime shell (4B), bridge (4C), runtime capabilities and hardening (4D), student access with the status heartbeat (5B), and bridge version `v2` with the host-drawn roster (Step 11) built. Student access is off in production behind `STUDIO_STUDENT_ACCESS`; see [studio-plugin-publication.md](./studio-plugin-publication.md) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-10-01 |
-| **Code** | `src/lib/studio/runtime/` (`origin.ts`, `frame-document.ts`, `frame-ticket.ts`, `frame.ts`, `protocol.ts`, `host.ts`, `host-methods.ts`, `bridge-client.ts`, `preview-bridge.ts`), `src/lib/studio/bridge/` (`catalog.ts`, `registry.ts`, `dispatch.ts`, `envelope.ts`, `read-body.ts`, `rate-limit.ts`, `context-get.ts`), `src/app/api/studio/bridge/route.ts`, `src/app/studio-frame/v1/[installationId]/[view]/route.ts`, `src/app/(dashboard)/professor/courses/[sectionId]/studio/[installationId]/page.tsx`, `public/studio-runtime/v1/runtime.js`, `src/components/studio/runtime/`, `src/middleware.ts`, `next.config.ts` |
+| **Code** | `src/lib/studio/runtime/` (`origin.ts`, `frame-document.ts`, `frame-ticket.ts`, `frame.ts`, `protocol.ts`, `host.ts`, `host-methods.ts`, `bridge-client.ts`, `preview-bridge.ts`, `preview-roster.ts`, `roster-layout.ts`, `roster-overlay.ts`), `src/lib/studio/bridge/` (`catalog.ts`, `registry.ts`, `dispatch.ts`, `envelope.ts`, `read-body.ts`, `rate-limit.ts`, `context-get.ts`), `src/app/api/studio/bridge/route.ts`, `src/app/studio-frame/v1/[installationId]/[view]/route.ts`, `src/app/(dashboard)/professor/courses/[sectionId]/studio/[installationId]/page.tsx`, `public/studio-runtime/v1/` and `public/studio-runtime/v2/` (`runtime.js`, `vendor.js`, `kit.css` each), `src/components/studio/runtime/`, `src/middleware.ts`, `next.config.ts` |
 | **Tests** | `src/__tests__/studio-runtime.test.ts`, `studio-runtime-host.test.ts`, `studio-bridge.test.ts`, `studio-runtime-page.test.ts`; database: `src/__tests__/db/studio-bridge-dispatch.test.ts`; browsers: `npm run e2e:studio-runtime` |
 
 ## How a plugin frame loads
@@ -26,7 +26,7 @@ sequenceDiagram
     Frame->>RT: GET /studio-frame/v1/{installation}/{view}?t=ticket
     RT->>RT: runtime host? ticket valid? path matches?
     RT-->>Frame: HTML + security headers (bundle inert)
-    Frame-->>Page: hello (runtime v1), while parsing
+    Frame-->>Page: hello (runtime v1 or v2), while parsing
     Frame-->>Page: load #1
     Page-->>Frame: welcome (fresh session)
     Frame->>Frame: runtime starts the plugin bundle
@@ -39,12 +39,12 @@ sequenceDiagram
 |---|---|---|
 | Role | Scholera itself. Trusted | Plugin frames. Untrusted, credential-free |
 | Set by | `SITE_URL` (or `NEXT_PUBLIC_SITE_URL`), the same as `getSiteUrl()` | `STUDIO_RUNTIME_ORIGIN` |
-| Serves | The whole app. `/studio-frame/*` is a 404 here | Only `/studio-frame/v1/*` and `/studio-runtime/v1/*`. Everything else is a 404 |
+| Serves | The whole app. `/studio-frame/*` is a 404 here | Only `/studio-frame/v1/*`, `/studio-runtime/v1/*` and `/studio-runtime/v2/*`. Everything else is a 404 |
 | Cookies | The session cookie, host-only (no `Domain`, `src/lib/supabase/cookie-options.ts`) | None. The browser never sends the app's cookies to another host |
 
 Both are served by the same Next.js server; the request's host decides which role it plays. `middleware.ts` applies that before anything else, so on the runtime origin no app page renders and no session code runs. The host is the request's `Host` header (`requestHost` in `origin.ts`), not `request.nextUrl.host`: a production Next server builds `nextUrl` from its own listen address, so before Step 7C every frame 404ed in a production build and the runtime origin was never recognised. `next dev` hid it.
 
-**Fails closed.** `studioOrigins()` turns the runtime off if `STUDIO_RUNTIME_ORIGIN` is unset, isn't a bare `http(s)` origin, equals the app's host, is a subdomain or parent of it, or (in production) isn't `https`. A different **registrable domain** is required in production. That isn't checkable without a public-suffix list, so it's a deployment requirement (below).
+**Fails closed.** `studioOrigins()` turns the runtime off if `STUDIO_RUNTIME_ORIGIN` is unset, isn't a bare `http(s)` origin, equals the app's host, is a subdomain or parent of it, or (in production) isn't `https`. The one exception to `https` is a production build where both the app and the runtime origin are on loopback, as on the guarded local server (`e2e/serve-guarded.mjs`): nothing off the machine can reach them. A different **registrable domain** is required in production. That isn't checkable without a public-suffix list, so it's a deployment requirement (below).
 
 **Local development.** Browse the app at `http://localhost:3000` and set `STUDIO_RUNTIME_ORIGIN=http://127.0.0.1:3000`. An IP and `localhost` are different sites to the browser, so the same dev server genuinely plays both roles, with no cookie shared between them. The browser tests use the same trick on separate ports.
 
@@ -52,7 +52,7 @@ Both are served by the same Next.js server; the request's host decides which rol
 
 `middleware.ts` doesn't run for `/_next/static/*`, `/_next/image` or public image files, so the runtime origin serves those too. Reviewed in Step 4C, this is harmless:
 - **Nothing private.** They're the same build outputs and public files the app origin serves to anyone, signed in or not. They hold no secrets and no per-user data.
-- **Nothing can run them there.** The runtime origin serves no HTML page except plugin frame documents, whose security policy allows exactly one script file and one nonce. App chunks can't execute in that context.
+- **Nothing can run them there.** The runtime origin serves no HTML page except plugin frame documents, whose security policy allows exactly two script files (the version's `runtime.js` and `vendor.js`) and one nonce. App chunks can't execute in that context.
 - **Nothing to steal.** Even if something did run there, the runtime origin holds no cookies, session or storage: the dedicated-origin boundary is about credentials, and those never exist on it.
 - **`/_next/image`** is exactly as available on the app origin, so it adds no new exposure.
 
@@ -72,7 +72,7 @@ The ticket holds **no user** (rule 2.5). It isn't a secret, because the plugin c
 - For up to 60 seconds, a replay fetches that frame document again. That is the plugin's own code for that one view, which the plugin already holds.
 - A ticket can't be changed to another view, installation or version (the signature), and it expires.
 - It authenticates nothing else. The frame route is the only thing that reads tickets. The bridge ignores them and requires the viewer's own session cookie on Scholera's origin, plus Scholera's `Origin` (tested: a request with a ticket and no session gets 401).
-- It reaches no course or user data: the frame document holds only the runtime script and the bundle.
+- It reaches no course or user data: the frame document holds only the runtime files and the bundle.
 
 So replay grants nothing a malicious plugin doesn't already have. A single-use ticket would need a server-side store and would protect nothing more, so tickets stay stateless.
 
@@ -80,9 +80,10 @@ One condition keeps this true: **bundles must never contain sensitive data.** Th
 
 ## The frame document
 
-Built by `frame-document.ts` and identical in the route and the browser tests:
+Built by `frame-document.ts` and identical in the route and the browser tests. The version's manifest names its `bridgeVersion`, and that picks the folder `{v}` (`v1` or `v2`) the runtime files come from. The frame routes stay at `/studio-frame/v1/`: that path versions the document, not the kit.
 
-- one `<script>`: `{runtime}/studio-runtime/v1/runtime.js`;
+- one stylesheet: `{runtime}/studio-runtime/{v}/kit.css`;
+- two `<script>` elements, in this order: `{runtime}/studio-runtime/{v}/runtime.js`, which removes the channels the policy can't cover before any other code exists, then `{runtime}/studio-runtime/{v}/vendor.js`, which is React and the plugin kit, Scholera's own pinned code;
 - the plugin bundle as **inert text**: `<script type="text/plain" id="studio-plugin-bundle" nonce="…">`, with `</script` and `<!--` escaped (case kept);
 - no IDs, no session data.
 
@@ -93,9 +94,9 @@ The runtime sends `hello` as the document parses, but starts the bundle only aft
 ```
 Content-Security-Policy:
   default-src 'none';
-  script-src {runtime}/studio-runtime/v1/runtime.js 'nonce-{per response}';
-  style-src {runtime}/studio-runtime/v1/;
-  font-src {runtime}/studio-runtime/v1/fonts/;
+  script-src {runtime}/studio-runtime/{v}/runtime.js {runtime}/studio-runtime/{v}/vendor.js 'nonce-{per response}';
+  style-src {runtime}/studio-runtime/{v}/;
+  font-src {runtime}/studio-runtime/{v}/fonts/;
   img-src 'none'; media-src 'none'; connect-src 'none';
   frame-src 'none'; child-src 'none'; worker-src 'none';
   object-src 'none'; manifest-src 'none';
@@ -112,7 +113,7 @@ Cache-Control: no-store
 - No `'unsafe-inline'`, `'unsafe-eval'`, `'self'`, wildcards, `data:` or `blob:` anywhere. React sets styles through the CSSOM, which the policy doesn't restrict, so inline styles aren't needed.
 - `frame-ancestors` names the app origin explicitly, because `'self'` is ambiguous for a document the `sandbox` directive makes opaque.
 - The app's global `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'` skip `/studio-frame/` (`next.config.ts`; the exclusion is tested with Next's own path matcher), because they would block the deliberate cross-origin framing.
-- The `kit.css` stylesheet and fonts under `/studio-runtime/v1/` arrive with the plugin kit. The policy already reserves exactly that path.
+- `kit.css` comes from the same bridge version's folder as the scripts. The policy also allows fonts from that folder's `fonts/` path, but no version ships fonts yet.
 
 ### The iframe element
 
@@ -120,15 +121,20 @@ Cache-Control: no-store
 
 ## The bridge envelope, v1
 
-Every message is `{ scholera: 'bridge', v: 1, type, … }` (`protocol.ts`; `runtime.js` speaks the same shapes).
+Every message is `{ scholera: 'bridge', v: 1, type, … }` (`protocol.ts`; each version's `runtime.js` speaks the same shapes). The envelope's `v` stays 1 for both runtimes. The runtime named in `hello` says which message types a frame may send: `v2` adds `roster` and `size` from the frame and `event` from the host. The host refuses a `v2` message from a `v1` frame as a bad message, and never sends `event` to a `v1` frame.
 
 | Direction | Type | Fields |
 |---|---|---|
-| Frame to host | `hello` | `runtime` (`'v1'`) |
+| Frame to host | `hello` | `runtime` (`'v1'` or `'v2'`, any of `BRIDGE_VERSIONS`) |
 | Frame to host | `request` | `session`, `id` (`[A-Za-z0-9_-]{1,64}`), `method` (`namespace.name`), `args` (at most `STUDIO_BRIDGE_MAX_MESSAGE_BYTES`, 64 KiB) |
 | Frame to host | `crash` | `session`, `message` (cut to 500 characters) |
-| Host to frame | `welcome` | `session`, `context: { runtime, view, theme }`. No IDs (rule 2.5) |
+| Frame to host, `v2` only | `roster` | `session`, `slot`, and `op`: `render` with a `payload` (a RosterTable's label, columns, and rows of student handles and cells, never names, at most 512 KiB), `place` with the placeholder's `rect`, or `remove` |
+| Frame to host, `v2` only | `size` | `session`, `height` of the content. The host clamps it like `ui.resize` |
+| Host to frame | `welcome` | `session`, `context: { runtime, view, theme }`, where `runtime` echoes the `hello`. No IDs (rule 2.5) |
 | Host to frame | `response` | `session`, `id`, `ok`, then `data` or `error: { code, message }` |
+| Host to frame, `v2` only | `event` | `session`, `name: 'roster.action'`, `data: { slot, student, column, value }`: which control the professor used, for which handle |
+
+**The host-drawn roster (`v2`).** A professor view that declares `course.roster` can show a class list with names without the names entering the frame (rule 2.5). The plugin sends a `roster` placeholder with handles and cells. `roster-overlay.ts` draws the table over the frame with names the page loaded from the server, and the plugin hears only `roster.action` events. A `roster` message from a student view, or from a view without `course.roster`, is a strike. `roster` and `size` messages don't count toward the call budget. Each has its own bound per second: 20 `roster` renders and removals, 10 `size`, and 80 `roster` placements. Placements only move a table, and the kit sends up to 10 a second for each of the 8 tables a frame may hold while it scrolls. A message over its bound is dropped, and it counts toward the `throttled` stop like a call refused for rate, so a frame that keeps flooding is stopped.
 
 Error codes: `not_available`, `invalid`, `conflict`, `rate_limited`, `unsupported`, `failed`, `stale`, `full` (the installation's storage quota refused a write), and `unavailable` (this viewer can't use this installation any more: hidden, Studio switched off, release gate closed, or it never existed, one answer for all). A plugin never receives `unavailable`: the host stops the frame instead.
 
@@ -147,7 +153,7 @@ Error codes: `not_available`, `invalid`, `conflict`, `rate_limited`, `unsupporte
 | `navigated` | A second load event |
 | `malformed` | More than `STUDIO_FRAME_MALFORMED_MAX` (20) bad or stale messages |
 | `crashed` | A `crash` from the current session |
-| `throttled` | More than `STUDIO_FRAME_RATE_ABUSE_MAX` (60) requests refused for rate in one minute |
+| `throttled` | More than `STUDIO_FRAME_RATE_ABUSE_MAX` (60) requests refused for rate in one minute. `v2` layout messages dropped over their bound count toward it too |
 | `unavailable` | A bridge call or the status heartbeat answers `unavailable` |
 
 Recovery is always a new iframe element with a fresh ticket and a fresh session.
@@ -218,7 +224,7 @@ The plugin never makes a network request; the host does. The host's checks are *
 | Version approved | Database | The current version always has an approval row for the installation (Step 2's key); v1 approval is all-or-nothing |
 | Capability allowed for the view | `dispatch()` | Class-wide capabilities never in the student view (rules 4.1, 4.5) |
 | Arguments | Registry | Strict schema per method; record methods can't name the installation |
-| Records | Step 3 | `records.ts` alone applies `perStudent`, `shared`, `staffOnly`, read-only and ownership rules |
+| Records | Step 3 | `records.ts` alone applies `perStudent`, `staffPerStudent`, `shared`, `staffOnly`, read-only and ownership rules |
 | Storage quota | Database | A write past the installation's quota is undone by the usage trigger and answered `full` |
 | Response | Route | Generic messages; no stack traces, database details or IDs beyond record IDs |
 
@@ -226,16 +232,30 @@ The plugin never makes a network request; the host does. The host's checks are *
 
 `src/lib/studio/bridge/catalog.ts` is the one list of methods, shared by the host and the server. A method not in it doesn't exist. Each entry says where it runs, the manifest capability it needs, which views may call it, whether it reads or writes, and its strict argument schema. The server's handlers live in `registry.ts`, and a type requires exactly one handler per server method. Adding a capability later (course memory, AI, notifications, grading) is one catalog entry plus, for a server method, one handler. The bridge's architecture doesn't change.
 
-| Method | Runs | Manifest capability | Kind |
-|---|---|---|---|
-| `context.get` | server | `context.get` | read |
-| `course.skills` | server | `course.skills` | read |
-| `records.list`, `records.get` | server | none: a declared collection grants access | read |
-| `records.create`, `records.update`, `records.delete` | server | none | write |
-| `ui.resize` | host | `ui.resize` | read |
-| `ui.toast` | host | `ui.toast` | read |
+| Method | Runs | Manifest capability | Views | Kind |
+|---|---|---|---|---|
+| `context.get` | server | `context.get` | both | read |
+| `course.skills` | server | `course.skills` | both | read |
+| `course.roster` | server | `course.roster` | professor only | read |
+| `course.assignments` | server | `course.assignments` | both | read |
+| `records.list`, `records.get` | server | none: a declared collection grants access | both | read |
+| `records.create`, `records.update`, `records.delete` | server | none | both | write |
+| `records.batch` | server | none | both | write |
+| `ui.resize` | host | `ui.resize` | both | read |
+| `ui.toast` | host | `ui.toast` | both | read |
 
-Every method is available to both views, subject to the manifest and to the capability's own allowed views (`capabilities.ts`). No authorization logic lives in UI components: `PluginHost` only passes the server-computed `allowedMethods` to the controller.
+A view may call a method only when the method's views include it, the manifest declares the capability for that view, and the capability itself allows that view (`capabilities.ts`). No authorization logic lives in UI components: `PluginHost` only passes the server-computed `allowedMethods` to the controller.
+
+`course.weakSpots` is a registered capability with no method yet. The builder refuses it, and a call to it is answered `unsupported`.
+
+### `course.roster` and `course.assignments`
+
+- **`course.roster`** returns `{ students: [{ handle }] }`: the section's `enrolled` and `completed` students as per-installation handles, sorted by handle so the order says nothing about names, at most `STUDIO_ROSTER_MAX` (500). No names. Handles are explained in [studio-plugin-server.md](./studio-plugin-server.md#student-handles).
+- **`course.assignments`** returns `{ assignments: [{ title, dueAt, points }] }`: the section's published and closed assignments, by due date then title, at most `STUDIO_ASSIGNMENTS_MAX` (100). `points` is `null` for an ungraded assignment. No IDs.
+
+### `records.batch`
+
+One collection and 1 to 50 items (`STUDIO_RECORD_BATCH_MAX`), each a create, update or delete. Each item runs exactly as its single method would, and gets its own result in order. A batch is not a transaction. See [studio-plugin-server.md](./studio-plugin-server.md#batches).
 
 ### `course.skills`
 
@@ -255,13 +275,15 @@ The section's skills, in curriculum order:
 
 ```
 { plugin: { name, version }, view, theme: 'light', locale, timeZone,
-  course: { code, title }, readOnly, can: { [collection]: { read, write } } }
+  course: { code, title }, readOnly, can: { [collection]: { read, write } },
+  skills?: { [slot]: name | null } }
 ```
 
 - No user, student, section, institution, installation or database ID, and no name or email.
 - `locale` and `timeZone` are the viewer's own browser settings, read by the host from `Intl`, never supplied by the plugin.
 - `readOnly` means the viewer may not write right now (see `writable` in [studio-plugin-server.md](./studio-plugin-server.md)).
 - `can` is computed by the same `decide()` the server enforces. It lets a plugin hide controls; it grants nothing.
+- `skills` is present only for a manifest version 2: each skill slot's bound course skill by name, or `null` when the professor hasn't linked one. Never an ID.
 
 ### Rate limits
 
@@ -272,6 +294,8 @@ The section's skills, in curriculum order:
 | `STUDIO_BRIDGE_WRITES_PER_MINUTE` | 30 | Per user per installation, write methods (also counted above) |
 
 They are checked in that order, stopping at the first refusal.
+
+**A `records.batch` call is charged one write per five items**, rounded up, and each charge spends all three limits. So a 50-item batch costs 10 writes, and one call can't carry more records than the write limit allows.
 
 **The per-user limit runs before the installation is looked up.** A call naming a made-up installation still spends it, so rotating installation IDs can't multiply a user's budget beyond 300 lookups a minute. The value is 2.5 installations' worth: a professor can run two or three plugins flat out at once without hitting it.
 
@@ -303,7 +327,7 @@ No HTML, styles, links or extra fields are accepted. HTML-like text is shown exa
 
 ### Preview
 
-Preview (rule 8.3) runs the student view, served by a normal frame ticket, against `preview-bridge.ts`. That's an in-memory bridge in the host page with sample data generated from the manifest. It applies the same `decide()` and record validation as the server, so a plugin behaves the same way. It never calls `/api/studio/bridge` or any network, never writes a Studio record, and never changes publication (tested in unit and browser tests).
+Preview (rule 8.3) runs either view, served by a normal frame ticket, against `preview-bridge.ts`. That's an in-memory bridge in the host page. Its records come from the builder's sample data when the draft has some, and otherwise from placeholders chosen by field name. Its class is a fixed list of 12 invented students (`preview-roster.ts`), so a preview never shows a real student. It applies the same `decide()` and record validation as the server, so a plugin behaves the same way. It never calls `/api/studio/bridge` or any network, never writes a Studio record, and never changes publication (tested in unit and browser tests).
 
 ### Stop logging
 
@@ -311,7 +335,7 @@ The host reports every stop except an intentional unmount and `unavailable` (the
 
 ## Isolation matrix
 
-Measured on 2026-10-01 with Playwright 1.61's Chromium, Firefox and WebKit, against `e2e/studio-runtime`.
+Measured on 2026-10-01 with Playwright 1.61's Chromium, Firefox and WebKit, against `e2e/studio-runtime`, on runtime `v1`.
 
 "Blocked" means two things held together: the plugin's own attempt failed, **and** nothing arrived at the test's attacker server. The attacker server is proven live by the self-navigation test, where the request does arrive.
 
@@ -341,7 +365,7 @@ Measured on 2026-10-01 with Playwright 1.61's Chromium, Firefox and WebKit, agai
 
 **Self-navigation: detection is not prevention.** Anything already present in the frame must be treated as potentially exfiltratable.
 
-A plugin can always set its own `location` to a URL carrying data, and no policy directive or sandbox token stops it. The host stops the frame on its second load and reports it (`onSecurityEvent`), but the request has already left.
+A plugin can always set its own `location` to a URL carrying data, and no policy directive or sandbox token stops it. The host stops the frame on its second load and reports it (`onSecurityEvent`), but the request has already left. A `<meta http-equiv="refresh">` is the same channel: the runtime removes one as soon as it appears, but removing it doesn't cancel the refresh it already scheduled (rules appendix, N9).
 
 WebRTC and DNS prefetch were contained in all three engines, but only by the runtime's own removals, which a determined script might find a way around in a future browser version. They stay classified as browser limitations and are re-measured by the probes, not assumed.
 
@@ -385,6 +409,5 @@ Verify all of this again once the real runtime domain exists:
 
 ## Not built yet
 
-- The professor's publish dialog. Student access itself is built (5B) and off in production; see [studio-plugin-publication.md](./studio-plugin-publication.md).
 - AI capabilities, course search and class weak spots. AI needs a durable rate limit first.
-- The plugin kit (`kit.css`, components, fonts).
+- Fonts in the plugin kit. The policy reserves their path; no version ships any.

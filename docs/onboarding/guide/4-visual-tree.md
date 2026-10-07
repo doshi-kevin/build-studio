@@ -1236,7 +1236,7 @@ components/
 
 ### 📁 `src/lib/` — 427 files
 
-The domain layer: 38 subdirectories + 9 top-level files (~87k lines). The load-bearing ones: `supabase/` (client factories, the 6,074-line `queries.ts`, generated `types.ts`), `auth/` (the authorization gates — the real access control, since mutations use the RLS-bypassing admin client), `ai/` (Gemini client, prompts, cost ledger, the three Athena surfaces), `pinecone/` (the vector-store tenant wall), `live-classroom/` (64 files — the realtime broadcast architecture), `quiz/`, `skills/`, `jobs/` (background pipelines), `extraction/`, `validations/` (51 Zod schema files), `events/` (the shared feed layer). See [6-file-insights.md](./6-file-insights.md) for the deep dive.
+The domain layer: 38 subdirectories + 9 top-level files (~87k lines). The load-bearing ones: `supabase/` (client factories, the 6,074-line `queries.ts`, generated `types.ts`), `auth/` (the authorization gates — the real access control, since mutations use the RLS-bypassing admin client), `ai/` (Gemini client, prompts, cost ledger, the three Athena surfaces), `pinecone/` (the vector-store tenant wall), `live-classroom/` (64 files — the realtime broadcast architecture), `quiz/`, `skills/`, `jobs/` (background pipelines), `extraction/`, `validations/` (51 Zod schema files), `events/` (the shared feed layer). See [6-file-insights.md](./6-file-insights.md) for the deep dive. Studio's plugin platform lives in `studio/` (82 files: manifest, records, Bridge, runtime, validator and builder), which the tree below doesn't list yet; `src/lib/CONTEXT.md` and `docs/reference/studio-*.md` describe it.
 
 <details>
 <summary>📂 Expand complete tree for <code>src/lib/</code> (427 files)</summary>
@@ -2590,12 +2590,12 @@ docs/
 
 </details>
 
-### 📁 `e2e/` — 24 files
+### 📁 `e2e/` — 36 files
 
-Playwright end-to-end tests, chromium-only, against a local dev server + local Supabase (`.env.test`). `tests/` holds 7 P0 specs (auth round-trip, admin-invites-professor, quiz lifecycle, module consumption, live-classroom sync, fullscreen banner, todo emit). `setup/global-setup.ts` seeds + persists per-role auth state; `visual/` is the markdown-walkthrough practice driven live via the Chrome DevTools MCP; `load/` is the (scaffold) 100-student realtime load test with the Supabase msg/s math.
+Playwright end-to-end tests, chromium-only, against a local dev server + local Supabase (`.env.test`). `tests/` holds 7 P0 specs (auth round-trip, admin-invites-professor, quiz lifecycle, module consumption, live-classroom sync, fullscreen banner, todo emit). `setup/global-setup.ts` seeds + persists per-role auth state; `visual/` is the markdown-walkthrough practice driven live via the Chrome DevTools MCP; `load/` is the (scaffold) 100-student realtime load test with the Supabase msg/s math. Studio has two browser suites of its own that need no database or dev server: `studio-runtime/` (the plugin sandbox's isolation probe in Chromium, Firefox and WebKit, `npm run e2e:studio-runtime`) and `studio-validator/` (the validator's Stage 2 runner on known-good and broken plugins, `npm run e2e:studio-validator`). `serve-guarded.mjs` is the server `playwright.config.ts` starts, and the Studio walkthroughs use it too: a production build with no production configuration in reach, against a loopback database. `serve-guard.mjs` holds its checks.
 
 <details>
-<summary>📂 Expand complete tree for <code>e2e/</code> (24 files)</summary>
+<summary>📂 Expand complete tree for <code>e2e/</code> (36 files)</summary>
 
 ```
 e2e/
@@ -2611,6 +2611,15 @@ e2e/
 │   └── load-README.md
 ├── setup/
 │   └── broadcast-smoke.ts
+├── studio-runtime/
+│   ├── harness.mjs
+│   ├── host-entry.ts
+│   ├── isolation.spec.ts
+│   ├── playwright.config.ts
+│   └── probe-plugin.js
+├── studio-validator/
+│   ├── playwright.config.ts
+│   └── runner.spec.ts
 ├── tests/
 │   ├── admin-invites-professor.spec.ts
 │   ├── auth.spec.ts
@@ -2625,36 +2634,45 @@ e2e/
 │   ├── ccat-adaptive-quiz.md
 │   ├── extraction-and-citation.md
 │   ├── quiz-editor-studio.md
-│   └── README.md
+│   ├── README.md
+│   ├── studio-builder.md
+│   ├── studio-publication.md
+│   └── studio-release.md
 ├── global-setup.ts
 ├── playwright.config.ts
-└── playwright.todos.config.ts
+├── playwright.todos.config.ts
+├── serve-guard.mjs
+└── serve-guarded.mjs
 ```
 
 </details>
 
-### 📁 `validator-runtime/` — 3 files
+### 📁 `validator-runtime/` — 7 files
 
-The Studio validator's browser stage. It runs a plugin in Playwright's Chromium, inside the same sandboxed frame students get, and reports measurements as JSON. It never runs in the app server: the app spawns `cli.mjs` as a child process with no secrets, in development only (`STUDIO_VALIDATOR_RUNNER=local`). See `docs/reference/studio-plugin-validator.md`.
+The Studio validator's browser stage, and the builder's design-review renderer. Both run plugin code in Playwright's Chromium, inside the same sandboxed frame students get, and never in the app server. `runner.mjs` is Stage 2: it loads the runtime files of the plugin's own bridge version and reports measurements as JSON, bound to the run by `binding.mjs`. The app runs it one of two ways. With `STUDIO_VALIDATOR_RUNNER=local` it spawns `cli.mjs` as a child process with no secrets, on a dev server or a production build whose database is on loopback. With `STUDIO_VALIDATOR_RUNNER=cloud` it starts a Cloud Run job whose entry is `cloud-entry.mjs`, which `build.mjs` bundles with the runtime files for the image in `infra/validator-runner/`. `host-entry.ts` is the host page both load. `render.mjs` takes the builder's review screenshots when `STUDIO_BUILDER_RENDERER=local`. See `docs/reference/studio-plugin-validator.md` and `docs/reference/studio-agent-harness.md`.
 
 <details>
-<summary>📂 Expand complete tree for <code>validator-runtime/</code> (3 files)</summary>
+<summary>📂 Expand complete tree for <code>validator-runtime/</code> (7 files)</summary>
 
 ```
 validator-runtime/
+├── binding.mjs
+├── build.mjs
 ├── cli.mjs
+├── cloud-entry.mjs
 ├── host-entry.ts
+├── render.mjs
 └── runner.mjs
 ```
 
 </details>
 
-### 📁 `infra/` — 8 files
+### 📁 `infra/` — 11 files
 
-Cloud deployment only (local setup lives in `scripts/`). `app/deploy-to-prod.sh` (main + clean tree + lint/typecheck enforced; build via Cloud Build, deploy as the human's own gcloud identity), `deploy-to-staging.sh` (isolated Supabase project, secrets via Secret Manager, hard-refuses the prod ref), `setup-sweep-schedulers.sh` (Cloud Scheduler jobs that drain the background/extraction queues every 5 min), and `microservices/deck-converter/` (Gotenberg PPTX→PDF, `--concurrency=1` required).
+Cloud deployment only (local setup lives in `scripts/`). `app/deploy-to-prod.sh` (main + clean tree + lint/typecheck enforced; build via Cloud Build, deploy as the human's own gcloud identity), `deploy-to-staging.sh` (isolated Supabase project, secrets via Secret Manager, hard-refuses the prod ref), `setup-sweep-schedulers.sh` (Cloud Scheduler jobs that drain the background/extraction queues every 5 min), and `microservices/deck-converter/` (Gotenberg PPTX→PDF, `--concurrency=1` required). `validator-runner/` is the Studio validator's Stage 2 Cloud Run job: its image, `deploy.sh`, and a README on what is verified and what waits on a GCP project. It hasn't been deployed.
 
 <details>
-<summary>📂 Expand complete tree for <code>infra/</code> (8 files)</summary>
+<summary>📂 Expand complete tree for <code>infra/</code> (11 files)</summary>
 
 ```
 infra/
@@ -2668,6 +2686,10 @@ infra/
 │   └── deck-converter/
 │       ├── deploy.sh
 │       └── README.md
+├── validator-runner/
+│   ├── Dockerfile
+│   ├── deploy.sh
+│   └── README.md
 └── README.md
 ```
 

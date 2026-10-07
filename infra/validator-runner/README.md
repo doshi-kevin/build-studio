@@ -90,3 +90,7 @@ It creates:
 | `STUDIO_VALIDATOR_RUNNER_DIGEST` | the image digest, `sha256:` followed by 64 hex digits |
 
 None of these are secrets. The app reaches Google Cloud with its own service account.
+
+Production keeps values set with `gcloud run services update --update-env-vars`, because `deploy-to-prod.sh` passes no env flags. Staging doesn't: `deploy-to-staging.sh` deploys with `--set-env-vars`, which removes every variable not in its list, and the list has none of these six. So when the runner is first deployed for staging, add the six values to that script's list before the next staging deploy (`infra/app/README.md`). Otherwise the next deploy wipes them, and every Stage 2 run ends as `runner_unavailable`.
+
+Without these values the app has no cloud runner. The local runner (`STUDIO_VALIDATOR_RUNNER=local`) is for development only: a production build accepts it only when its database is on loopback, as on the guarded local server, which a deployed app never is.

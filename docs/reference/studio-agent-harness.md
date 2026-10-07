@@ -4,11 +4,11 @@ A professor describes a teaching tool, and Athena builds it. This document is ho
 
 | | |
 |---|---|
-| **Status** | Step 7D: accepted locally on PostgreSQL 17 with real PostgREST and a production build; real Supabase, the live Cloud Run service and staging are still pending (see [Verification](#verification)). Steps 8B to 8D add project memory, verified on the same local stack and accepted in a browser walkthrough |
+| **Status** | Step 7D: accepted locally on PostgreSQL 17 with real PostgREST and a production build; real Supabase, the live Cloud Run service and staging are still pending (see [Verification](#verification)). Steps 8B to 8D add project memory, verified on the same local stack and accepted in a browser walkthrough. Step 9 adds course material. Step 11 adds sample data, plan v2 and the design review; it is built and awaits human product acceptance |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-10-02 |
-| **Migrations** | `supabase/migrations/20261002160000_studio_builder.sql`; for project memory `supabase/migrations/20261002210000_studio_project_memory.sql` and `supabase/migrations/20261002230000_studio_memory_slots.sql` |
-| **Code** | `src/lib/studio/builder/`, the builder section of `src/lib/studio/db.ts`, `builderActor` in `src/lib/studio/context.ts`, `publishDraft` in `src/lib/studio/lifecycle.ts`, the draft frame in `src/lib/studio/runtime/frame{,-ticket}.ts`, the builder UI in `src/components/studio/builder/` |
+| **Migrations** | `supabase/migrations/20261002160000_studio_builder.sql`; for project memory `supabase/migrations/20261002210000_studio_project_memory.sql` and `supabase/migrations/20261002230000_studio_memory_slots.sql`; for course material `supabase/migrations/20261003003000_studio_course_context.sql`; for Step 11 `supabase/migrations/20261003120000_studio_builder_quality.sql` |
+| **Code** | `src/lib/studio/builder/`, the builder section of `src/lib/studio/db.ts`, `builderActor` in `src/lib/studio/context.ts`, `publishDraft` in `src/lib/studio/lifecycle.ts`, the draft frame in `src/lib/studio/runtime/frame{,-ticket}.ts`, the design-review renderer `validator-runtime/render.mjs`, the builder UI in `src/components/studio/builder/` |
 | **Endpoints** | `src/app/(dashboard)/professor/courses/[sectionId]/studio/actions.ts`, `GET /api/studio/builder/runs/[runId]`, `GET /studio-frame/v1/draft/[projectId]/[view]` (runtime origin only) |
 
 ## The one rule
@@ -37,7 +37,7 @@ Dotted arrows carry model output. Each ends at code that validates it.
 | Input | Why it is untrusted | How it is contained |
 |---|---|---|
 | The professor's request and answers | Free text | At most 4000 characters, control and bidi characters refused, never logged |
-| Model tool calls | The model can be wrong or steered | Only eleven tools exist. Each argument is a flat strict schema; paths are a two-value enum; no argument names an id or scope |
+| Model tool calls | The model can be wrong or steered | Only twelve tools exist. Each argument is a flat strict schema; paths are a two-value enum; no argument names an id or scope |
 | Generated code | It may be broken, insecure or written to exfiltrate | Scholera compiles it, typechecks it against a hand-written environment, runs Stage 1, and it only ever runs in the Step 4 sandbox |
 | Generated manifest | It is the plugin's whole escalation surface | Parsed, owned fields stamped, diffed and classified; escalations wait for the professor |
 | Course labels and skill names | Skill names can come from uploaded files | Entered as fenced data with provenance `course-data`, below the professor in the authority order. Never accepted as the evidence for a saved decision |
@@ -50,7 +50,7 @@ Five server-only tables (the fifth, `studio_plugin_memories`, came with Step 8B)
 
 | Table | One row is | Notes |
 |---|---|---|
-| `studio_plugin_snapshots` | One immutable draft state, keyed by `(project_id, hash)` | Refuses UPDATE. Holds the stamped manifest, the two view sources, both compiled bundles and the check summary |
+| `studio_plugin_snapshots` | One immutable draft state, keyed by `(project_id, hash)` | Refuses UPDATE. Holds the stamped manifest, the two view sources, both compiled bundles, the check summary and, since Step 11, the draft's sample data (`sample_data`, nullable) |
 | `studio_plugin_builder_runs` | One build: one professor message | Lifecycle, the private working copy (`work`), plan, approval card, questions, counters and cost, the claim token, the result |
 | `studio_plugin_builder_steps` | One observable action | Append-only. Unique on `(run_id, seq)` and `(run_id, tool_call_id)` |
 | `studio_plugin_builder_spend` | The cost of one model call | Append-only. The school's daily cap sums it (see [Budgets](#budgets-the-kill-switch-and-entitlement)) |
@@ -64,7 +64,7 @@ Never stored: hidden reasoning, prompts, provider responses, file content in ste
 
 ## Snapshots and the draft pointer
 
-A snapshot's hash is the SHA-256 of the canonical JSON (keys sorted at every level) of `{format: 'studio-draft-v1', compiler, manifest, files}`. The compiler id (`studio-tsx-v1+ts<version>`) is part of it, so a TypeScript upgrade can't reuse stored bundles. Timestamps, run ids and check results are not part of it, so identical content always has the same hash.
+A snapshot's hash is the SHA-256 of the canonical JSON (keys sorted at every level) of `{format: 'studio-draft-v1', compiler, manifest, files}`, plus `sample` when the draft has sample data. The compiler id (`studio-tsx-v1+ts<version>`) is part of it, so a TypeScript upgrade can't reuse stored bundles. Timestamps, run ids and check results are not part of it, so identical content always has the same hash.
 
 A build:
 
@@ -106,12 +106,12 @@ The database enforces the state machine with a trigger (`studio_builder_runs_tra
 | `waiting_for_professor` | active | Paused on a question. The professor's answer resumes the same run |
 | `preview_ready` | terminal | The completion gate passed and a new snapshot is the draft |
 | `completed` | terminal | The gate passed, but nothing differed from the starting draft |
-| `blocked` | terminal | The model gave up (`agent_blocked`), checks never passed (`repair_rounds`, `same_finding`, `check_runs`), the draft moved (`draft_changed`), or a gate refused mid-run (`studio_paused`, `not_entitled`, `ai_disabled`, `access_lost`, `project_archived`) |
+| `blocked` | terminal | The model gave up (`agent_blocked`), checks never passed (`repair_rounds`, `same_finding`, `check_runs`), the draft moved (`draft_changed`), or a gate refused mid-run or right before the commit (`studio_paused`, `not_entitled`, `ai_disabled`, `access_lost`, `project_archived`) |
 | `cancelled` | terminal | Stop, an expired card or question (`expired`), or replaced on the professor's confirmation (`superseded`) |
 | `budget_exhausted` | terminal | A run budget ran out (`limit_*`) |
 | `failed` | terminal | Repeated malformed or refused calls, the model unavailable, a check timeout, too many interruptions, or a harness fault |
 
-Allowed moves: `queued` to `running`, `cancelled` or `failed`; `running` to any status; either waiting state to `queued` or `cancelled`. Phases (`understanding`, `planning`, `editing`, `checking`, `repairing`) only drive progress copy.
+Allowed moves: `queued` to `running`, `cancelled` or `failed`; `running` to any status; either waiting state to `queued` or `cancelled`. Phases (`understanding`, `planning`, `editing`, `checking`, `repairing`, and since Step 11 `reviewing` and `improving`) only drive progress copy.
 
 One active run per project, by a partial unique index. A new request while a run is queued or running is refused with the running run's id. A new request while a run is waiting for the professor returns a conflict; only a second request that names the waiting run (`replaceRunId`, sent after the professor confirms "Replace it") cancels it as `superseded`, and its trajectory stays.
 
@@ -148,7 +148,7 @@ Staging gets the builder's settings from `deploy-to-staging.sh`: the jobs and fr
 
 ## The tools
 
-The model sees the same eleven tools every turn. There is no shell, filesystem, network, database, publication, activation, visibility, entitlement or binding tool.
+The model sees the same twelve tools every turn (`TOOL_NAMES` in `tools.ts`). There is no shell, filesystem, network, database, publication, activation, visibility, entitlement or binding tool.
 
 | Tool | Does | Limits |
 |---|---|---|
@@ -158,9 +158,10 @@ The model sees the same eleven tools every turn. There is no shell, filesystem, 
 | `edit_file` | Replaces exactly one occurrence of `old_text` | Only in a view the model has read |
 | `propose_manifest_change` | The only path to the manifest (below) | 32 KiB of JSON |
 | `run_checks` | Compile, typecheck, Stage 1, builder checks | The model can't choose or skip checks. Unchanged work returns the cached result |
-| `submit_plan` | Records goal, files, manifest changes, checks | Plain text, at most 8 KiB. A plan grants nothing |
+| `submit_plan` | Records the plan (plan v2, see [Sample data and the plan](#sample-data-and-the-plan)) | Strict fields of plain text, at most 8 KiB in all. A plan grants nothing |
 | `ask_professor` | Pauses for one answer | At most 2 per run |
 | `search_course_material` | Searches this course's own material; the excerpts arrive next turn as data | 1 to 4 keywords, at most 200 bytes; time only through `focus` (`this_week`, `next_week`, `week:N`); 3 searches per run, 6 excerpts each (see [Course material](#course-material)) |
+| `write_sample_data` | Replaces the invented records the preview and the design review show | JSON, at most 24 KiB and 60 records; needs the manifest first; every record must match its collection (see [Sample data and the plan](#sample-data-and-the-plan)) |
 | `propose_memory` | Suggests one lasting decision for the professor to keep | Topic and slot from closed lists; at most 2 per run; needs a quote of the professor's own words; inert until the professor approves it (see [Project memory](#project-memory)) |
 | `finish` | Asks to end: `completed` or `blocked` with a summary | `completed` triggers the harness's own gate |
 
@@ -170,7 +171,7 @@ Calls in a turn run in the order proposed, except `run_checks` runs after the tu
 
 ## The manifest and approval
 
-`propose_manifest_change` parses the JSON, refuses control and bidi characters anywhere, and stamps what Scholera owns (`manifestVersion` 2, `id` from the project slug, `version` `0.0.0`, `bridgeVersion` `v1`, both view entries). It then validates with `parseManifest`, refuses capabilities without a Bridge method (today `course.weakSpots`), refuses changes to collections a published version declared, and screens the wording with `deterministicPurpose`.
+`propose_manifest_change` parses the JSON, refuses control and bidi characters anywhere, and stamps what Scholera owns (`manifestVersion` 2, `id` from the project slug, `version` `0.0.0`, `bridgeVersion` `v2`, both view entries). It then validates with `parseManifest`, refuses capabilities without a Bridge method (today `course.weakSpots`), refuses changes to collections a published version declared, and screens the wording with `deterministicPurpose`.
 
 It then diffs the proposal against the working copy and classifies every change:
 
@@ -194,8 +195,8 @@ The draft gate (`checks.ts`), in a fixed order:
 1. Compile both views (the check worker). The compiler accepts named imports from `react` and `@scholera/plugin-kit` only, one named default export, and never the reserved `ScholeraKit` name. It emits the canonical classic-script bundle and checks it parses with no module syntax.
 2. Typecheck both views against `kit/plugin-kit-types.ts` alone (`noLib`, `strict`, `noUnusedLocals`). There is no DOM, Node or Scholera type to reach.
 3. Stage 1 static checks from the validator, on the artifact a Save would publish, minus `artifact.hash` (always matches) and `edtech.purpose` (the AI classifier runs at Save, never in the loop). A `needs_review` outcome blocks.
-4. Builder checks: the manifest is valid, available and compatible; the purpose wording passes `deterministicPurpose`; and no student's full name (across every section the owner teaches) appears in code or manifest. The roster check fails closed when the roster can't be read, and never quotes the name.
-5. `builder.disclosure`: the tool's visible text doesn't copy course material students can't see yet (see [Course material](#course-material)). It fails closed when that material can't be read.
+4. Builder checks: the manifest is valid, available and compatible; the purpose wording passes `deterministicPurpose`; the sample data still matches the collections (`builder.sample`, since the manifest can change after it was written); and no student's full name (across every section the owner teaches) appears in code, manifest or sample data. The roster check fails closed when the roster can't be read, and never quotes the name.
+5. `builder.disclosure`: the tool's visible text, its sample data included, doesn't copy course material students can't see yet (see [Course material](#course-material)). It fails closed when that material can't be read.
 
 Stage 2 (the browser) never runs in the loop. It stays with publication.
 
@@ -206,26 +207,74 @@ Findings return to the model as bounded data: at most 40, ordered required-first
 Repair is bounded:
 
 - 3 repair rounds;
-- 6 check runs;
+- 9 check runs (`STUDIO_BUILDER_MAX_CHECK_RUNS`);
 - a blocking finding (check and file) that survives 2 repairs ends the run (`same_finding`).
 
 `finish(completed)` never trusts the model. The harness re-checks the plan requirement and re-runs the gate if anything changed since the last check. A failing gate counts as a repair round. Only a passing gate saves a snapshot, and the bundles saved are the trusted compiler's output for exactly those files.
 
+After the gate passes, the [design review](#design-review) runs. Then, right before the draft is committed, the harness runs the access, Studio, entitlement and AI-switch checks of [Budgets](#budgets-the-kill-switch-and-entitlement) once more. The daily spend limit isn't checked there, since a commit calls no model. So no draft lands after Studio was paused, the school lost the `studio` entitlement, the `studio-builder` switch was turned off, the professor lost the section or the project was archived. The run then ends `blocked` with that reason and saves nothing. The same check runs before a build whose polishing ran out keeps a draft (see Improving under [Design review](#design-review)).
+
+## Sample data and the plan
+
+Step 11 adds both.
+
+**Plan v2.** `submit_plan` takes a goal (500 characters), the views to change, up to 10 manifest changes, up to 10 capabilities (only ones with a Bridge method), up to 5 checks, and four lists the design review reads:
+
+- `professor_view` and `student_view`: what each view does, up to 10 items of 240 characters each;
+- `data`: up to 8 items of 300 characters;
+- `requirements`: 1 to 12 checkable statements of 300 characters. The instructions ask for 2 to 10, each opening with words such as "Professor can" or "Student cannot". The schema doesn't enforce the opening;
+- `enhancements`: up to 6 items of 240 characters.
+
+The whole plan is at most 8 KiB. A plan stored before plan v2 still reads, with the four lists empty. The professor sees only the goal and the two view lists.
+
+**Sample data.** `write_sample_data` replaces the draft's invented records, which the preview and the design review show. It takes `{ "<collection>": [{ "student"?: 0-11, "data": { ...every field } }] }`.
+
+- At most 60 records in all (`STUDIO_BUILDER_SAMPLE_MAX_RECORDS`) and 24 KiB of JSON (`STUDIO_BUILDER_SAMPLE_MAX_BYTES`).
+- The manifest must exist first. Every record must match its collection exactly (`record-schema.ts`).
+- `student` picks one of the preview's 12 invented students (`preview-roster.ts`). It is required exactly for `perStudent` and `staffPerStudent` collections, so a record says whose it is without a name.
+- It counts as one write against the run's budgets. A refusal (`sample_invalid`) names collections and positions, never values.
+- It lives in the working copy, is saved on the snapshot and is part of the snapshot's hash. The draft gate checks it again (`builder.sample`) and runs the student-name and copy-guard checks over its text. It never reaches a published version: the validator and students use their own data.
+
+## Design review
+
+Step 11 (`review.ts`, `renderer.ts`, `validator-runtime/render.mjs`). After the gate passes and before anything is committed, the harness renders the draft and asks the model to review it. The review grants nothing. It can only send the builder back to improve its own draft.
+
+**When it runs.** At most `STUDIO_BUILDER_MAX_REVIEW_ROUNDS` (2) times per run, and only when the work changed since the last review. It needs room for this call and one more turn: the run's spend plus two worst-case calls must fit the run's cost cap, and two model turns must be left. It also needs the pre-call gate to pass. Otherwise it is skipped (`review.skipped`) and the draft commits as checked, unless the check right before the commit refuses it (see [Checks and repair](#checks-and-repair)). A model that is unavailable, times out or makes no valid `submit_review` call is also a skip. After the last round only the render runs, to refuse a draft that crashes. A review never fails a build.
+
+**The render.** Four JPEG screenshots: professor and student, each at desktop width (1280 px) and phone width (390 px), on the draft's sample data and the invented class. Each is at most 400 KiB (`STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES`). `rendererMode()` decides where it runs:
+
+| Mode | When | What happens |
+|---|---|---|
+| `unavailable` | The default, and always on a deployed server | No screenshots. The review reads the code alone |
+| `local` | `STUDIO_BUILDER_RENDERER=local` on a developer machine (`onThisMachine`, the same rule as the local Stage 2 runner): `NODE_ENV` isn't `production`, or `NEXT_PUBLIC_SUPABASE_URL` is a loopback address, as on the guarded local server | Spawns `validator-runtime/render.mjs` with the local runner's minimal environment, which holds no Scholera secret. It renders in Playwright's Chromium with its OS sandbox on, inside the real frame document and policy, and gives up after 60 seconds. `STUDIO_BUILDER_RENDERER_ROOT` is the repository path. It defaults to the working directory, and is needed when the server runs from a standalone build, which ships neither `validator-runtime` nor Playwright |
+
+A production renderer would be a Cloud Run Job, like the validator's. It isn't built.
+
+**Code-only fallback.** A render that doesn't succeed (unavailable, failed, timed out or thrown) leaves no screenshots. The step is recorded as `preview.rendered` with the reason. The review prompt then tells the model to review from the code only and to report no visual issue it can't see in the code.
+
+**A view that crashes.** A view that crashes or never starts when rendered is a major finding, recorded without a model call, and the builder goes back to fix it. After the last review round the run ends `blocked` (`repair_rounds`) instead, so a crashing view never reaches a professor.
+
+**The review call.** One model call with the fixed rubric (`REVIEW_INSTRUCTIONS`, versioned `studio-review-v2`) and one tool, `submit_review`. It returns a verdict (`ready` or `improve`) and three lists: `unmet_requirements`, `major_issues` and `minor_issues`. The schema accepts up to 32 items per list. Each list is then cut to `STUDIO_BUILDER_REVIEW_FINDINGS_MAX` (8) items of `STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS` (240) characters. An `improve` verdict with no unmet requirement or major issue becomes `ready`. A second review that only repeats what the first asked for also counts as `ready`, so the loop can't spin. The request, plan, code and sample data are fenced as data, and the screenshots show only invented data.
+
+**Improving.** On `improve`, the findings reach the builder fenced as `check-output`, and it gets `STUDIO_BUILDER_IMPROVE_MAX_TURNS` (4) model turns to act on them. After those turns, or when a run limit ends the polishing, the harness settles the build itself. It keeps the improved draft if it still passes every check and renders without crashing, and otherwise the draft the review saw. The result then carries `polish_stopped`. The findings are model text: they stay in the run's working copy, and the audit records only counts.
+
 ## Context
 
-Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v5`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
+Every turn rebuilds the prompt from durable state (`context-builder.ts`, pure). The stable instructions (`instructions.ts`, versioned `studio-builder-l1-v12`) are the same bytes on every turn and hold no project data. The prompt holds, from least to most volatile:
 
 1. The manifest's structure, unfenced, and its own words, fenced.
-2. The file map, frozen collections and available capabilities.
+2. The file map, whether sample data exists, frozen collections and available capabilities.
 3. The last 3 builds of the project.
 4. The project's saved decisions, picked deterministically (see [Project memory](#project-memory)).
-5. The course code and title, plus skill names only when the request is about skills.
-6. The course material the model's searches found, re-read for this turn.
+5. The course material the model's searches found, re-read for this turn.
+6. The course code and title, plus skill names only when the request is about skills.
 7. The kit references the model asked for.
 8. The files it has read, with line numbers.
-9. The latest findings.
-10. The action log and refusal hints, the plan, and the remaining budgets.
-11. Last, the professor's request and answers.
+9. The sample data it wrote.
+10. The latest findings.
+11. The latest design review, when it asked for changes.
+12. The action log and refusal hints, the plan, and the remaining budgets.
+13. Last, the professor's request and answers.
 
 Everything not written by Scholera or the professor sits inside a `<data_NONCE>` block with a provenance attribute (`plugin-code`, `check-output`, `course-data`, `course-material`, `earlier-request`, `model-authored`, `project-memory`). The nonce changes per prompt, and text inside a block can't close it (`fenceBlock` in `prompt-fence.ts`).
 
@@ -380,7 +429,7 @@ Before every model call the harness checks, fresh:
 - the school's 24-hour builder spend leaves room for one more call;
 - every run budget, including the run's spend plus a worst-case next call ($0.42 at Pro rates).
 
-Turning the AI switch off stops every build at its next model call.
+Turning the AI switch off stops every build at its next model call. The access, Studio, entitlement and AI-switch checks run once more right before a draft is committed (see [Checks and repair](#checks-and-repair)), so a switch turned off during the last turn or the design review still stops the commit. The daily spend and the run budgets aren't checked again there, because a commit calls no model.
 
 Spend is recorded in three places, for different jobs:
 
@@ -454,7 +503,7 @@ Each has a test, and the starred ones also have a mutation test that removes the
 - Memory is project-scoped: a read pins the run's project and institution, a row can't name another project's run or decision, and another institution gets nothing (database tests). ★ project scoping, ★ institution guard
 - A suggestion is inert until the professor approves that exact row, bound to its run and owner; the model has no path to an active decision (database and harness tests). ★ professor approval
 - A suggestion's evidence is an exact quote of the professor's own words in the current run, checked in the harness and again in the database; course text, skill names, code, findings and earlier summaries can never be evidence. ★ evidence check
-- A project has one active decision per topic, a decision's words never change, and approving supersedes the old one in the same transaction. ★ topic uniqueness
+- A project has one active decision per topic and slot, a decision's words never change, and approving supersedes the old one in the same transaction. ★ topic uniqueness
 - A project can't pass its active cap, a run can't pass its proposal cap, and a prompt carries at most 8 decisions and 2 KiB of them. ★ memory caps
 - The current request outranks a saved decision, in the instructions, in the prompt, and by position. ★ request overrides memory
 - A failed memory read never fails a build, and a stale or stopped slice records no proposal (harness and database tests).
@@ -463,12 +512,15 @@ Each has a test, and the starred ones also have a mutation test that removes the
 
 ## Evals
 
-Two suites, kept apart (`eval/studio-builder/README.md`):
+Three suites, kept apart (`eval/studio-builder/README.md`):
 
 - **Deterministic**, part of `npm run test` (`studio-builder-harness.test.ts`, `studio-builder-recovery.test.ts`). A scripted model drives the real harness through every required scenario: a first build, a copy change, a two-view change, a capability approved and declined, compile and Stage 1 repairs, a repeated finding, forbidden tools and paths, Stop mid-call, a CAS conflict and prompt injection. It also covers a model that keeps asking questions past the cap, the cost cap with its worst-case next call, the turn cap, interruptions, provider timeouts and check-worker crashes.
-- **Live**, `npm run eval:studio-builder` only. It runs the nine cases a script can't force against the real model, harness, gate and check worker, with the in-memory run store and a scripted professor. `--max-usd` (default $5) is checked before every model call.
+- **Live**, `npm run eval:studio-builder` only. It runs the 17 cases a script can't force against the real model, harness, gate and check worker, with the in-memory run store and a scripted professor: nine E cases, five memory cases (M1 to M5) and three course-material cases (R1 to R3). `--max-usd` (default $5) is checked before every model call.
+- **Product benchmark** (Step 11), `eval/studio-builder/product.ts`, run with `npx tsx` only. It sends 13 realistic tool requests, some with a follow-up message, through the real harness, checks and design review, using the local renderer when `STUDIO_BUILDER_RENDERER=local`. Each case writes its views, manifest, sample data, final screenshots and a pass or fail per check under `--out` (default `tmp/product-bench`, gitignored). `--max-usd` defaults to $3. It keeps no baseline.
 
 `eval/studio-builder/baseline.json` records one live run with safe metrics only. Per case: the expected and actual outcome, turns, tool calls, repairs, check runs, approvals, questions, approximate tokens and cost, and failing check ids. For the run: the model, instructions, validator ruleset, compiler, limits and commit. `--compare` fails only when a case misses an outcome it met in the baseline; every other difference is reported as drift. Re-record it after any change to the instructions, model, ruleset or limits.
+
+The committed baseline is out of date and is being re-recorded. It records instructions `studio-builder-l1-v4` and 6 check runs, while the code is at `studio-builder-l1-v12` with 9 (`STUDIO_BUILDER_MAX_CHECK_RUNS`), and it has no R cases.
 
 The recorded baseline (2026-10-02, Step 8C, `gemini-3.1-pro-preview`, instructions `studio-builder-l1-v4`, validator ruleset 2) ran under a $1 cap and is partial: 8 cases ran for $0.60, with no invariant failures.
 

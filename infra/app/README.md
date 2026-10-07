@@ -153,8 +153,10 @@ and its absence or `'true'` means request-based. `containerConcurrency`, `timeou
 ## Environment for the Studio builder
 
 The Studio builder (`docs/reference/studio-agent-harness.md`) runs on the background-jobs queue
-and previews drafts on the plugin runtime origin. It has no variables of its own, but it does
-nothing useful without these:
+and previews drafts on the plugin runtime origin. It needs no variables of its own in a
+deployment. Its two, `STUDIO_BUILDER_RENDERER=local` and `STUDIO_BUILDER_RENDERER_ROOT`, turn on
+screenshots for the design review on a developer machine only: a deployed server never runs the
+renderer, so there the review reads the code alone. It does nothing useful without these:
 
 | Variable | What it is | Where staging gets it | What happens when it is missing |
 |---|---|---|---|
@@ -194,7 +196,14 @@ labels the `*.run.app` URL as the runtime when the two match.
 `STUDIO_STUDENT_ACCESS` stays off on staging. The script never sets it, so students reach no
 plugin, and it refuses to deploy an env file that sets it to `on`. It opens only when the
 release gate passes (`docs/reference/studio-plugin-publication.md#release-gate`).
-`STUDIO_VALIDATOR_RUNNER` isn't set either: production builds refuse the local runner.
+`STUDIO_VALIDATOR_RUNNER` isn't set either, so Stage 2 browser checks can't run on staging and no
+version can pass the validator there. The local runner is refused in a production build unless
+its database is on loopback, which a deployed one never is. The cloud runner needs
+`STUDIO_VALIDATOR_RUNNER=cloud` and the five other `STUDIO_VALIDATOR_*` values that
+`infra/validator-runner/deploy.sh --apply` prints. They aren't in this script's `--set-env-vars`
+list, so a staging deploy removes any of them set by hand (see the top of this file). When the
+runner is first deployed for staging, the six values have to be added to the script's list
+before the next staging deploy, or Stage 2 silently falls back to `runner_unavailable`.
 
 Three settings live elsewhere. The `studio` entitlement is per school, granted in the super-admin
 plan editor. The "Studio Tool Builder" AI switch is per school or platform-wide, in the AI
