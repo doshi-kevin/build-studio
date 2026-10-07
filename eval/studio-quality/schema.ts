@@ -31,10 +31,13 @@ export const judgeIdentitySchema = z.strictObject({
 })
 export type JudgeIdentity = z.infer<typeof judgeIdentitySchema>
 
-/** Something the judge may cite: a screenshot, a view's source, the manifest, the sample data or a Stage 2 check. */
+/**
+ * Something the judge may cite: a screenshot, a view's source, the manifest, the sample data,
+ * a Stage 2 check, an item read from a rendered screen, or a check of the source against it.
+ */
 export const evidenceSourceSchema = z.strictObject({
-  id: z.string().regex(/^(shot:[a-z0-9-]+|views\/(student|professor)\.tsx|manifest|sample|stage2:[a-z_.]+)$/),
-  kind: z.enum(['screenshot', 'source', 'manifest', 'sample', 'stage2']),
+  id: z.string().regex(/^(shot:[a-z0-9-]+|views\/(student|professor)\.tsx|manifest|sample|stage2:[a-z_.]+|render:[a-z0-9.-]+:[a-z]+:[a-z0-9-]+(~[0-9]+)?|check:(professor|student):[0-9]{1,3})$/),
+  kind: z.enum(['screenshot', 'source', 'manifest', 'sample', 'stage2', 'render', 'check']),
   label: z.string(),
   /** Screenshots: the file under the artifact's evidence folder. */
   file: z.string().nullable(),
@@ -215,6 +218,16 @@ export const qualityResultSchema = z.strictObject({
     /** Declared capabilities the preview can't answer ("view:capability"): the evidence shows an
      * error where the installed tool would work, so the result isn't comparable. */
     unpreviewable: z.array(z.string()).default([]),
+    /** The rendered evidence the judge saw, and the deterministic checks against the source. */
+    render: z
+      .strictObject({
+        items: count,
+        screens: count,
+        checks: z.array(z.strictObject({ id: z.string(), view: z.enum(['professor', 'student']), kind: z.enum(['missing-from-render', 'screen-contradiction']), detail: z.string() })),
+        notSeen: count,
+      })
+      .nullable()
+      .default(null),
     costUsd: usd.nullable(),
   }),
   qualityScore: z.number().min(0).max(100).nullable(),

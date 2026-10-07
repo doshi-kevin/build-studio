@@ -5,6 +5,7 @@
 import { DIMENSIONS, type DimensionKey, type Level } from '../../../eval/studio-quality/rubric'
 import { evidenceCatalog, type Shot } from '../../../eval/studio-quality/evidence'
 import type { JudgeInput, JudgeRequest } from '../../../eval/studio-quality/judge'
+import type { RenderItem, RenderShot } from '../../../eval/studio-quality/render'
 
 export const PROFESSOR_SRC = Array.from({ length: 40 }, (_, i) => `// professor line ${i + 1}`).join('\n')
 export const STUDENT_SRC = Array.from({ length: 20 }, (_, i) => `// student line ${i + 1}`).join('\n')
@@ -75,4 +76,19 @@ export function validJudge(levelsByPass: Partial<Record<DimensionKey, Level>>[] 
     scorePass += 1
     return scores(levels, visual)
   }
+}
+
+// ── Rendered evidence ──
+
+let y = 0
+/** One element read from a rendered screen. */
+export function renderItem(kind: RenderItem['kind'], text: string, extra: Partial<RenderItem> = {}): RenderItem {
+  y += 10
+  return { frame: 'plugin', kind, text, visibility: 'visible', textCut: false, group: null, locator: `plugin:${kind}`, rect: { x: 0, y, w: 100, h: 20 }, ...extra }
+}
+
+/** One captured screen's rendered evidence. */
+export function renderShot(shot: string, items: RenderItem[], tab: string | null = null): RenderShot {
+  const [view, device, scenario] = shot.split('-') as [RenderShot['view'], RenderShot['device'], RenderShot['scenario']]
+  return { shot, view, device, scenario, tab, items, truncated: 0 }
 }

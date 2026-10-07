@@ -9,10 +9,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { artifactHash, evaluateArtifact, type Artifact, type EvaluateDeps } from '../../eval/studio-quality/evaluate'
 import { snapshotHash } from '@/lib/studio/builder/snapshot'
-import { createScriptedJudge } from '../../eval/studio-quality/judge'
+import { createPlumbingJudge, createScriptedJudge } from '../../eval/studio-quality/judge'
+import { RENDER_FORMAT, type RenderLedger } from '../../eval/studio-quality/render'
 import { parseQualityResult, RESULT_SCHEMA } from '../../eval/studio-quality/schema'
 import type { Stage2Check } from '../../eval/studio-quality/gates'
-import { NORMAL_SHOTS, PROFESSOR_SRC, STUDENT_SRC, shot, validJudge } from './helpers/quality-fixtures'
+import { NORMAL_SHOTS, PROFESSOR_SRC, STUDENT_SRC, renderItem, renderShot, shot, validJudge } from './helpers/quality-fixtures'
 
 const INVARIANTS = { terminal: true, onlyTwoFiles: true, catalogCapabilitiesOnly: true, noUnapprovedCapability: true, noUnapprovedMemory: true }
 
@@ -241,6 +242,57 @@ describe('evidence integrity: everything is of the same artifact', () => {
     await evaluateArtifact(a, deps())
     expect(readFileSync(join(a.dir, 'source', 'professor.tsx'), 'utf8')).toBe(PROFESSOR_SRC)
     expect(readFileSync(join(a.dir, 'source', 'student.tsx'), 'utf8')).toBe(STUDENT_SRC)
+  })
+})
+
+describe('rendered evidence', () => {
+  it('is judged with the screenshots, cited by id, and recorded with its checks', async () => {
+    const render = {
+      format: RENDER_FORMAT,
+      shots: [
+        renderShot('professor-desktop-normal', [renderItem('heading', 'Attendance', { level: 1 }), renderItem('button', 'Mark all present')]),
+        renderShot('professor-desktop-empty', [renderItem('state', 'No students yet', { state: 'empty' })]),
+        renderShot('student-desktop-normal', [renderItem('heading', 'My attendance', { level: 1 })]),
+      ],
+    } as const
+    const judge = createPlumbingJudge()
+    const r = await evaluateArtifact(artifact(), deps({ capture: async () => ({ shots: NORMAL_SHOTS, failures: [], missing: [], bound: true, render: structuredClone(render) as never }) }, judge))
+    expect(r.evaluation.render).toEqual({ items: 4, screens: 3, checks: [], notSeen: 0 })
+    expect(r.evaluation.evidence.filter((e) => e.kind === 'render').map((e) => e.id)).toContain('render:professor-desktop-normal:button:mark-all-present')
+    expect(r.evaluation.passesSucceeded).toBe(r.evaluation.passesRequested)
+    expect(r.evaluation.extracted!.items.find((i) => i.kind === 'action')!.sources).toEqual(['render:professor-desktop-normal:button:mark-all-present', 'views/professor.tsx'])
+  })
+
+  it('records a check, which the judge must address and the result schema accepts', async () => {
+    const card = 'plugin:main>section.kit-card'
+    const render: RenderLedger = {
+      format: RENDER_FORMAT,
+      shots: [
+        renderShot('professor-desktop-normal', [renderItem('button', 'Mark all present')]),
+        renderShot('professor-desktop-empty', [renderItem('state', 'No students yet', { state: 'empty' })]),
+        renderShot('student-desktop-normal', [renderItem('text', 'No options available.', { group: card }), renderItem('button', 'Submit', { group: card })]),
+      ],
+    }
+    const judge = createPlumbingJudge()
+    const r = await evaluateArtifact(artifact(), deps({ capture: async () => ({ shots: NORMAL_SHOTS, failures: [], missing: [], bound: true, render }) }, judge))
+    expect(r.evaluation.render!.checks).toEqual([
+      { id: 'check:student:1', view: 'student', kind: 'screen-contradiction', detail: 'On student-desktop-normal, “No options available.” is shown in the same container as an enabled “Submit” button.' },
+    ])
+    expect(r.evaluation.evidence.find((e) => e.id === 'check:student:1')).toMatchObject({ kind: 'check', file: null })
+    expect(r.evaluation.extracted!.items.some((i) => i.sources.includes('check:student:1'))).toBe(true)
+    expect(r.evaluation.passesSucceeded).toBe(r.evaluation.passesRequested)
+    // A result written before rendered evidence existed still reads, as no render.
+    const older = JSON.parse(JSON.stringify(r))
+    delete older.evaluation.render
+    const parsed = parseQualityResult(older)
+    expect(parsed.ok && parsed.result.evaluation.render).toBeNull()
+  })
+
+  it('judges without the contract, and records no render, when the capture has no ledger', async () => {
+    const r = await evaluateArtifact(artifact(), deps())
+    expect(r.evaluation.mode).toBe('visual+code')
+    expect(r.evaluation.render).toBeNull()
+    expect(r.evaluation.evidence.some((e) => e.kind === 'render' || e.kind === 'check')).toBe(false)
   })
 })
 

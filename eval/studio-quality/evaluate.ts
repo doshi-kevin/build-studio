@@ -19,7 +19,8 @@ import { snapshotHash } from '../../src/lib/studio/builder/snapshot'
 import { STUDIO_VALIDATOR_RULESET, VALIDATOR_VERSION } from '../../src/lib/studio/validator/ruleset'
 import { captureScreens, evidenceCatalog, runStage2, unpreviewableCapabilities, type Bundled, type CaptureOutcome, type Shot, type Stage2Outcome } from './evidence'
 import { comparability, computeGates, failureClassOf, publishable, type GateFacts } from './gates'
-import { judgeArtifact, JUDGE_PROMPT_VERSION, type JudgeImage, type JudgeModel, type SpendLedger } from './judge'
+import { judgeArtifact, JUDGE_PROMPT_VERSION, type JudgeImage, type JudgeModel, type JudgeRender, type SpendLedger } from './judge'
+import { judgeRender, type CrossCheck } from './render'
 import { platformCardSha256 } from './platform-card'
 import { RUBRIC_VERSION } from './rubric'
 import { parseQualityResult, RESULT_SCHEMA, type QualityResult } from './schema'
@@ -185,6 +186,19 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
 
   // The evidence the judge may cite and the result records: no screenshot unless it was judged on them.
   const evidence = evidenceCatalog({ files, sample: artifact.sample, shots: mode === 'visual+code' ? shots : [], stage2: stage2?.checks ?? null })
+  // What the screens actually show, and where the source claims more: judged with the screenshots.
+  let cross: CrossCheck | null = null
+  let render: JudgeRender | null = null
+  if (mode === 'visual+code' && capture?.render) {
+    const built = judgeRender(capture.render, files)
+    cross = built.cross
+    render = built.render
+    const indexed = built.indexed
+    evidence.push(
+      ...indexed.map((x) => ({ id: x.id, kind: 'render' as const, label: `${x.key}: ${x.item.kind}`, file: 'render.json', lines: null })),
+      ...cross.checks.map((c) => ({ id: c.id, kind: 'check' as const, label: c.detail.slice(0, 300), file: null, lines: null })),
+    )
+  }
   const images: JudgeImage[] =
     mode === 'visual+code' ? shots.map((s) => ({ id: `shot:${s.id}`, label: s.id, mediaType: 'image/jpeg' as const, bytes: deps.readImage(join(evidenceDir, s.file)) })) : []
   const outcome =
@@ -205,6 +219,7 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
             stage2: stage2?.checks ?? null,
             evidence,
             images,
+            render,
           },
           { passes: deps.judgePasses, ledger: deps.ledger ?? undefined },
         )
@@ -280,6 +295,14 @@ export async function evaluateArtifact(artifact: Artifact, deps: EvaluateDeps): 
       studentAssessment: outcome?.studentAssessment ?? null,
       passTotals: outcome?.passes.map((p) => p.total) ?? [],
       unpreviewable,
+      render: cross
+        ? {
+            items: render!.items.length,
+            screens: capture!.render!.shots.length,
+            checks: cross.checks.map(({ id, view, kind, detail }) => ({ id, view, kind, detail })),
+            notSeen: cross.notSeen.length,
+          }
+        : null,
       costUsd: outcome?.costUsd ?? null,
     },
     qualityScore: verdict.qualityScore,

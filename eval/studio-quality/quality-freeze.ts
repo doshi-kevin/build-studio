@@ -12,8 +12,11 @@ import type { Extraction } from './schema'
 export const QUALITY_FROZEN = {
   rubricVersion: 'studio-generation-quality-v1',
   rubricSha256: '4ea17162ae25725d5faaac6aa3d92c922e3946d7caf8f4ff0795c3247f13b0db',
-  judgePromptVersion: 'sgq-judge-v2',
-  judgePromptSha256: '33e90a32a9360ca04bad09079dd71d73a03c1b0ada7af4696b1d3df77a8ed3d4',
+  // v4 (12A.3): the judge reads what each screen actually renders, and the source can no
+  // longer prove something is on screen. v2 credited a "+1 Point" button no screen showed;
+  // a prompt-only fix (v3, never frozen) didn't change that.
+  judgePromptVersion: 'sgq-judge-v4',
+  judgePromptSha256: 'e7b61d1f673492727f83a22363595737a2d52a61d764a3b0bf58bc7eb4e89d2a',
 } as const
 
 const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
@@ -33,6 +36,8 @@ const FIXED_INPUT: JudgeInput = {
   stage2: null,
   evidence: [{ id: 'views/professor.tsx', kind: 'source', label: 'professor', file: null, lines: 1 }],
   images: [],
+  // So the fingerprint covers the instructions given only alongside rendered evidence.
+  render: { text: 'rendered', items: [], checks: [] },
 }
 const FIXED_EXTRACTION: Extraction = {
   items: [{ id: 'e1', role: 'professor', kind: 'data', text: 'x', sources: ['views/professor.tsx'] }],

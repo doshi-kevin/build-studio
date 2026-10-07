@@ -10,16 +10,24 @@
  * refused and asked again, a bounded number of times, and every attempt is recorded.
  *
  * The judge sees the request, the case's goals and hints, the platform card, the manifest,
- * both views' source, the sample data, Stage 2's results and the screenshots. It never
- * sees the builder's plan, summary or design review. Its identity is always explicit:
- * there is no default model and no fallback to the builder's.
+ * both views' source, the sample data, Stage 2's results, the screenshots and the rendered
+ * evidence: what each screen actually shows, read from the live DOM, with the checks that
+ * compare it with the source (render.ts). It never sees the builder's plan, summary or
+ * design review. Its identity is always explicit: there is no default model and no fallback
+ * to the builder's.
+ *
+ * Evidence contract (v4): the source can't prove something is on screen. An action counts
+ * only with its rendered control and the source that handles it; information counts only
+ * when rendered; every check must be addressed, and nothing a check says is absent may be
+ * described as present. These are enforced when the replies are checked, not just asked for.
  */
 import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { DIMENSIONS, DIMENSION_KEYS, LEVELS, levelSpread, medianLevel, pointsFor, totalScore, type DimensionKey, type Level } from './rubric'
 import { extractionSchema, type EvidenceSource, type Extraction, type JudgeIdentity } from './schema'
+import type { RenderCheck } from './render'
 
-export const JUDGE_PROMPT_VERSION = 'sgq-judge-v2'
+export const JUDGE_PROMPT_VERSION = 'sgq-judge-v4'
 export const DEFAULT_JUDGE_PASSES = 3
 export const DEFAULT_JUDGE_ATTEMPTS = 3
 
@@ -66,7 +74,24 @@ export interface JudgeInput {
   stage2: { checkId: string; status: string; views: Record<string, string>; findings: { view: string; detail: string }[] }[] | null
   evidence: EvidenceSource[]
   images: JudgeImage[]
+  /** What the screens actually show and the checks against the source; absent without screenshots. */
+  render?: JudgeRender | null
 }
+
+export interface JudgeRender {
+  /** The rendered evidence and checks as the judge reads them (render.ts renderText). */
+  text: string
+  items: { id: string; view: 'professor' | 'student'; device: 'desktop' | 'phone'; scenario: 'normal' | 'empty' | 'slow' | 'failing'; kind: string }[]
+  checks: Pick<RenderCheck, 'id' | 'view' | 'kind' | 'missing'>[]
+}
+
+/** Render items a person can act on. */
+const CONTROL_KINDS = new Set(['button', 'control', 'tab', 'option', 'link'])
+const normText = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+/** Text an item puts in quotes: what it claims a screen literally says. An apostrophe inside
+ * a word (the professor's) neither opens nor closes a quote. */
+const quotesIn = (text: string) =>
+  [...text.matchAll(/(?:[“"‘]|(?<![\p{L}\p{N}])')([^“”"‘’\n]{2,80}?)(?:[”"’]|'(?![\p{L}\p{N}]))/gu)].map((m) => normText(m[1])).filter(Boolean)
 
 // ── Reply shapes ──
 
@@ -110,7 +135,7 @@ export function sourceExists(ref: string, evidence: readonly EvidenceSource[]): 
 
 const isScreenshot = (ref: string, evidence: readonly EvidenceSource[]) => evidence.some((e) => e.id === ref && e.kind === 'screenshot')
 
-export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence'>): { ok: true; value: Extraction } | { ok: false; error: string } {
+export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence' | 'render'>): { ok: true; value: Extraction } | { ok: false; error: string } {
   const parsed = extractionSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: `not the evidence shape: ${issuesOf(parsed.error)}` }
   const ids = new Set<string>()
@@ -124,10 +149,48 @@ export function checkExtraction(raw: unknown, input: Pick<JudgeInput, 'evidence'
     const bad = parsed.data.core[role].evidence.find((id) => !ids.has(id))
     if (bad) return { ok: false, error: `core.${role} cites ${clamp(bad)}, which isn't an item` }
   }
+  if (input.render) {
+    const contract = checkRenderContract(parsed.data, input.render)
+    if (contract) return { ok: false, error: contract }
+  }
   return { ok: true, value: parsed.data }
 }
 
-export function checkScores(raw: unknown, extraction: Extraction, input: Pick<JudgeInput, 'evidence' | 'mode'>): { ok: true; value: ScoreReply } | { ok: false; error: string } {
+const isCode = (ref: string) => LINE_REF.test(ref) || ref === 'views/professor.tsx' || ref === 'views/student.tsx'
+
+/** The v4 evidence contract on Pass A: null when every item keeps it. */
+function checkRenderContract(extraction: Extraction, render: JudgeRender): string | null {
+  const rendered = new Map(render.items.map((i) => [i.id, i]))
+  const forRole = (role: string, ref: string) => {
+    const r = rendered.get(ref)
+    return !!r && (role === 'both' || r.view === role)
+  }
+  for (const item of extraction.items) {
+    const id = clamp(item.id)
+    if (item.kind === 'action') {
+      const control = item.sources.some((s) => forRole(item.role, s) && CONTROL_KINDS.has(rendered.get(s)!.kind))
+      if (!control || !item.sources.some(isCode)) return `item ${id} is an action: cite the rendered control (a render id of a ${item.role} button, control, tab, option or link) and the source line that handles it`
+    }
+    if ((item.kind === 'data' || item.kind === 'state') && !item.sources.some((s) => forRole(item.role, s))) {
+      return `item ${id} describes what a ${item.role === 'both' ? 'person' : item.role} sees: cite the render id where it appears`
+    }
+    if (item.kind === 'write' && !item.sources.some(isCode)) return `item ${id} describes a write: cite the source line that does it`
+    if (item.kind !== 'absence') {
+      const said = quotesIn(item.text)
+      for (const check of render.checks) {
+        if (check.kind !== 'missing-from-render' || (item.role !== 'both' && check.view !== item.role)) continue
+        const absent = check.missing.find((m) => said.includes(normText(m)))
+        if (absent) return `item ${id} quotes something ${check.id} says is not on screen: record it as an absence`
+      }
+    }
+  }
+  const cited = new Set(extraction.items.flatMap((i) => i.sources))
+  const unaddressed = render.checks.find((c) => !cited.has(c.id))
+  if (unaddressed) return `${unaddressed.id} isn’t addressed: add an item that cites it`
+  return null
+}
+
+export function checkScores(raw: unknown, extraction: Extraction, input: Pick<JudgeInput, 'evidence' | 'mode' | 'render'>): { ok: true; value: ScoreReply } | { ok: false; error: string } {
   const parsed = scoreSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: `not the score shape: ${issuesOf(parsed.error)}` }
   const items = new Map(extraction.items.map((i) => [i.id, i]))
@@ -144,8 +207,51 @@ export function checkScores(raw: unknown, extraction: Extraction, input: Pick<Ju
     if (d.visualOnly && !entry.evidence.some((id) => items.get(id)!.sources.some((s) => isScreenshot(s, input.evidence)))) {
       return { ok: false, error: `${d.key} must cite at least one item backed by a screenshot` }
     }
+    if (input.render) {
+      const contract = checkRenderLevel(d.key, entry.level, entry.evidence, items, input.render, input.evidence)
+      if (contract) return { ok: false, error: contract }
+    }
   }
   return { ok: true, value: parsed.data }
+}
+
+type Rendered = JudgeRender['items'][number]
+
+/** What each dimension's level must rest on, under the v4 evidence contract. */
+const RENDER_BACKING: Partial<Record<DimensionKey, { need: string; ok: (r: Rendered) => boolean }>> = {
+  workflow_completeness: { need: 'a rendered control', ok: (r) => CONTROL_KINDS.has(r.kind) },
+  professor_experience: { need: 'the professor’s rendered evidence', ok: (r) => r.view === 'professor' },
+  student_experience: { need: 'the student’s rendered evidence', ok: (r) => r.view === 'student' },
+  interaction_design: { need: 'a rendered control', ok: (r) => CONTROL_KINDS.has(r.kind) },
+  information_design: { need: 'rendered evidence', ok: () => true },
+  edge_states: { need: 'rendered evidence from an empty, loading or failing screen', ok: (r) => r.scenario !== 'normal' },
+}
+
+function checkRenderLevel(
+  key: DimensionKey,
+  level: Level | null,
+  cites: readonly string[],
+  items: ReadonlyMap<string, Extraction['items'][number]>,
+  render: JudgeRender,
+  evidence: readonly EvidenceSource[],
+): string | null {
+  // Credit needs rendered backing; "none" can rest on what is absent.
+  if (level === null || level === 'none') return null
+  const rendered = new Map(render.items.map((i) => [i.id, i]))
+  const sources = cites.flatMap((id) => items.get(id)!.sources)
+  const backing = RENDER_BACKING[key]
+  if (backing && !sources.some((s) => rendered.has(s) && backing.ok(rendered.get(s)!))) return `${key} must cite an item backed by ${backing.need}`
+  if (key === 'responsiveness_accessibility') {
+    const phone = sources.some((s) => rendered.get(s)?.device === 'phone' || (isScreenshot(s, evidence) && s.includes('-phone-')) || s.startsWith('stage2:'))
+    if (!phone) return `${key} must cite an item backed by a phone screen, its rendered evidence or Stage 2`
+  }
+  // Excellent can't stand beside a check it never mentions.
+  const role = key === 'professor_experience' ? 'professor' : key === 'student_experience' ? 'student' : key === 'workflow_completeness' ? 'any' : null
+  if (level === 'excellent' && role) {
+    const open = render.checks.filter((c) => role === 'any' || c.view === role)
+    if (open.length && !open.some((c) => sources.includes(c.id))) return `${key} is excellent but doesn’t address ${open.map((c) => c.id).join(', ')}`
+  }
+  return null
 }
 
 // ── Prompts ──
@@ -189,8 +295,26 @@ export function judgeSystem(mode: JudgeInput['mode']): string {
     '# Rubric (studio-generation-quality-v1)',
     'Pick exactly one level per dimension: none, weak, acceptable or excellent. Never a number.',
     rubricText(mode),
+    mode === 'visual+code' ? `\n${EVIDENCE_CONTRACT}` : '',
   ].join('\n')
 }
+
+const EVIDENCE_CONTRACT = [
+  '# Evidence contract',
+  'Rendered evidence (render: ids) is read from the live page after each screenshot: it is what a person can actually see. The source (views/…tsx lines) shows what the code would do. It never proves that something is on screen.',
+  '- A user-facing action counts only when its control is rendered (a render id of a button, control, tab, option or link) and the source shows that control doing something meaningful. A control only in the source does not count, and neither does a rendered control whose handler does nothing useful.',
+  '- Information (values, columns, statuses, summaries, history) counts only when it is rendered.',
+  '- Checks (check: ids) were decided from the rendered page and the source, not by you. Treat them as fact: anything a check says is not on screen is absent.',
+  'By dimension:',
+  '- problem_understanding: the request, manifest, source and rendered evidence.',
+  '- workflow_completeness: actions that are both rendered and backed by source behaviour.',
+  '- professor_experience and student_experience: that role’s rendered evidence and screenshots first. The source only explains controls that are rendered. It cannot make up for what the role’s screens don’t show.',
+  '- interaction_design: a rendered control first, then the source for its handler, validation, feedback, confirmation, defaults and undo.',
+  '- visual_quality: the screenshots only.',
+  '- information_design: only information that is rendered.',
+  '- edge_states: the empty, loading and failing screens, with the source only to explain what they show.',
+  '- responsiveness_accessibility: Stage 2, the phone screens and their rendered evidence (clipped, scrolled-out or cut-off text).',
+].join('\n')
 
 /**
  * Everything every call on one artifact shares, in a fixed order, placed first: a model with
@@ -207,7 +331,10 @@ export function extractPrompt(input: JudgeInput, nonce: string, refusal: string 
     sharedPrompt(input, nonce),
     '',
     '# Pass A: evidence',
-    'List what you can observe, as items. Each item is one fact about one role: an action the person can take (and what it writes), data shown, a state shown, a layout fact, or something notably absent. Cite where you saw it in `sources`: a screenshot id, a view line such as views/professor.tsx:42 or views/professor.tsx:40-55, manifest, sample, or a stage2 check id. Cite only sources listed above. Something you see only in the code is not on screen: say what a screenshot shows only when you see it in that screenshot. Then say whether the core action the request needs is present for each role, citing items.',
+    'List what you can observe, as items. Each item is one fact about one role: an action the person can take (and what it writes), data shown, a state shown, a layout fact, or something notably absent. Cite where you saw it in `sources`: a screenshot id, a render id, a check id, a view line such as views/professor.tsx:42 or views/professor.tsx:40-55, manifest, sample, or a stage2 check id. Cite only sources listed above. Something you see only in the code is not on screen: say what a screenshot shows only when you see it in that screenshot. Then say whether the core action the request needs is present for each role, citing items.',
+    input.render
+      ? 'Rendered evidence decides what is on screen. An action item cites the render id of its control and the source line that handles it. A data or state item cites the render id where it appears. Record anything that exists only in the source, if it matters, as an absence. Address every check with at least one item that cites it, and never describe as present anything a check says is not on screen.'
+      : '',
     'Give items ids e1, e2, e3 and so on.',
     replyShape(extractionSchema),
     refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
@@ -222,6 +349,9 @@ export function scorePrompt(input: JudgeInput, extraction: Extraction, nonce: st
     '',
     '# Pass B: levels',
     'Using only the evidence items below, give each rubric dimension one level and cite the items that justify it. A dimension with no supporting item can’t be scored above none. Then write one short paragraph each on the professor’s and the student’s experience.',
+    input.render
+      ? 'Follow the evidence contract. Every dimension about what a person experiences rests on items backed by rendered evidence. Workflow completeness or a role’s experience can be excellent only if it cites the items that address that role’s checks.'
+      : '',
     fence('evidence-items', JSON.stringify(extraction, null, 1), nonce),
     replyShape(scoreSchema),
     refusal ? `Your last answer was refused: ${refusal}. Answer again, fixing that.` : '',
@@ -242,7 +372,9 @@ function inputBlocks(input: JudgeInput, nonce: string): string {
     fence('views/student.tsx', numbered(input.files.student), nonce),
     fence('sample', JSON.stringify(input.sample ?? null, null, 1), nonce),
     fence('stage2', input.stage2 ? JSON.stringify(input.stage2, null, 1) : 'Stage 2 did not run.', nonce),
-    `Evidence you may cite: ${input.evidence.map((e) => e.id).join(', ')}.`,
+    input.render ? fence('rendered', input.render.text, nonce) : '',
+    `Evidence you may cite: ${input.evidence.filter((e) => e.kind !== 'render' && e.kind !== 'check').map((e) => e.id).join(', ')}.`,
+    input.render ? 'You may also cite every render: and check: id in the rendered block.' : '',
     shots.length > 0 ? `Screenshots attached, in order: ${shots.map((s) => `${s.id} (${s.label})`).join('; ')}.` : 'No screenshots are attached.',
   ]
     .filter(Boolean)
@@ -487,27 +619,63 @@ export function createScriptedJudge(respond: (request: JudgeRequest, call: numbe
  * real evidence and gives every assessable dimension "acceptable". Its scores mean
  * nothing, its results are marked scripted, and they never count as comparable.
  */
-export function createPlumbingJudge(): JudgeModel {
+export function createPlumbingJudge(): JudgeModel & { requests: JudgeRequest[] } {
   return createScriptedJudge(
     (request) => {
       const ids = [...request.prompt.matchAll(/Evidence you may cite: ([^\n]*)\./g)].at(-1)?.[1].split(', ') ?? []
       const shots = ids.filter((id) => id.startsWith('shot:'))
+      // Rendered evidence, when there is any: one line per item, "  <id> | <description>".
+      const rendered = [...request.prompt.matchAll(/^ {2}(render:[^ ]+) \| (\w+)/gm)].map((m) => ({ id: m[1], kind: m[2] }))
+      const checks = [...request.prompt.matchAll(/^ {2}(check:(professor|student):\d+) \|/gm)].map((m) => ({ id: m[1], view: m[2] }))
+      const pick = (test: (id: string, kind: string) => boolean) => rendered.find((r) => test(r.id, r.kind))?.id
+      const forView = (view: string, control: boolean) => pick((id, kind) => id.startsWith(`render:${view}-`) && (!control || CONTROL_KINDS.has(kind)))
       if (request.stage === 'extract') {
+        if (rendered.length === 0) {
+          const items = [
+            { id: 'e1', role: 'professor', kind: 'data', text: 'The professor view as written.', sources: ['views/professor.tsx'] },
+            { id: 'e2', role: 'student', kind: 'data', text: 'The student view as written.', sources: ['views/student.tsx'] },
+            ...shots.map((s, i) => ({ id: `e${i + 3}`, role: 'both', kind: 'layout', text: `Screenshot ${s}.`, sources: [s] })),
+          ]
+          return { items, core: { professor: { present: false, evidence: ['e1'] }, student: { present: false, evidence: ['e2'] } } }
+        }
+        const role = (view: string) => {
+          const control = forView(view, true)
+          const any = forView(view, false)
+          return control ? { kind: 'action', sources: [control, `views/${view}.tsx`] } : any ? { kind: 'layout', sources: [any] } : { kind: 'absence', sources: [`views/${view}.tsx`] }
+        }
+        const edge = pick((id) => /-(empty|slow|failing)[:.]/.test(id))
+        const phone = pick((id) => id.includes('-phone-')) ?? shots.find((s) => s.includes('-phone-'))
         const items = [
-          { id: 'e1', role: 'professor', kind: 'data', text: 'The professor view as written.', sources: ['views/professor.tsx'] },
-          { id: 'e2', role: 'student', kind: 'data', text: 'The student view as written.', sources: ['views/student.tsx'] },
-          ...shots.map((s, i) => ({ id: `e${i + 3}`, role: 'both', kind: 'layout', text: `Screenshot ${s}.`, sources: [s] })),
+          { id: 'e1', role: 'professor', text: 'The professor view as rendered.', ...role('professor') },
+          { id: 'e2', role: 'student', text: 'The student view as rendered.', ...role('student') },
+          { id: 'e3', role: 'both', kind: 'layout', text: `Screenshot ${shots[0]}.`, sources: [shots[0]] },
+          { id: 'e4', role: 'both', kind: edge ? 'state' : 'layout', text: 'An edge state as rendered.', sources: [edge ?? shots[0]] },
+          { id: 'e5', role: 'both', kind: 'layout', text: 'The phone layout as rendered.', sources: [phone ?? shots[0]] },
+          ...checks.map((c, i) => ({ id: `e${i + 6}`, role: c.view, kind: 'absence', text: `Plumbing judge: ${c.id}.`, sources: [c.id] })),
         ]
         return { items, core: { professor: { present: false, evidence: ['e1'] }, student: { present: false, evidence: ['e2'] } } }
       }
       const visual = shots.length > 0
+      // With rendered evidence: each dimension cites what it may rest on, or gives "none" when
+      // nothing rendered can carry it (no control anywhere, no edge state, no phone screen).
+      const control = !!(forView('professor', true) || forView('student', true))
+      const byKey: Partial<Record<DimensionKey, { evidence: string[]; carried: boolean }>> = rendered.length
+        ? {
+            professor_experience: { evidence: ['e1'], carried: !!forView('professor', false) },
+            student_experience: { evidence: ['e2'], carried: !!forView('student', false) },
+            edge_states: { evidence: ['e4'], carried: !!pick((id) => /-(empty|slow|failing)[:.]/.test(id)) },
+            responsiveness_accessibility: { evidence: ['e5'], carried: !!(pick((id) => id.includes('-phone-')) ?? shots.find((s) => s.includes('-phone-'))) },
+            interaction_design: { evidence: ['e1', 'e2'], carried: control },
+            workflow_completeness: { evidence: ['e1', 'e2'], carried: control },
+            information_design: { evidence: ['e1', 'e2'], carried: !!(forView('professor', false) || forView('student', false)) },
+          }
+        : {}
       const dimensions = Object.fromEntries(
-        DIMENSIONS.map((d) => [
-          d.key,
-          d.visualOnly && !visual
-            ? { level: null, evidence: [], reasoning: 'No screenshots: not assessed.' }
-            : { level: 'acceptable', evidence: d.visualOnly ? ['e3'] : ['e1', 'e2'], reasoning: 'Plumbing judge: no real judgement.' },
-        ]),
+        DIMENSIONS.map((d) => {
+          if (d.visualOnly && !visual) return [d.key, { level: null, evidence: [], reasoning: 'No screenshots: not assessed.' }]
+          const own = byKey[d.key]
+          return [d.key, { level: own && !own.carried ? 'none' : 'acceptable', evidence: d.visualOnly ? ['e3'] : (own?.evidence ?? ['e1', 'e2']), reasoning: 'Plumbing judge: no real judgement.' }]
+        }),
       )
       return { dimensions, professorAssessment: 'Plumbing judge: no real judgement.', studentAssessment: 'Plumbing judge: no real judgement.' }
     },

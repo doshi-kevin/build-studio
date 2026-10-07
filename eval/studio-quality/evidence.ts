@@ -6,7 +6,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID, randomBytes } from 'node:crypto'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { buildPayload, runLocally, runnerEnvironment } from '../../src/lib/studio/validator/runtime-runner'
@@ -14,6 +14,7 @@ import { runtimeEnvelopeSchema, summarizeRuntimeReport } from '../../src/lib/stu
 import { createPreviewBridge } from '../../src/lib/studio/runtime/preview-bridge'
 import { METHOD_CATALOG } from '../../src/lib/studio/bridge/catalog'
 import { parseManifest } from '../../src/lib/studio/manifest'
+import { parseRenderLedger, type RenderLedger } from './render'
 import type { Stage2Check } from './gates'
 import type { EvidenceSource } from './schema'
 
@@ -86,8 +87,11 @@ const captureOutput = z.strictObject({
   shots: z.array(shotSchema),
   failures: z.array(z.strictObject({ id: z.string(), reason: z.string() })),
   inputSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  render: z.literal('render.json').optional(),
 })
-export type CaptureOutcome = Omit<z.infer<typeof captureOutput>, 'inputSha256'> & {
+export type CaptureOutcome = Omit<z.infer<typeof captureOutput>, 'inputSha256' | 'render'> & {
+  /** What each captured screen actually shows, read from the live DOM. Required for a visual evaluation. */
+  render?: RenderLedger | null
   missing: string[]
   /** The capture process echoed the hash of exactly the input it was sent. */
   bound: boolean
@@ -123,9 +127,11 @@ export function captureScreens(artifact: Bundled, outDir: string, root = process
     child.on('close', (code) => {
       if (code !== 0) return finish(null)
       try {
-        const { inputSha256, ...parsed } = captureOutput.parse(JSON.parse(out))
+        const { inputSha256, render: renderFile, ...parsed } = captureOutput.parse(JSON.parse(out))
         const have = new Set(parsed.shots.map((s) => s.id))
-        finish({ ...parsed, missing: REQUIRED_SHOTS.filter((id) => !have.has(id)), bound: inputSha256 === sent })
+        const render = renderFile && existsSync(join(outDir, renderFile)) ? readRender(join(outDir, renderFile)) : null
+        const missing = [...REQUIRED_SHOTS.filter((id) => !have.has(id)), ...(render ? [] : ['render evidence'])]
+        finish({ ...parsed, render, missing, bound: inputSha256 === sent })
       } catch {
         finish(null)
       }
@@ -133,6 +139,10 @@ export function captureScreens(artifact: Bundled, outDir: string, root = process
     child.stdin.on('error', () => {})
     child.stdin.end(input)
   })
+}
+
+function readRender(path: string): RenderLedger | null {
+  return parseRenderLedger(JSON.parse(readFileSync(path, 'utf8')))
 }
 
 const SCENARIO_LABEL: Record<Shot['scenario'], string> = { normal: 'on sample data', empty: 'with no data', slow: 'while loading', failing: 'when every request fails' }

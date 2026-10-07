@@ -9,6 +9,7 @@
  *   repeatability    How much the judge's runs on the same artifacts disagree, and how many it needs.
  *   human-pack       A blind scoring pack and a blank human-scores.json, from judged results.
  *   human-compare    The AI's levels against a filled-in human-scores.json.
+ *   render-diagnose  What the source claims and what actually rendered, for saved artifacts. No model.
  *
  * Anything that can spend money (a build, or a live judge) needs --max-usd (one hard cap over
  * everything the command spends) and --yes, refuses any Supabase secret in the environment,
@@ -29,6 +30,7 @@ import { leakedSecrets } from '../studio-builder/guard'
 import { artifactDirs, loadArtifact, saveLiveArtifact } from './artifacts'
 import { QUALITY_CASES, type QualityCase } from './cases'
 import { DEFAULT_SEALED_SPEC, loadSealedSpec, withSealedGuidance } from './sealed'
+import { crossCheck, indexLedger, renderText, shotKey } from './render'
 import { realEvaluateDeps, evaluateArtifact, type Artifact } from './evaluate'
 import { builderIdentity, freezeDrift } from './freeze'
 import { qualityFreezeDrift } from './quality-freeze'
@@ -308,6 +310,51 @@ function humanPack() {
   console.log(`Pack: ${args.out}/index.html, scores template ${args.out}/human-scores.json, sealed key ${args.key}.`)
 }
 
+/**
+ * The render-grounded evidence for saved artifacts, with no judge: bundles each one, captures
+ * it, and reports what the source claims beside what the screens show. Spends nothing.
+ */
+async function renderDiagnose() {
+  if (!args.from || !args.out) throw new Error('render-diagnose needs --from=<artifact folder>,<...> and --out=<folder>.')
+  const deps = realEvaluateDeps(null, '', { judgePasses: 1, allowCodeOnly: false, ledger: null })
+  const report: Record<string, unknown> = {}
+  for (const from of args.from.split(',')) {
+    for (const dir of artifactDirs(from)) {
+      const artifact = loadArtifact(dir, join(args.out, outName(from, dir)), canonicalCases())
+      if (holdoutOf(artifact) && !allowHoldout) throw new Error(`${dir}: holdout cases are sealed until Step 12A.4.`)
+      const name = `${artifact.case.id} (${relative(args.out, artifact.dir)})`
+      const gate = await deps.draftGate(artifact)
+      if (!gate?.bundles || !artifact.manifest || artifact.files.professor === null || artifact.files.student === null) {
+        report[name] = { error: 'could not bundle' }
+        continue
+      }
+      const capture = await deps.capture({ manifest: artifact.manifest, bundles: gate.bundles, sample: artifact.sample }, join(artifact.dir, 'evidence'))
+      if (!capture?.render) {
+        report[name] = { error: 'no render evidence', missing: capture?.missing ?? ['capture failed'] }
+        continue
+      }
+      const cross = crossCheck(capture.render, { professor: artifact.files.professor, student: artifact.files.student })
+      const items = indexLedger(capture.render)
+      report[name] = {
+        caseId: artifact.case.id,
+        screens: capture.render.shots.map((s) => shotKey(s)),
+        renderItems: items.length,
+        controls: Object.fromEntries(
+          (['professor', 'student'] as const).map((view) => [view, [...new Set(items.filter((x) => x.view === view && ['button', 'tab', 'control', 'option', 'link'].includes(x.item.kind)).map((x) => `${x.item.kind} “${x.item.text || x.item.label}”${x.item.disabled ? ' (disabled)' : ''}`))]]),
+        ),
+        tables: items.filter((x) => x.item.kind === 'table').map((x) => ({ id: x.id, label: x.item.label, headers: x.item.headers, rows: x.item.rowCount })),
+        claims: cross.claims.map((c) => ({ view: c.view, line: c.line, component: c.component, kind: c.kind, text: c.text, conditional: c.conditional, rendered: c.seenIn.length > 0 })),
+        checks: cross.checks,
+        notSeen: cross.notSeen,
+      }
+      writeFileSync(join(artifact.dir, 'render-text.txt'), `${renderText(capture.render, cross)}\n`)
+      console.log(`${name}: ${items.length} render items, ${cross.checks.length} check(s)${cross.checks.map((c) => `\n  ${c.id} ${c.kind}: ${c.detail}`).join('')}`)
+    }
+  }
+  mkdirSync(args.out, { recursive: true })
+  writeFileSync(join(args.out, 'render-diagnostic.json'), `${JSON.stringify(report, null, 2)}\n`)
+}
+
 function humanCompare() {
   if (!args.scores || !args.key) throw new Error('human-compare needs --scores=<human-scores.json> and --key=<sealed key file>.')
   const human = humanScoresSchema.parse(JSON.parse(readFileSync(args.scores, 'utf8')))
@@ -338,8 +385,10 @@ async function main() {
       return humanPack()
     case 'human-compare':
       return humanCompare()
+    case 'render-diagnose':
+      return renderDiagnose()
     default:
-      throw new Error('Commands: build, judge-only, report, contrast-prepare, contrast-report, repeatability, human-pack, human-compare. See the header of eval/studio-quality/run.ts.')
+      throw new Error('Commands: build, judge-only, report, contrast-prepare, contrast-report, repeatability, human-pack, human-compare, render-diagnose. See the header of eval/studio-quality/run.ts.')
   }
 }
 
