@@ -85,6 +85,8 @@ const judgeAttempt = z.strictObject({
   attempt: z.number().int().min(1),
   ok: z.boolean(),
   error: z.string().nullable(),
+  /** What the check removed or added to keep the evidence contract (v4), when it accepted the reply. */
+  repairs: z.array(z.string()).default([]),
 })
 
 export const failureClass = z.enum([

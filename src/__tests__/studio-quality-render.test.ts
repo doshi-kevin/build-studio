@@ -82,6 +82,19 @@ function inputFor(ledger: RenderLedger, files: { professor: string; student: str
   }
 }
 
+/** Under v4 an item that breaks the evidence contract is removed, so it earns nothing, and the removal is recorded. */
+function expectDropped(result: ReturnType<typeof checkExtraction>, item: string, why: RegExp = /./) {
+  if (!result.ok) throw new Error(`refused instead of dropping ${item}: ${result.error}`)
+  expect(result.value.items.map((i) => i.id)).not.toContain(item)
+  expect(result.repairs?.filter((r) => r.startsWith(`dropped: item ${item} `) && why.test(r))).toHaveLength(1)
+}
+
+/** A check no item addressed gets an absence item of its own, citing it. */
+function expectCheckAdded(result: ReturnType<typeof checkExtraction>, check: string) {
+  if (!result.ok) throw new Error(`refused: ${result.error}`)
+  expect(result.value.items.filter((i) => i.kind === 'absence' && i.sources.includes(check) && /^e9\d\d$/.test(i.id))).toHaveLength(1)
+}
+
 describe('B2: a RosterTable whose columns never render', () => {
   const files = { professor: B2_PROFESSOR, student: B2_STUDENT }
 
@@ -132,16 +145,16 @@ describe('B2: a RosterTable whose columns never render', () => {
 
     const sourceOnly = valid()
     sourceOnly.items.push({ id: 'e8', role: 'professor', kind: 'action', text: 'Award a point with the +1 button.', sources: ['views/professor.tsx:15'] })
-    expect(checkExtraction(sourceOnly, input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e8 is an action: cite the rendered control/) })
+    expectDropped(checkExtraction(sourceOnly, input), 'e8', /is an action: cite the rendered control/)
 
     const quoted = valid()
     quoted.items.push({ id: 'e8', role: 'professor', kind: 'data', text: 'The roster shows “Points Today” for each student.', sources: [table()] })
-    expect(checkExtraction(quoted, input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e8 quotes .*check:professor:1 says is not on screen/) })
+    expectDropped(checkExtraction(quoted, input), 'e8', /quotes .*check:professor:1 says is not on screen/)
 
     const unaddressed = valid()
     unaddressed.items = unaddressed.items.filter((i) => i.id !== 'e1')
     unaddressed.core.professor.evidence = ['e2']
-    expect(checkExtraction(unaddressed, input)).toMatchObject({ ok: false, error: 'check:professor:1 isn’t addressed: add an item that cites it' })
+    expectCheckAdded(checkExtraction(unaddressed, input), 'check:professor:1')
   })
 
   const scoreReply = (overrides: Partial<Record<DimensionKey, { level: Level; evidence: string[] }>> = {}) => {
@@ -169,6 +182,10 @@ describe('B2: a RosterTable whose columns never render', () => {
     if (!extraction.ok) throw new Error(extraction.error)
     const x = extraction.value
     expect(checkScores(scoreReply(), x, input)).toMatchObject({ ok: true })
+    // A source cited directly instead of an item is dropped and recorded; the level rests on the real item.
+    const direct = checkScores(scoreReply({ problem_understanding: { level: 'acceptable', evidence: ['e1', 'manifest'] } }), x, input)
+    expect(direct).toMatchObject({ ok: true, repairs: ['problem_understanding: dropped manifest, not evidence items'] })
+    if (direct.ok) expect(direct.value.dimensions.problem_understanding.evidence).toEqual(['e1'])
     // Credit for the roster that ignores the check.
     expect(checkScores(scoreReply({ professor_experience: { level: 'excellent', evidence: ['e2', 'e4'] } }), x, input)).toMatchObject({
       ok: false,
@@ -184,7 +201,7 @@ describe('B2: a RosterTable whose columns never render', () => {
   it('the v2 failure itself: "+1 Point" cited to the rendered roster and the cell’s source line is refused, since a table is not a control', () => {
     const reply = valid()
     reply.items.push({ id: 'e8', role: 'professor', kind: 'action', text: 'Award a point from the roster.', sources: [table(), 'views/professor.tsx:15'] })
-    expect(checkExtraction(reply, inputFor(B2_LEDGER, files))).toMatchObject({ ok: false, error: expect.stringMatching(/item e8 is an action: cite the rendered control/) })
+    expectDropped(checkExtraction(reply, inputFor(B2_LEDGER, files)), 'e8', /is an action: cite the rendered control/)
   })
 
   it('Pass B: no dimension gets credit from the source or the check alone', () => {
@@ -265,13 +282,13 @@ describe('D01: lifecycle controls in the source that never reach the screen', ()
       ],
       core: { professor: { present: true, evidence: ['e1'] }, student: { present: false, evidence: [] } },
     }
-    expect(checkExtraction(reply, input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e3 is an action/) })
+    expectDropped(checkExtraction(reply, input), 'e3', /is an action/)
     reply.items.pop()
     expect(checkExtraction(reply, input)).toMatchObject({ ok: true })
     // The judge reads the missing Close form as a check, and can't leave it out.
     expect(input.render!.text).toContain('check:professor:1 | missing-from-render | views/professor.tsx:6 always renders Button with button “Close form”')
     reply.items = reply.items.filter((i) => i.id !== 'e2')
-    expect(checkExtraction(reply, input)).toMatchObject({ ok: false, error: 'check:professor:1 isn’t addressed: add an item that cites it' })
+    expectCheckAdded(checkExtraction(reply, input), 'check:professor:1')
   })
 })
 
@@ -365,7 +382,7 @@ describe('D04: a screen that contradicts itself', () => {
   it('an action is credited to a role only through that role’s rendered control', () => {
     const { input, items, core, r } = scored()
     const borrowed = [...items, { id: 'e6', role: 'professor', kind: 'action', text: 'Submit a decision for the class.', sources: [r(':button:submit-decision'), 'views/professor.tsx:1'] }]
-    expect(checkExtraction({ items: borrowed, core }, input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e6 is an action: cite the rendered control \(a render id of a professor button/) })
+    expectDropped(checkExtraction({ items: borrowed, core }, input), 'e6', /is an action: cite the rendered control \(a render id of a professor button/)
   })
 
   it('the plumbing judge addresses the student’s check and keeps the contract', async () => {
@@ -396,7 +413,7 @@ describe('the Pass A citation rules', () => {
       { id: 'e2', role: 'professor', kind: 'data', text: 'Each row shows "Points Today".', sources: [r(':table:')] },
       { id: 'e2', role: 'both', kind: 'state', text: 'Each row has a “+1 Point” button.', sources: [r(':table:')] },
     ]
-    for (const item of quoting) expect(checkExtraction(extraction(item), input())).toMatchObject({ ok: false, error: expect.stringMatching(/item e2 quotes .*check:professor:1 says is not on screen/) })
+    for (const item of quoting) expectDropped(checkExtraction(extraction(item), input()), 'e2', /quotes .*check:professor:1 says is not on screen/)
   })
 
   it('quoting rendered text that merely contains an absent claim is not refused', () => {
@@ -405,14 +422,8 @@ describe('the Pass A citation rules', () => {
   })
 
   it('data needs the render id of that role’s screen, and a write needs a source line', () => {
-    expect(checkExtraction(extraction({ id: 'e2', role: 'professor', kind: 'data', text: 'A heading.', sources: [r('student-desktop-normal:heading')] }), input())).toMatchObject({
-      ok: false,
-      error: 'item e2 describes what a professor sees: cite the render id where it appears',
-    })
-    expect(checkExtraction(extraction({ id: 'e2', role: 'professor', kind: 'write', text: 'Awarding saves a point.', sources: [r(':tab:overview')] }), input())).toMatchObject({
-      ok: false,
-      error: 'item e2 describes a write: cite the source line that does it',
-    })
+    expectDropped(checkExtraction(extraction({ id: 'e2', role: 'professor', kind: 'data', text: 'A heading.', sources: [r('student-desktop-normal:heading')] }), input()), 'e2', /describes what a professor sees: cite the render id where it appears/)
+    expectDropped(checkExtraction(extraction({ id: 'e2', role: 'professor', kind: 'write', text: 'Awarding saves a point.', sources: [r(':tab:overview')] }), input()), 'e2', /describes a write: cite the source line that does it/)
     expect(checkExtraction(extraction({ id: 'e2', role: 'professor', kind: 'write', text: 'Awarding saves a point.', sources: ['views/professor.tsx:16'] }), input())).toMatchObject({ ok: true })
   })
 
@@ -545,12 +556,13 @@ describe('the quote guard and levels of none', () => {
   it('a straight quote after an apostrophe, and a layout item, can’t bring an absent column back', () => {
     const input = inputFor(B2_LEDGER, files)
     const table = input.render!.items.find((i) => i.id.includes(':table:'))!.id
-    expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'The professor\'s roster shows "Points Today".', sources: [table] }), input)).toMatchObject({ ok: false, error: expect.stringMatching(/item e2 quotes .*check:professor:1/) })
-    expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster shows 'Points Today'.", sources: [table] }), input)).toMatchObject({ ok: false })
-    expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'layout', text: 'Shows “Points Today” beside each name.', sources: [table] }), input)).toMatchObject({ ok: false })
-    // Several problems come back in one refusal, so one retry can fix them all.
+    expectDropped(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: 'The professor\'s roster shows "Points Today".', sources: [table] }), input), 'e2', /quotes .*check:professor:1/)
+    expectDropped(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster shows 'Points Today'.", sources: [table] }), input), 'e2', /quotes/)
+    expectDropped(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'layout', text: 'Shows “Points Today” beside each name.', sources: [table] }), input), 'e2', /quotes/)
+    // A reply left with nothing is refused, every problem in one message so one retry can fix them all.
     const two = base({ id: 'e2', role: 'professor', kind: 'data', text: 'Totals per student.', sources: ['views/professor.tsx:14'] })
-    two.items.push({ id: 'e3', role: 'professor', kind: 'action', text: 'Award a point.', sources: ['views/professor.tsx:15'] })
+    two.items = [two.items[1], { id: 'e3', role: 'professor', kind: 'action', text: 'Award a point.', sources: ['views/professor.tsx:15'] }]
+    two.core.professor.evidence = ['e2']
     expect(checkExtraction(two, input)).toMatchObject({ ok: false, error: expect.stringMatching(/^item e2 describes what a professor sees.*; item e3 is an action/) })
     // Possessives alone are not quotes.
     expect(checkExtraction(base({ id: 'e2', role: 'professor', kind: 'data', text: "The professor's roster lists students' names.", sources: [table] }), input)).toMatchObject({ ok: true })

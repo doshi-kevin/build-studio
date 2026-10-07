@@ -505,7 +505,7 @@ export function judgeRender(ledger: RenderLedger, files: { professor: string; st
     render: {
       text: renderText(ledger, cross),
       items: indexed.map((x) => ({ id: x.id, view: x.view, device: x.device, scenario: x.scenario, kind: x.item.kind })),
-      checks: cross.checks.map(({ id, view, kind, missing }) => ({ id, view, kind, missing })),
+      checks: cross.checks.map(({ id, view, kind, missing, detail }) => ({ id, view, kind, missing, detail })),
     },
   }
 }
