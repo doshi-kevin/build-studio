@@ -45,7 +45,7 @@ It never holds prompts, model replies or summaries, the request, questions or an
 
 The baseline is one sample, not a benchmark. A single run says whether each case can pass. It doesn't say how often.
 
-The committed `baseline.json` is out of date and is being re-recorded. It records builder instructions `studio-builder-l1-v4` and 6 check runs, while the code is at `studio-builder-l1-v12` (`instructions.ts`) with 9 (`STUDIO_BUILDER_MAX_CHECK_RUNS`). It has no R cases, and 6 of its E cases were skipped by its $1 cap. Until it is re-recorded, `--compare` says first that the instructions and limits differ from the baseline's.
+The committed `baseline.json` was recorded on 2026-10-06 at instructions `studio-builder-l1-v12` with every live case: 17 ran, 16 met their outcome, no invariant failed, $2.30. M4 missed once (a sample-data field its manifest lacked, refused six times in a row) and passed when rerun alone.
 
 ## Refreshing it
 

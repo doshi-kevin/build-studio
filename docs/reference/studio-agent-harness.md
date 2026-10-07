@@ -520,15 +520,10 @@ Three suites, kept apart (`eval/studio-builder/README.md`):
 
 `eval/studio-builder/baseline.json` records one live run with safe metrics only. Per case: the expected and actual outcome, turns, tool calls, repairs, check runs, approvals, questions, approximate tokens and cost, and failing check ids. For the run: the model, instructions, validator ruleset, compiler, limits and commit. `--compare` fails only when a case misses an outcome it met in the baseline; every other difference is reported as drift. Re-record it after any change to the instructions, model, ruleset or limits.
 
-The committed baseline is out of date and is being re-recorded. It records instructions `studio-builder-l1-v4` and 6 check runs, while the code is at `studio-builder-l1-v12` with 9 (`STUDIO_BUILDER_MAX_CHECK_RUNS`), and it has no R cases.
+The recorded baseline (2026-10-06, Step 11 closure, `gemini-3.1-pro-preview`, instructions `studio-builder-l1-v12`, validator ruleset 2, 9 check runs) ran all 17 live cases under a $6 cap for $2.30, with no invariant failures. 16 met their outcome.
 
-The recorded baseline (2026-10-02, Step 8C, `gemini-3.1-pro-preview`, instructions `studio-builder-l1-v4`, validator ruleset 2) ran under a $1 cap and is partial: 8 cases ran for $0.60, with no invariant failures.
-
-- M1, M3, M4 and M5 passed every memory check and met their outcome.
-- M2 passed both memory checks but ended `blocked`: its request named a submit button the base tool doesn't have. The case now asks for the Next button and hasn't been re-run live.
-- E1 and E2 passed.
-- E3 was cut short by the cap (`cappedByEval`).
-- E4, E5, E6, E7, E9 and E12 were skipped by the cap, so `--compare` lists them as not compared.
+- Every E, R and memory case passed except M4. M4 passed its memory checks, but the model wrote sample data with a field its manifest lacks six times in a row, and the run ended `failed` (`repeated_tool_errors`). Each write was refused correctly and nothing was saved. A rerun of M4 alone ended Preview ready. Because the baseline records M4 as missed, `--compare` won't flag it until a later baseline records it met.
+- M2, which ended `blocked` in the 2026-10-02 baseline, now ends Preview ready.
 
 The Step 7C baseline (`l1-v2`) met all 9 of its cases for $0.57. A full re-record needs a cap of about $3, because the gate reserves one worst-case call ($0.42) before each case. The `l1-v1` run before 7C failed E4 because the prompt showed the manifest only as a summary; the prompt now carries the whole manifest. One live run is a sample, not a rate.
 
@@ -540,7 +535,7 @@ What ran, and on what. Status words: **verified**, **verified with a stand-in** 
 |---|---|---|
 | Supabase | Blocked | No Docker or Supabase CLI. The checklist in [studio-supabase-acceptance.md](./studio-supabase-acceptance.md) still has to run |
 | PostgREST | Verified with a stand-in | Real PostgREST 16.4 served every Studio query in the DB suite and the walkthroughs |
-| PostgreSQL and concurrency | Verified with a stand-in | Real PostgreSQL 17.6, all 296 migrations in the CLI's order. `npm run test:db` 232 of 232, including every builder race and the sweep's `SKIP LOCKED` test |
+| PostgreSQL and concurrency | Verified with a stand-in | Real PostgreSQL 17.6, all 296 migrations in the CLI's order. `npm run test:db` 232 of 232, including every builder race and the sweep's `SKIP LOCKED` test. 350 of 350 at the Step 11 closure (2026-10-06) |
 | Generated types | Blocked | `supabase gen types` needs the CLI's Docker image. Studio's `db.ts` doesn't use them |
 | Advisors | Verified with a stand-in | Supabase's lint SQL (`splinter.sql`) on the database above, in Step 7C |
 | Cloud Run | Pending | No `gcloud`. The repo's settings are described above; the live CPU, concurrency and environment are not |
