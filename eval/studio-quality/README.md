@@ -11,6 +11,7 @@ For each canonical case (`cases.ts`): Tier 1, Core Educational Workflows (Q01 to
 1. **Build** (live only). The frozen Step 11 builder builds the professor's request with the real harness and check worker, against an in-memory run store. A scripted professor approves every card and answers any question with "Use your judgement for a typical university course".
 2. **Gates.** The draft gate runs again on the committed snapshot, then Stage 2 runs through the real local runner. A build that didn't end Preview ready, broke a harness invariant, or failed the draft gate or Stage 2 boot or isolation gets no quality score and counts 0 in the suite mean.
 3. **Screenshots** (`capture.mjs`). Both views at desktop and phone width on sample data, plus empty, loading and failing states, through the Stage 2 runner's servers. The builder's own renderer is not used.
+3a. **Rendered evidence** (`render.ts`). After each screenshot the capture reads what the page actually shows from the live DOM (headings, text, buttons, controls and labels, tabs, table headers, badges, alerts, states), opening each tab on the normal desktop screen. The views' source is parsed for what it asks the kit to show, and anything that never rendered, or a screen that contradicts itself, becomes a check. `render-diagnose` shows this for saved artifacts without a model.
 4. **Judge** (`judge.ts`). Pass A lists observable evidence, each item citing a screenshot, a view line, the manifest, the sample or a Stage 2 check. Pass B gives each of the nine dimensions one of four levels, citing Pass A items. Several runs judge each artifact; each dimension takes the median level.
 5. **Integrity.** The result records that the source, the snapshot, the Stage 2 report and the screenshots are all of the same artifact. If any isn't, the result fails integrity and has no score.
 6. **Result** (`schema.ts`). One `studio-generation-quality-result-v2` JSON per generation, validated before it is written, with the judged source kept beside it.
@@ -36,6 +37,7 @@ npm run eval:studio-quality -- contrast-report --results=<judged contrast folder
 npm run eval:studio-quality -- repeatability --results=<judged folder>
 npm run eval:studio-quality -- human-pack --items=<result folder>,... --out=<pack> --key=<sealed key outside the pack>
 npm run eval:studio-quality -- human-compare --scores=<pack>/human-scores.json --key=<sealed key>
+npm run eval:studio-quality -- render-diagnose --from=<artifact folders> --out=<folder>   # what rendered vs what the source claims; no model
 ```
 
 The live judge is Gemini (`--judge=google:gemini-3.1-pro-preview`), the only family with a non-production key here. It is the builder's model thinking harder than the builder does: `--judge-reasoning=high` (calibrated in 12A.3) or `medium`. Thinking `low` is the builder's own setting and is refused, and so is any other model, because a smaller one isn't stronger and only this one is calibrated. A live judge also refuses to start if the rubric or judge prompt differs from the frozen pair in `quality-freeze.ts`. Integrity is checked before judging, and an artifact that fails it isn't sent to the judge. Each judge call reserves its worst case (a full prompt and a full reply at the model's rates) against `--max-usd` before it is sent, and a cap too small for the calls that can run at once is refused up front.
@@ -55,7 +57,8 @@ Cases: `--case=ID[,ID]` or `--set=dev|holdout|variance|all`, narrowed with `--ti
 | `freeze.ts` | The Step 11 builder's accepted hashes, model and thinking level |
 | `platform-card.ts` | What a plugin can do, derived from the platform's constants, for the judge |
 | `capture.mjs`, `evidence.ts` | Screenshots and Stage 2 |
-| `judge.ts` | The judge interface, the two-pass protocol, the spend ledger, the scripted and plumbing judges |
+| `judge.ts` | The judge interface, the two-pass protocol and the v4 evidence contract, the spend ledger, the scripted and plumbing judges |
+| `render.ts` | Rendered evidence: the ledger, the source claims and the checks between them |
 | `gemini-judge.ts` | The live judge on Gemini |
 | `calibration.ts` | Contrast pairs, repeatability, the blind human pack and the human comparison |
 | `quality-freeze.ts` | The frozen rubric and judge-prompt fingerprints |
