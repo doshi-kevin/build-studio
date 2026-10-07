@@ -5,8 +5,9 @@
  *   1. compile both views          (check worker)
  *   2. typecheck both views        (check worker, same call)
  *   3. Stage 1 static checks       (the validator's pure engine, on the assembled artifact)
- *   4. builder checks              manifest correctness, purpose wording, student names, and
- *                                  no copy of course material students can't see yet
+ *   4. builder checks              manifest correctness, purpose wording, sample data that
+ *                                  matches the collections, student names, and no copy of
+ *                                  course material students can't see yet
  *
  * Stage 1 runs exactly as it does at publish except for two checks: `artifact.hash`
  * (the harness supplies the hash, so it always matches) and `edtech.purpose` (the AI
@@ -233,7 +234,7 @@ export async function runDraftChecks(
     for (const view of ['student', 'professor'] as const) {
       for (const c of manifest.views[view].capabilities) {
         if (!AVAILABLE_CAPABILITIES.includes(c)) issues.push(`${c} isn’t available to tools yet`)
-        if (!CAPABILITIES[c].views.includes(view)) issues.push(`${c} isn’t available in the ${view} view`)
+        if (Object.hasOwn(CAPABILITIES, c) && !CAPABILITIES[c].views.includes(view)) issues.push(`${c} isn’t available in the ${view} view`)
       }
     }
     for (const [name, c] of Object.entries(deps.published?.collections ?? {})) {

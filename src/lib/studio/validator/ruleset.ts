@@ -19,7 +19,8 @@
 export const VALIDATOR_VERSION = '1.0.0'
 /** The ruleset every new run uses. */
 export const STUDIO_VALIDATOR_RULESET = 2
-/** The runtime and bridge version the validator exercises. */
+/** The Stage 2 report-binding version (validator-runtime/binding.mjs RUNTIME_VERSION, runtime-report.ts).
+ * It is not the plugin's bridge version: the runner reads that from the manifest. */
 export const VALIDATOR_RUNTIME_VERSION = 'v1'
 
 export type CheckStage = 'static' | 'runtime'

@@ -40,8 +40,9 @@
  *           over the frame. Only in a professor view whose allowed methods include
  *           course.roster: anything else is a strike. Names come from `rosterNames`
  *           and never enter the frame; the frame hears only `event` roster.action.
- * Neither counts toward the call budget. Each has its own per-second bound, and
- * messages over it are dropped.
+ * Neither counts toward the call budget. Each has its own per-second bound, and roster
+ * `place`, which only moves a table, has a separate one. Messages over a bound are
+ * dropped, and count toward stopping a frame that keeps flooding.
  */
 import {
   envelope,
@@ -66,11 +67,14 @@ import {
 } from '../limits'
 import { methodSpec } from '../bridge/catalog'
 import { clampFrameHeight, runHostMethod, type ToastTone } from './host-methods'
-import { createRosterOverlay, type RosterOverlay } from './roster-overlay'
+import { createRosterOverlay, ROSTER_MAX_SLOTS, type RosterOverlay } from './roster-overlay'
 
 /** Per-second bounds for v2's layout messages (3.4). The kit sends at most 10 of each. */
 const ROSTER_MESSAGES_PER_SECOND = 20
 const SIZE_MESSAGES_PER_SECOND = 10
+/** Roster `place` only moves a table, and the kit sends it up to 10 times a second for each
+ * table while the frame scrolls. So it has its own bound, room for every table a frame may hold. */
+const PLACE_MESSAGES_PER_SECOND = ROSTER_MAX_SLOTS * 10
 
 export type StopReason =
   | 'start-timeout'
@@ -134,6 +138,7 @@ export interface PluginFrameOptions {
     toastsPerMinute: number
     statusIntervalMs: number
     rosterPerSecond: number
+    placePerSecond: number
     sizePerSecond: number
   }>
 }
@@ -155,6 +160,7 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
     toastsPerMinute: STUDIO_TOASTS_PER_MINUTE,
     statusIntervalMs: STUDIO_FRAME_STATUS_INTERVAL_MS,
     rosterPerSecond: ROSTER_MESSAGES_PER_SECOND,
+    placePerSecond: PLACE_MESSAGES_PER_SECOND,
     sizePerSecond: SIZE_MESSAGES_PER_SECOND,
     ...options.limits,
   }
@@ -192,6 +198,7 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   // v2 layout messages: fixed one-second windows.
   let secondStart = Date.now()
   let rosterInSecond = 0
+  let placeInSecond = 0
   let sizeInSecond = 0
 
   function snapshot(): FrameSnapshot {
@@ -247,16 +254,22 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   }
 
   /** False when this second's bound for that kind of message is used up. */
-  function takeLayout(kind: 'roster' | 'size'): boolean {
+  function takeLayout(kind: 'roster' | 'place' | 'size'): boolean {
     const now = Date.now()
     if (now - secondStart >= 1000) {
       secondStart = now
       rosterInSecond = 0
+      placeInSecond = 0
       sizeInSecond = 0
     }
     if (kind === 'roster') {
       if (rosterInSecond >= limits.rosterPerSecond) return false
       rosterInSecond += 1
+      return true
+    }
+    if (kind === 'place') {
+      if (placeInSecond >= limits.placePerSecond) return false
+      placeInSecond += 1
       return true
     }
     if (sizeInSecond >= limits.sizePerSecond) return false
@@ -267,6 +280,14 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   function strike() {
     strikes += 1
     if (strikes > limits.malformedMax) stop('malformed')
+  }
+
+  /** A layout message over its per-second bound is dropped. Each one was still parsed, so,
+   * like a refused call, it counts toward stopping a frame that keeps flooding. */
+  function overBound() {
+    rollWindow()
+    refusedInWindow += 1
+    if (refusedInWindow > limits.rateAbuseMax) stop('throttled')
   }
 
   /** Applies what the server says about this frame. Shared by the heartbeat and by
@@ -349,7 +370,7 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
   function onRoster(message: Extract<FrameMessage, { type: 'roster' }>) {
     // Names are for staff, and only for a tool allowed to read the class.
     if (options.view !== 'professor' || !options.allowedMethods?.includes('course.roster')) return strike()
-    if (!takeLayout('roster')) return
+    if (!takeLayout(message.op === 'place' ? 'place' : 'roster')) return overBound()
     if (message.op === 'render') {
       // The same table again changes nothing: skip the rebuild, so a plugin can't spin the page.
       const key = JSON.stringify(message.payload)
@@ -438,7 +459,8 @@ export function mountPluginFrame(options: PluginFrameOptions): PluginFrame {
       // v2 messages from a v1 runtime are junk.
       if (runtime === 'v1') return strike()
       if (message.type === 'roster') return onRoster(message)
-      if (takeLayout('size')) effects.setHeight(clampFrameHeight(Math.round(message.height)))
+      if (!takeLayout('size')) return overBound()
+      effects.setHeight(clampFrameHeight(Math.round(message.height)))
       return
     }
     void answer(message)

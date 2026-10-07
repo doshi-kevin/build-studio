@@ -143,7 +143,7 @@ afterAll(async () => {
 })
 
 describe('Studio trusted server path', () => {
-  it('1. publishes one version and installs it in two sections, all through lifecycle.ts', async () => {
+  it('1. publishes one version and installs it in two sections, once each, all through lifecycle.ts', async () => {
     as(PROFESSOR)
     projectId = ok(await lifecycle.createProject({ sectionId: sectionA2, slug: SLUG, name: 'Exit ticket' }))
     v1 = ok(
@@ -161,6 +161,13 @@ describe('Studio trusted server path', () => {
 
     expect(inA).not.toBe(inA2)
     expect([await currentVersion(inA), await currentVersion(inA2)]).toEqual([v1, v1])
+
+    // uq_studio_installation_active refuses the second, and db.ts names it as a duplicate install.
+    expect(await lifecycle.installPlugin({ sectionId: A.section, versionId: v1 })).toEqual({
+      ok: false,
+      error: 'This plugin is already installed in this course.',
+    })
+    expect(await sql('select id from public.studio_plugin_installations where project_id = $1 and section_id = $2', [projectId, A.section])).toEqual([{ id: inA }])
   })
 
   it('2. a student reads only their own perStudent records', async () => {
@@ -210,6 +217,17 @@ describe('Studio trusted server path', () => {
       const inSectionA = ok(await records.listRecords({ installationId: inA, collection: 'responses' }))
       expect(inSectionA).toHaveLength(1)
     }
+
+    // A record ID from the other installation reaches nothing through this one, and the row stays as it was.
+    as(PROFESSOR)
+    const [{ id: keyA2 }] = await sql<{ id: string }>(`select id from public.studio_plugin_records where installation_id = $1 and collection = 'answerKeys'`, [inA2])
+    const foreign = { installationId: inA, collection: 'answerKeys', recordId: keyA2 }
+    expect(await records.getRecord(foreign)).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(await records.updateRecord({ ...foreign, data: { questionId: 'q1', correct: 'changed' } })).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(await records.deleteRecord(foreign)).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(await sql('select installation_id, data from public.studio_plugin_records where id = $1', [keyA2])).toEqual([
+      { installation_id: inA2, data: { questionId: 'q1', correct: 'base case' } },
+    ])
   })
 
   it('6. a grader reads shared and staffOnly but writes neither', async () => {
@@ -289,10 +307,29 @@ describe('Studio trusted server path', () => {
     expect(ok(await records.listRecords({ installationId: inA2, collection: 'responses' })).map((r) => r.id)).toEqual([recordA])
   })
 
-  it('11. rolling back one installation leaves the other on its version', async () => {
+  it('11. rolling back one installation leaves the other on its version, and keeps 1.1.0’s records', async () => {
+    // Written under 1.1.0 before the rollback: a hint (only 1.1.0 declares hints) and an answer.
+    as(PROFESSOR)
+    const hint = ok(await records.createRecord({ installationId: inA, collection: 'hints', data: { text: 'Start small' } }))
+    as(STUDENT_A)
+    const later = ok(await records.createRecord({ installationId: inA, collection: 'responses', data: answer }))
+    const answers = ok(await records.listRecords({ installationId: inA, collection: 'responses' })).map((r) => r.id)
+    expect(answers).toHaveLength(2)
+    expect(answers).toContain(later.id)
+
     as(PROFESSOR)
     ok(await lifecycle.rollbackVersion({ sectionId: A.section, installationId: inA, versionId: v1 }))
     expect([await currentVersion(inA), await currentVersion(inA2)]).toEqual([v1, v2])
+
+    // The hint stays stored, but 1.0.0 doesn't declare hints, so nothing reaches it.
+    expect(await records.listRecords({ installationId: inA, collection: 'hints' })).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(await records.getRecord({ installationId: inA, collection: 'hints', recordId: hint.id })).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    const stamps = await sql<{ id: string; version_id: string }>('select id, version_id from public.studio_plugin_records where id = any($1)', [[hint.id, later.id]])
+    expect(Object.fromEntries(stamps.map((s) => [s.id, s.version_id]))).toEqual({ [hint.id]: v2, [later.id]: v2 })
+
+    // Answers in a collection both versions declare stay readable, whichever version wrote them.
+    as(STUDENT_A)
+    expect(ok(await records.listRecords({ installationId: inA, collection: 'responses' })).map((r) => r.id)).toEqual(answers)
   })
 
   // Scenario 9 runs last: archiving ends the installation's writable life.
@@ -335,8 +372,9 @@ describe('Studio trusted server path', () => {
       'studio.installation.archived',
     ])
     const recordEvents = events.filter((e) => e.eventType.startsWith('studio.record.'))
-    // Two student answers, the answer key, the section-A answer and the hint. Every refused write logged nothing.
-    expect(recordEvents.length).toBe(5)
+    // Two student answers, the answer key, the section-A answer, the hint, and step 11's hint and
+    // answer. Every refused write logged nothing.
+    expect(recordEvents.length).toBe(7)
     for (const e of recordEvents) {
       expect(Object.keys(e.metadata ?? {}).sort()).toEqual(['collection', 'installationId', 'recordId', 'versionId'])
       expect(JSON.stringify(e)).not.toContain(SECRET)

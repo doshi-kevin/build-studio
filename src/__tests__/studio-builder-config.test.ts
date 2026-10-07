@@ -9,6 +9,10 @@
  * studio-builder switch off (studio-builder-service.test.ts); studioOrigins turns the
  * runtime off for an unset, malformed, same-site or plain-http origin
  * (studio-runtime.test.ts).
+ *
+ * Also here, because it is the same gate: the real builderActor under it, with only the
+ * section, project and section-access reads mocked, for a professor who lost the section
+ * or a project that was archived.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,6 +31,10 @@ vi.mock('@/lib/studio/context', async (importOriginal) => ({
   builderActor: vi.fn(),
   requireProfessor: vi.fn(),
 }))
+vi.mock('@/lib/auth/section-access', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth/section-access')>()),
+  verifySectionAccess: vi.fn(),
+}))
 vi.mock('@/lib/studio/db', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/studio/db')>()
   return {
@@ -34,6 +42,7 @@ vi.mock('@/lib/studio/db', async (importOriginal) => {
     builderRpcs: { ...real.builderRpcs, start: vi.fn() },
     loadInstitutionBuilderSpend: vi.fn(),
     loadBuilderProject: vi.fn(),
+    loadSectionState: vi.fn(),
     loadSnapshot: vi.fn(),
     loadSnapshotBundle: vi.fn(),
   }
@@ -41,6 +50,8 @@ vi.mock('@/lib/studio/db', async (importOriginal) => {
 
 const db = await import('@/lib/studio/db')
 const { builderActor, requireProfessor } = await import('@/lib/studio/context')
+const { builderActor: realBuilderActor } = await vi.importActual<typeof import('@/lib/studio/context')>('@/lib/studio/context')
+const { verifySectionAccess } = await import('@/lib/auth/section-access')
 const { studioAccess } = await import('@/lib/studio/access')
 const { checkAiFeature } = await import('@/lib/ai/kill-switch')
 const { runBuilderSlice, realHarnessDeps } = await import('@/lib/studio/builder/harness')
@@ -140,6 +151,65 @@ describe('the studio-builder switch, through the real gate', () => {
     expect(model.prompts).toHaveLength(1)
     expect(s.mem.state.run.status).toBe('blocked')
     expect(s.mem.state.run.errorCode).toBe('ai_disabled')
+  })
+})
+
+describe('the run’s owner and project, through the real gate and the real builderActor', () => {
+  const run = newRun({ status: 'running' })
+  const owned = (r: typeof run) => {
+    vi.mocked(db.loadSectionState).mockResolvedValue({ institutionId: r.institutionId, archived: false })
+    vi.mocked(db.loadBuilderProject).mockResolvedValue({ id: r.projectId, ownerId: r.ownerId, institutionId: r.institutionId, status: 'active' } as never)
+  }
+  const gate = () => realHarnessDeps(scriptedModel([])).gate(run)
+
+  beforeEach(() => {
+    vi.mocked(builderActor).mockImplementation(realBuilderActor)
+    vi.mocked(verifySectionAccess).mockResolvedValue({ ok: true, role: 'professor', adminDb: {} })
+    owned(run)
+  })
+
+  it('lets the professor of the run’s own section through on their own active project', async () => {
+    expect(await gate()).toBeNull()
+    expect(verifySectionAccess).toHaveBeenCalledWith(run.sectionId, run.ownerId)
+  })
+
+  it.each([
+    ['removed from the run’s section', { ok: false, adminDb: {} }],
+    ['kept on as a TA of it', { ok: true, role: 'ta', adminDb: {} }],
+    ['refused even with the professor role attached', { ok: false, role: 'professor', adminDb: {} } as never],
+  ] as const)('a professor %s: access_lost', async (_label, access) => {
+    vi.mocked(verifySectionAccess).mockResolvedValue(access)
+    expect(await gate()).toBe('access_lost')
+  })
+
+  it('a section now in another school: access_lost', async () => {
+    vi.mocked(db.loadSectionState).mockResolvedValue({ institutionId: crypto.randomUUID(), archived: false })
+    expect(await gate()).toBe('access_lost')
+  })
+
+  it.each([
+    ['archived', { status: 'archived' }],
+    ['owned by someone else', { ownerId: crypto.randomUUID() }],
+    ['in another school', { institutionId: crypto.randomUUID() }],
+  ])('a project %s: project_archived', async (_label, over) => {
+    vi.mocked(db.loadBuilderProject).mockResolvedValue({ id: run.projectId, ownerId: run.ownerId, institutionId: run.institutionId, status: 'active', ...over } as never)
+    expect(await gate()).toBe('project_archived')
+  })
+
+  it('a live run ends blocked with access_lost at the next model call after the professor loses the section', async () => {
+    const model = scriptedModel([
+      () => {
+        vi.mocked(verifySectionAccess).mockResolvedValue({ ok: false, adminDb: {} })
+        return [call('get_kit_reference', { component: 'Button' })]
+      },
+      { calls: [call('get_kit_reference', { component: 'Card' })] },
+    ])
+    const s = slice(model, realHarnessDeps(model).gate)
+    owned(s.mem.state.run)
+    await s.go()
+    expect(model.prompts).toHaveLength(1)
+    expect(s.mem.state.run.status).toBe('blocked')
+    expect(s.mem.state.run.errorCode).toBe('access_lost')
   })
 })
 

@@ -123,12 +123,15 @@ const NOT_A_SCRIPT: [name: string, code: string][] = [
   ['type annotation', 'var meta: number = 1'],
   ['interface', 'interface Meta {}'],
   ['enum', 'enum Meta { A }'],
+  ['namespace', 'namespace Meta { var a = 1 }'],
+  ['declare global', 'declare global { var meta }'],
 ]
 
 /** One bad fixture per static check, with the check it must fail. */
 export const STATIC_BAD: { name: string; check: string; artifact: FixtureArtifact; expect?: 'failed' | 'needs_review'; alsoFails?: string[] }[] = [
   { name: 'oversized source', check: 'artifact.size', artifact: { ...GOOD, source: { ...SOURCE, 'big.ts': 'x'.repeat(130 * 1024) } } },
   { name: 'too many files', check: 'artifact.size', artifact: { ...GOOD, source: { ...SOURCE, ...Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`extra/f${i}.ts`, ''])) } } },
+  { name: 'oversized bundle', check: 'artifact.size', artifact: withStudent(GOOD.studentBundle + '\n// ' + 'x'.repeat(300 * 1024) + '\n') },
   { name: 'missing entry', check: 'artifact.entries', artifact: { ...GOOD, source: { 'views/professor.tsx': '' } } },
   { name: 'bundled React', check: 'artifact.vendor_free', artifact: inStudent("var el = { $$typeof: Symbol.for('react.transitional.element') }") },
   { name: 'syntax error', check: 'artifact.syntax', artifact: withStudent('function ( {') },
@@ -142,8 +145,11 @@ export const STATIC_BAD: { name: string; check: string; artifact: FixtureArtifac
   { name: 'window.open', check: 'code.navigation', artifact: inStudent("window.open('https://evil.example')") },
   { name: 'hidden location', check: 'code.global_indirection', artifact: inStudent("window['loc' + 'ation'] = 'https://evil.example'") },
   { name: 'raw HTML', check: 'code.html_injection', artifact: inStudent('document.body.innerHTML = text') },
+  { name: 'dangerouslySetInnerHTML', check: 'code.html_injection', artifact: inStudent('var b = h(K.Text, { dangerouslySetInnerHTML: { __html: text } })') },
+  { name: 'dangerouslySetInnerHTML as a quoted key', check: 'code.html_injection', artifact: inStudent("var b = h(K.Text, { 'dangerouslySetInnerHTML': { __html: text } })") },
   { name: 'eval', check: 'code.dynamic_code', artifact: inStudent('eval(text)') },
   { name: 'new Function', check: 'code.dynamic_code', artifact: inStudent("var f = new Function('return 1')") },
+  { name: 'string timer', check: 'code.dynamic_code', artifact: inStudent("setTimeout('save()', 100)") },
   { name: 'external network call', check: 'code.network', artifact: inStudent("fetch('https://api.example.com/x')") },
   { name: 'storage', check: 'code.storage', artifact: inStudent("localStorage.setItem('k', text)") },
   { name: 'worker', check: 'code.workers', artifact: inStudent("var w = new Worker('x.js')") },
@@ -191,6 +197,16 @@ export const RUNTIME_BAD: { name: string; check: string; artifact: FixtureArtifa
     name: 'missing loading state',
     check: 'runtime.states',
     artifact: withStudent(GOOD.studentBundle.replace("body = h(K.Loading, null)", "body = h(K.Text, null, 'Wait')")),
+  },
+  {
+    name: 'missing empty state',
+    check: 'runtime.states',
+    artifact: withStudent(GOOD.studentBundle.replace("body = h(K.Empty, { title: 'No answers yet', description: 'Answers will appear here.' })", "body = h(K.Text, null, 'Nothing')")),
+  },
+  {
+    name: 'missing error state',
+    check: 'runtime.states',
+    artifact: withStudent(GOOD.studentBundle.replace('body = h(K.ErrorState, { onRetry: list.retry })', "body = h(K.Text, null, 'Oops')")),
   },
   {
     name: 'raw error text',

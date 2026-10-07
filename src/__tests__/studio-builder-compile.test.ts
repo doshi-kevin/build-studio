@@ -12,8 +12,10 @@ import { runDraftChecks } from '@/lib/studio/builder/checks'
 import { runWorkerCheck } from '@/lib/studio/builder/check-worker'
 import { CheckTimeout } from '@/lib/studio/builder/check-worker-errors'
 import { proposeManifest } from '@/lib/studio/builder/manifest-delta'
+import type { SampleData } from '@/lib/studio/builder/work'
+import { STUDIO_BUNDLE_MAX_BYTES, STUDIO_PURPOSE_TEXT_MAX_BYTES } from '@/lib/studio/limits'
 import { scanCode } from '@/lib/studio/validator/scan'
-import type { StudioManifestV2 } from '@/lib/studio/manifest'
+import type { StudioManifest, StudioManifestV2 } from '@/lib/studio/manifest'
 import { FLASHCARDS_MANIFEST, inProcessWorkerCheck, PROFESSOR_VIEW, STUDENT_VIEW } from './helpers/builder-fixtures'
 
 const manifest = (m: unknown = FLASHCARDS_MANIFEST): StudioManifestV2 => {
@@ -22,8 +24,14 @@ const manifest = (m: unknown = FLASHCARDS_MANIFEST): StudioManifestV2 => {
   return r.manifest
 }
 const views = { 'views/student.tsx': STUDENT_VIEW, 'views/professor.tsx': PROFESSOR_VIEW }
-const gate = (files: Record<string, string> = views, opts: { roster?: string[] | null; m?: StudioManifestV2 | null } = {}) =>
-  runDraftChecks({ manifest: opts.m === undefined ? manifest() : opts.m, files }, { workerCheck: inProcessWorkerCheck, rosterFullNames: opts.roster === undefined ? ['Maria Lopez'] : opts.roster, published: null, disclosureSources: [] })
+const gate = (
+  files: Record<string, string> = views,
+  opts: { roster?: string[] | null; m?: StudioManifestV2 | null; published?: StudioManifest | null; sample?: SampleData } = {},
+) =>
+  runDraftChecks(
+    { manifest: opts.m === undefined ? manifest() : opts.m, files, sample: opts.sample },
+    { workerCheck: inProcessWorkerCheck, rosterFullNames: opts.roster === undefined ? ['Maria Lopez'] : opts.roster, published: opts.published ?? null, disclosureSources: [] },
+  )
 
 describe('the compiler', () => {
   it('produces the canonical classic-script bundle the runtime runs', () => {
@@ -60,6 +68,17 @@ describe('the compiler', () => {
   ])('refuses %s with a source finding, never a fault', (_name, source) => {
     const r = compileView('views/student.tsx', source)
     expect(r.ok).toBe(false)
+  })
+  it('refuses a view whose bundle is over the size limit', () => {
+    const r = compileView('views/student.tsx', STUDENT_VIEW.replace('export default function', `const BIG = '${'x'.repeat(STUDIO_BUNDLE_MAX_BYTES)}'\nexport default function`))
+    expect(!r.ok && r.diagnostics.map((d) => d.code)).toEqual(['builder.size'])
+  })
+  it.each([
+    ['a namespace', 'namespace Helpers { export const n = 1 }\n'],
+    ['a declare global block', 'declare global { interface Window { x: number } }\n'],
+  ])('refuses %s in an otherwise valid view as builder.export', (_name, block) => {
+    const r = compileView('views/student.tsx', STUDENT_VIEW.replace('export default function', `${block}export default function`))
+    expect(!r.ok && r.diagnostics.map((d) => [d.code, d.message])).toEqual([['builder.export', 'Namespaces and module declarations are not allowed in a view.']])
   })
   it('the postcondition rejects module syntax as a compiler fault', () => {
     expect(() => assertClassicScript("export const x = 1")).toThrow(CompilerFault)
@@ -109,6 +128,7 @@ describe('the typecheck', () => {
 })
 
 describe('the draft gate', () => {
+  const golden = manifest()
   it('passes the golden tool', async () => {
     const r = await gate()
     expect(r.passed).toBe(true)
@@ -119,6 +139,48 @@ describe('the draft gate', () => {
     const r = await gate(views, { m: null })
     expect(r.passed).toBe(false)
     expect(r.findings[0].check_id).toBe('builder.manifest')
+  })
+  it.each<[string, StudioManifestV2, StudioManifest | null, string]>([
+    ['a capability tools can’t use yet', { ...golden, views: { ...golden.views, professor: { ...golden.views.professor, capabilities: ['course.weakSpots'] } } }, null, 'course.weakSpots isn’t available to tools yet'],
+    ['a changed published collection', golden, { ...golden, collections: { ...golden.collections, cards: { access: 'shared', fields: { term: 'text' } } } }, 'published collection cards changed'],
+    ['a manifest that no longer parses', { ...golden, version: 'one' }, null, 'version: Must be a version like 1.0.0'],
+  ])('re-checks the manifest it is given: %s blocks the gate', async (_name, m, published, detail) => {
+    const r = await gate(views, { m, published })
+    expect(r.passed).toBe(false)
+    expect(r.summary.manifest).toBe('failed')
+    expect(r.findings.filter((f) => f.check_id === 'builder.manifest').map((f) => f.detail)).toContain(detail)
+  })
+  it('a capability its view can’t have blocks the gate', async () => {
+    // The manifest schema and the gate's own view loop both refuse it, so the finding may come from either.
+    const m: StudioManifestV2 = { ...golden, views: { ...golden.views, student: { ...golden.views.student, capabilities: ['course.roster'] } } }
+    const r = await gate(views, { m })
+    expect(r.passed).toBe(false)
+    expect(r.summary.manifest).toBe('failed')
+    expect(r.findings.some((f) => f.check_id === 'builder.manifest' && f.detail?.endsWith('course.roster isn’t available in the student view'))).toBe(true)
+  })
+  it('a capability the registry doesn’t have blocks the gate instead of throwing', async () => {
+    const m = { ...golden, views: { ...golden.views, professor: { ...golden.views.professor, capabilities: ['course.gone'] } } } as unknown as StudioManifestV2
+    const r = await gate(views, { m })
+    expect(r.passed).toBe(false)
+    expect(r.summary.manifest).toBe('failed')
+    expect(r.findings.filter((f) => f.check_id === 'builder.manifest').map((f) => f.detail)).toContain('course.gone isn’t available to tools yet')
+  })
+  it.each([
+    ['a red-flag word', 'Students practice terms. Also a casino for the class.', 'red_flag_terms', /casino/i],
+    ['an oversized description', 'zymurgy '.repeat(STUDIO_PURPOSE_TEXT_MAX_BYTES / 8 + 1), 'purpose_text_too_long', /zymurgy/i],
+  ])('%s blocks the gate by reason code and the words are never quoted', async (_name, description, reason, words) => {
+    const r = await gate(views, { m: { ...golden, description } })
+    expect(r.passed).toBe(false)
+    expect(r.summary.purpose_text).toBe('failed')
+    expect(r.findings.filter((f) => f.check_id === 'builder.purpose_text').map((f) => f.detail)).toContain(reason)
+    expect(JSON.stringify(r.findings)).not.toMatch(words)
+  })
+  it('sample data written for an earlier manifest blocks the gate until it matches again', async () => {
+    const stale = await gate(views, { sample: { cards: [{ data: { term: 'cell', definition: 'the smallest unit of life', hint: 'biology' } }] } })
+    expect(stale.passed).toBe(false)
+    expect(stale.findings.find((f) => f.check_id === 'builder.sample')?.file).toBe('sample')
+    const fixed = await gate(views, { sample: { cards: [{ data: { term: 'cell', definition: 'the smallest unit of life' } }] } })
+    expect(fixed.passed).toBe(true)
   })
   it('finds a student’s full name and never quotes it', async () => {
     const r = await gate({ ...views, 'views/student.tsx': STUDENT_VIEW.replace('No cards yet', 'Welcome, Maria Lopez') })

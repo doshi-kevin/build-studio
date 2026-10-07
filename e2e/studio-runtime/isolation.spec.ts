@@ -3,15 +3,18 @@
  * Runs in Chromium, Firefox and WebKit against harness.mjs (see there for the four origins).
  *
  * "Blocked" here means two things together: the plugin's own attempt failed, AND nothing
- * arrived at the attacker server. Channels the browser can't reliably block are recorded,
- * per browser, rather than asserted as blocked (docs/reference/studio-plugin-runtime.md).
+ * arrived at the attacker server. Channels that only the runtime's own removals contain
+ * (WebRTC, resource hints) are pinned to the outcome docs/reference/studio-plugin-runtime.md
+ * records per browser.
  */
 import { expect, test, type Page } from '@playwright/test'
 
 const RUNTIME = 'http://127.0.0.1:4311'
 const ATTACKER = 'http://127.0.0.1:4312'
 const RUNTIME_V9 = 'http://127.0.0.1:4313'
-const frameUrl = (variant: string, origin = RUNTIME) => `${origin}/studio-frame/v1/probe/${variant}`
+// The harness serves v1's runtime under /probe/ and v2's under /probe-v2/.
+const frameUrl = (variant: string, origin = RUNTIME, runtime: 'v1' | 'v2' = 'v1') =>
+  `${origin}/studio-frame/v1/${runtime === 'v2' ? 'probe-v2' : 'probe'}/${variant}`
 
 interface Snapshot {
   status: 'loading' | 'handshaking' | 'ready' | 'stale' | 'stopped'
@@ -82,7 +85,10 @@ async function waitForStatus(page: Page, status: Snapshot['status']) {
   await expect.poll(async () => (await snapshot(page))?.status, { timeout: 15_000 }).toBe(status)
 }
 
-test.describe('the isolation probe', () => {
+// Each runtime version runs the probe. A v2 frame's policy differs from v1's only in the
+// runtime folder, so the v2 run re-confirms the same policy; it would not notice one
+// directive going missing from both. studio-runtime.test.ts pins every directive.
+for (const runtime of ['v1', 'v2'] as const) test.describe(`the isolation probe on runtime ${runtime}`, () => {
   let phase1: Record<string, string>
   let phase2: Record<string, string>
   let log: AttackerLog
@@ -95,7 +101,7 @@ test.describe('the isolation probe', () => {
     const page = await context.newPage()
     page.on('download', () => (downloads += 1))
     await open(page)
-    await mount(page, frameUrl('probe'))
+    await mount(page, frameUrl('probe', RUNTIME, runtime))
     await expect.poll(async () => (await reports(page)).length, { timeout: 25_000 }).toBeGreaterThanOrEqual(2)
     const all = await reports(page)
     phase1 = all[0].args.results as Record<string, string>
@@ -104,7 +110,7 @@ test.describe('the isolation probe', () => {
     log = await attackerLog()
     pagesAfter = context.pages().length
     hostUrlAfter = page.url()
-    const record = { browser: testInfo.project.name, phase1, phase2, attacker: log, downloads, final: await snapshot(page) }
+    const record = { browser: testInfo.project.name, runtime, phase1, phase2, attacker: log, downloads, final: await snapshot(page) }
     console.log(`PROBE_RESULTS ${JSON.stringify(record)}`)
     await testInfo.attach('probe-results', { body: JSON.stringify(record, null, 2), contentType: 'application/json' })
     await context.close()
@@ -154,20 +160,56 @@ test.describe('the isolation probe', () => {
     expect(log.requests.some((r) => r.path.startsWith('/form'))).toBe(false)
   })
 
-  test('the runtime removed the WebRTC constructor and resource hints before plugin code ran', () => {
+  test('the runtime removed every WebRTC constructor, and every resource hint the plugin added', () => {
     expect(phase1.webrtcConstructor).toBe('removed')
-    expect(phase1.dnsPrefetchElement).toBe('removed by runtime')
-    expect(phase1.preconnectElement).toBe('removed by runtime')
+    for (const p of ['dnsPrefetchElement', 'preconnectElement', 'prefetchElement', 'preconnectSetAfterInsert']) {
+      expect(phase1[p], p).toBe('removed by runtime')
+    }
   })
 
-  test('WebRTC through a child frame and preconnect are recorded, not claimed as blocked', () => {
-    // Browser-dependent (N10, N11). The outcome is in PROBE_RESULTS and the attachment;
-    // docs/reference/studio-plugin-runtime.md records it per browser.
-    test.info().annotations.push(
-      { type: 'webrtcFromChildFrame', description: String(phase1.webrtcFromChildFrame) },
-      { type: 'idleConnectionsAtAttacker', description: String(log.idleConnections) },
-    )
-    expect(phase1.webrtcFromChildFrame).toBeDefined()
+  test('WebRTC through a child frame fails, and no preconnect reached the attacker', () => {
+    // Browser limitations (N10, N11): this pins the outcome measured in
+    // docs/reference/studio-plugin-runtime.md. Re-measure it there when Playwright's browsers are upgraded.
+    expect(phase1.webrtcFromChildFrame).toMatch(/^blocked/)
+    expect(log.idleConnections).toBe(0)
+  })
+
+  test('a plugin can’t load the other runtime version’s script', async ({ page }) => {
+    const other = `${RUNTIME}/studio-runtime/${runtime === 'v1' ? 'v2' : 'v1'}/runtime.js`
+    // The harness serves it, so a failure below is the frame's policy, not a missing file.
+    expect((await fetch(other)).status).toBe(200)
+    await open(page)
+    const url = frameUrl('ready', RUNTIME, runtime)
+    await mount(page, url)
+    await expect.poll(async () => (await reports(page)).length).toBe(1)
+    const outcome = await page.frame({ url })!.evaluate((src) => new Promise<string>((resolve) => {
+      const s = document.createElement('script')
+      s.onload = () => resolve('loaded')
+      s.onerror = () => resolve('error')
+      s.src = src
+      document.body.appendChild(s)
+    }), other)
+    expect(outcome).toBe('error')
+    // Had it run, its second hello would be a strike.
+    expect((await snapshot(page))?.strikes).toBe(0)
+  })
+
+  test('a <base> inserted in the frame doesn’t move relative URLs to another site', async ({ page }) => {
+    await open(page)
+    const url = frameUrl('ready', RUNTIME, runtime)
+    await mount(page, url)
+    await expect.poll(async () => (await reports(page)).length).toBe(1)
+    // The frame really runs this runtime: its hello names it and the welcome echoes it.
+    expect((await reports(page))[0].args.context).toMatchObject({ runtime })
+    const resolved = await page.frame({ url })!.evaluate((attacker) => {
+      const base = document.createElement('base')
+      base.href = `${attacker}/based/`
+      document.head.prepend(base)
+      const a = document.createElement('a')
+      a.href = 'leak?data=1'
+      return a.href
+    }, ATTACKER)
+    expect(resolved).toBe(`${url.slice(0, url.lastIndexOf('/'))}/leak?data=1`)
   })
 })
 

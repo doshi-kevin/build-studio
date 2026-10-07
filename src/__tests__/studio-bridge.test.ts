@@ -11,6 +11,7 @@ import { GOOD_MANIFEST } from '@/lib/studio/validator/fixtures'
 import { decide } from '@/lib/studio/policy'
 import type { StudioViewer } from '@/lib/studio/context'
 import type { InstallationState, ViewerRole } from '@/lib/studio/policy'
+import type { CapabilityName } from '@/lib/studio/capabilities'
 
 vi.mock('@/lib/studio/context', () => ({ resolveViewer: vi.fn(), sessionUserId: vi.fn() }))
 vi.mock('@/lib/studio/db', () => ({
@@ -209,6 +210,42 @@ describe('method catalog and server handlers', () => {
   })
 })
 
+describe('capabilities by role', () => {
+  const ROLES = ['student', 'professor', 'ta', 'grader'] as const
+  const everyone = { student: true, professor: true, ta: true, grader: true }
+  // Written out rather than derived from CAPABILITIES, so a change to who may call what fails here.
+  const EXPECTED: Record<string, Record<(typeof ROLES)[number], boolean>> = {
+    'context.get': everyone,
+    'course.skills': everyone,
+    'course.roster': { student: false, professor: true, ta: true, grader: true },
+    'course.assignments': everyone,
+  }
+  const gated = Object.entries(METHOD_CATALOG).filter(([, m]) => m.runs === 'server' && m.capability !== null)
+  const declaring = (capabilities: CapabilityName[]) => ({
+    ...MANIFEST,
+    views: { student: { ...MANIFEST.views.student, capabilities }, professor: { ...MANIFEST.views.professor, capabilities } },
+  })
+
+  beforeEach(() => {
+    vi.mocked(loadSectionSkills).mockResolvedValue([])
+    vi.mocked(loadReleasedAssignments).mockResolvedValue([])
+    vi.mocked(loadInstallationHandleSalt).mockResolvedValue('a'.repeat(64))
+    vi.mocked(loadSectionRoster).mockResolvedValue([])
+  })
+
+  it('has a row for every server method a capability gates', () => {
+    expect(gated.map(([name]) => name).sort()).toEqual(Object.keys(EXPECTED).sort())
+  })
+
+  it.each(gated)('%s reaches exactly these roles when both views declare it, and no role when neither does', async (method, spec) => {
+    const run = (role: ViewerRole, manifest: typeof MANIFEST) => dispatch(viewer(role, 'active', manifest), { method, args: null, host: HOST })
+    const declared = declaring([spec.capability as CapabilityName])
+    const reached = Object.fromEntries(await Promise.all(ROLES.map(async (role) => [role, (await run(role, declared)).ok])))
+    expect(reached).toEqual(EXPECTED[method])
+    for (const role of ROLES) expect(await run(role, declaring([]))).toMatchObject({ ok: false, code: 'not_available' })
+  })
+})
+
 describe('dispatch', () => {
   it('refuses a method that doesn’t exist, including prototype names', async () => {
     for (const method of ['course.weakSpots', 'records.drop', 'constructor.call']) {
@@ -231,6 +268,16 @@ describe('dispatch', () => {
     })
     expect(result).toMatchObject({ ok: false, code: 'invalid' })
     expect(records.listRecords).not.toHaveBeenCalled()
+  })
+
+  it('refuses an update that names a student, so a record can’t be handed to someone else', async () => {
+    const result = await dispatch(viewer('professor'), {
+      method: 'records.update',
+      args: { collection: 'attendance', recordId: crypto.randomUUID(), data: {}, student: `st_${'a'.repeat(20)}` },
+      host: HOST,
+    })
+    expect(result).toMatchObject({ ok: false, code: 'invalid' })
+    expect(records.updateRecord).not.toHaveBeenCalled()
   })
 
   it('routes records to Step 3 with the verified viewer’s installation', async () => {
@@ -401,6 +448,7 @@ describe('records.batch', () => {
     ['more than 50 items', Array.from({ length: 51 }, () => ({ op: 'create', data: {} }))],
     ['an item naming an owner', [{ op: 'create', data: {}, ownerId: crypto.randomUUID() }]],
     ['an item with a student ID instead of a handle', [{ op: 'create', data: {}, student: crypto.randomUUID() }]],
+    ['an update item naming a student', [{ op: 'update', recordId: crypto.randomUUID(), data: {}, student: `st_${'a'.repeat(20)}` }]],
     ['an unknown op', [{ op: 'upsert', data: {} }]],
   ])('refuses %s before Step 3', async (_label, items) => {
     const result = await dispatch(viewer('professor'), { method: 'records.batch', args: { collection: 'responses', items }, host: HOST })
@@ -583,10 +631,34 @@ describe('POST /api/studio/bridge', () => {
   it.each([
     ['broken JSON', '{"v":1,'],
     ['an envelope naming the user', { ...CALL, userId: crypto.randomUUID() }],
+    [
+      'an envelope whose installation sits only behind an own __proto__ key',
+      JSON.stringify({ ...CALL, installationId: undefined }).replace('{"v":1', `{"__proto__":{"installationId":"${INSTALLATION}"},"v":1`),
+    ],
   ])('refuses %s with a generic 400', async (_label, body) => {
     const res = await post(body)
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ ok: false, error: { code: 'invalid', message: 'This request isn’t valid.' } })
+  })
+
+  it('drops own __proto__ keys from the envelope and the arguments, so they name nothing', async () => {
+    // Behind __proto__, only fields the request doesn't carry itself, so no own key can shadow them.
+    const body = JSON.stringify({ ...CALL, args: { collection: 'responses', limit: 5 } })
+      .replace('{"v":1', `{"__proto__":{"userId":"${crypto.randomUUID()}"},"v":1`)
+      .replace('"limit":5', '"limit":5,"__proto__":{"offset":7}')
+    expect((await post(body)).status).toBe(200)
+    const [args] = vi.mocked(records.listRecords).mock.calls[0]
+    expect(Object.keys(args).sort()).toEqual(['collection', 'installationId', 'limit'])
+    expect(args.offset).toBeUndefined()
+  })
+
+  it.each([
+    ['a collection only behind an own __proto__ key', '{"__proto__":{"collection":"responses"}}'],
+    ['a constructor key', '{"collection":"responses","constructor":{"prototype":{"isAdmin":true}}}'],
+  ])('refuses arguments with %s before Step 3', async (_label, args) => {
+    const res = await post(JSON.stringify(CALL).replace('{"collection":"responses"}', args))
+    expect(await res.json()).toMatchObject({ ok: false, error: { code: 'invalid' } })
+    expect(records.listRecords).not.toHaveBeenCalled()
   })
 
   it('needs a session: a frame ticket alone authenticates nothing', async () => {

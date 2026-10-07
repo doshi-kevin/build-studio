@@ -9,8 +9,8 @@ export const STUDIO_MANIFEST_MAX_FIELDS = 30
 // record service enforces its own cap rather than relying on the transport.
 export const STUDIO_RECORD_MAX_BYTES = 16 * 1024
 export const STUDIO_RECORD_PAGE_MAX = 100
-/** records.batch: items in one call. Each runs as its own write; the call counts once
- * toward the bridge's rate limits. */
+/** records.batch: items in one call. Each runs as its own write. The bridge route charges
+ * the call one write per five items against every rate limit, so 50 items cost 10 writes. */
 export const STUDIO_RECORD_BATCH_MAX = 50
 
 // The runtime frame and the Scholera Bridge (docs/reference/studio-plugin-runtime.md).

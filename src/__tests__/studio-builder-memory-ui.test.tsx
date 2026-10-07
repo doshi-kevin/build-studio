@@ -126,7 +126,9 @@ describe('the suggestion card', () => {
     render(<MemoryProposals proposals={[proposal()]} onDecide={onDecide} />)
     fireEvent.click(screen.getByRole('button', { name: 'Remember' }))
     expect(await screen.findByText('This suggestion is no longer waiting for you.')).toBeTruthy()
-    expect((screen.getByRole('button', { name: 'Remember' }) as HTMLButtonElement).disabled).toBe(false)
+    // React commits the error from inside the async transition before the transition itself
+    // ends, so "Saving…" can still be showing for a moment. Wait for the button to come back.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Remember' }) as HTMLButtonElement).disabled).toBe(false))
   })
 
   it('renders nothing when there is nothing to decide', () => {

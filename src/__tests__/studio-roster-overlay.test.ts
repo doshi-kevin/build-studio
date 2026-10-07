@@ -4,7 +4,7 @@
  * Message gating and strikes are tested with the host in studio-runtime-host.test.ts.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RosterPayload } from '@/lib/studio/runtime/protocol'
+import { parseRosterPayload, type RosterPayload } from '@/lib/studio/runtime/protocol'
 import { createRosterOverlay, ROSTER_MAX_SLOTS, UNKNOWN_STUDENT } from '@/lib/studio/runtime/roster-overlay'
 import { PREVIEW_ROSTER, previewRosterNames } from '@/lib/studio/runtime/preview-roster'
 
@@ -155,6 +155,36 @@ describe('roster overlay', () => {
     expect(container.style.position).toBe('relative')
     const box = container.querySelector<HTMLElement>('[data-studio-roster="r1"]')!
     expect(box.style).toMatchObject({ display: 'block', left: '12px', top: '300px', width: '560px', height: '232px', pointerEvents: 'auto' })
+  })
+
+  it('a box placed far outside the frame stays inside the clipped layer, never loose on the page', () => {
+    const { container, overlay } = setup()
+    overlay.place('r1', { x: -100_000, y: 100_000, width: 100_000, height: 100_000 })
+    overlay.render('r1', payload())
+    const layer = container.querySelector<HTMLElement>('[data-studio-roster="layer"]')!
+    const box = container.querySelector<HTMLElement>('[data-studio-roster="r1"]')!
+    expect(box.parentElement).toBe(layer)
+    expect(layer.parentElement).toBe(container)
+    expect(layer.style).toMatchObject({ position: 'absolute', top: '0px', left: '0px', right: '0px', bottom: '0px', overflow: 'hidden' })
+    expect(box.style).toMatchObject({ left: '-100000px', top: '100000px' })
+    expect([...document.body.children]).toEqual([container])
+  })
+
+  it('a column named like a prototype property shows an empty cell for a row without one', async () => {
+    const { container, overlay } = setup()
+    const parsed = parseRosterPayload({
+      ...payload(),
+      columns: [{ key: 'constructor', header: 'Note' }],
+      rows: [
+        { student: A, cells: { constructor: { kind: 'text', text: 'Arrived late' } } },
+        { student: B, cells: {} },
+      ],
+    })
+    expect(parsed).not.toBeNull()
+    overlay.render('r1', parsed!)
+    await namesLoaded(container)
+    const notes = Object.fromEntries([...container.querySelectorAll('tbody tr')].map((tr) => [tr.querySelector('th')?.textContent, tr.querySelector('td')?.textContent]))
+    expect(notes).toEqual({ [nameOf(A)]: 'Arrived late', [nameOf(B)]: '' })
   })
 
   it('refuses more tables than a view needs', () => {

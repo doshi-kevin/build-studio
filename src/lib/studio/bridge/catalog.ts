@@ -67,7 +67,7 @@ export const METHOD_CATALOG = {
   'records.create': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...createItem }) },
   'records.update': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...updateItem }) },
   'records.delete': { runs: 'server', capability: null, views: BOTH, kind: 'write', args: z.strictObject({ collection, ...deleteItem }) },
-  // Each item runs exactly as its single method would. One call for the rate limits.
+  // Each item runs exactly as its single method would. The route charges one write per five items.
   'records.batch': {
     runs: 'server',
     capability: null,

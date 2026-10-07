@@ -70,7 +70,7 @@ describe('buildPluginCard', () => {
   })
 
   it('professors: their view’s capabilities and every collection', () => {
-    expect(card.professors).toContain('See which skills the class is struggling with')
+    expect(card.professors).toContain('Read this course’s skill list')
     expect(card.professors).toContain('Read every student’s responses')
     expect(card.professors).toContain('Read and write questions')
   })

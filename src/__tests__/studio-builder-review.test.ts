@@ -6,13 +6,13 @@
  * missing answer) can fail a build that passed its checks. Stop still stops it.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { runBuilderSlice, WORST_CASE_CALL_USD, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
+import { runBuilderSlice, WORST_CASE_CALL_USD, type GateRefusal, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
 import { runDraftChecks } from '@/lib/studio/builder/checks'
 import type { RenderOutcome } from '@/lib/studio/builder/renderer'
 import { parseReview, REVIEW_INSTRUCTIONS } from '@/lib/studio/builder/review'
 import { readPlan } from '@/lib/studio/builder/work'
 import { parseManifest, type StudioManifestV2 } from '@/lib/studio/manifest'
-import { STUDIO_BUILDER_IMPROVE_MAX_TURNS, STUDIO_BUILDER_MAX_MODEL_TURNS, STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
+import { STUDIO_BUILDER_IMPROVE_MAX_TURNS, STUDIO_BUILDER_MAX_MODEL_TURNS, STUDIO_BUILDER_MAX_REVIEW_ROUNDS, STUDIO_BUILDER_REVIEW_FINDING_MAX_CHARS, STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD, STUDIO_BUILDER_SLICE_CUSHION_MS } from '@/lib/studio/limits'
 import { createMemoryStore, newRun } from './helpers/builder-memory-store'
 import { call, finish, FLASHCARDS_MANIFEST, inProcessWorkerCheck, PROFESSOR_VIEW, scriptedModel, STUDENT_VIEW, type ScriptedTurn } from './helpers/builder-fixtures'
 
@@ -46,9 +46,14 @@ const tweak = (n: number) => call('edit_file', { path: 'views/professor.tsx', ol
 
 const jpeg = (label: string, bytes = 1000) => ({ label, mediaType: 'image/jpeg' as const, bytes: new Uint8Array(bytes).fill(1) })
 
-function harness(script: ScriptedTurn[], setup: { render?: HarnessDeps['renderPreview']; costUsd?: number } = {}) {
+function harness(
+  script: ScriptedTurn[],
+  // `clock`, when given, is advanced by the test: the harness reads time only through deps.now().
+  setup: { render?: HarnessDeps['renderPreview']; costUsd?: number; modelTurns?: number; gate?: (prompts: number) => GateRefusal | null; clock?: { t: number } } = {},
+) {
   const run = newRun({ status: 'queued', baseHash: 'b'.repeat(64), baseRev: 1, request: 'Make the flashcards nicer' })
   if (setup.costUsd !== undefined) run.counters.costUsd = setup.costUsd
+  if (setup.modelTurns !== undefined) run.counters.modelTurns = setup.modelTurns
   const mem = createMemoryStore(run)
   const model = scriptedModel(script)
   const base: SliceData['base'] = { manifest: stamped(), files: { ...views } }
@@ -58,7 +63,7 @@ function harness(script: ScriptedTurn[], setup: { render?: HarnessDeps['renderPr
     model,
     loadSliceData: async () => ({ slug: SLUG, published: null, publishedVersions: [], base, course: null, skills: null, history: [], materialSources: [] }),
     loadMemories: async () => [],
-    gate: async () => null,
+    gate: async () => setup.gate?.(model.prompts.length) ?? null,
     runChecks: async (_run, data, work) => runDraftChecks(work, { workerCheck: inProcessWorkerCheck, rosterFullNames: ['Maria Lopez'], published: data.published, disclosureSources: [] }),
     searchMaterial: async () => ({ ok: false as const }),
     rehydrateMaterial: async () => [],
@@ -66,10 +71,10 @@ function harness(script: ScriptedTurn[], setup: { render?: HarnessDeps['renderPr
     renderPreview,
     audit: vi.fn(),
     kick: vi.fn(),
-    now: () => Date.now(),
+    now: () => setup.clock?.t ?? Date.now(),
     heartbeatMs: 5,
   }
-  const slice = () => runBuilderSlice({ runId: run.id, sliceNo: mem.state.run.sliceNo }, { id: mem.currentJob().id, deadline: Date.now() + 15 * 60_000 }, deps)
+  const slice = (deadline = Date.now() + 15 * 60_000) => runBuilderSlice({ runId: run.id, sliceNo: mem.state.run.sliceNo }, { id: mem.currentJob().id, deadline }, deps)
   const reviews = () => model.prompts.filter((p) => p.system === REVIEW_INSTRUCTIONS)
   const labels = () => mem.state.steps.map((s) => s.label)
   return { mem, model, deps, slice, reviews, labels, renderPreview }
@@ -78,6 +83,16 @@ function harness(script: ScriptedTurn[], setup: { render?: HarnessDeps['renderPr
 const readFiles = { calls: [call('read_file', { path: 'views/professor.tsx' })] }
 
 describe('the design review', () => {
+  it('never renders or reviews a draft that fails its checks', async () => {
+    const broken = call('edit_file', { path: 'views/professor.tsx', old_text: 'Add card', new_text: 'Add card {' })
+    const h = harness([readFiles, { calls: [broken, finish()] }, { calls: [finish('blocked', 'Stopping.')] }])
+    await h.slice()
+    expect(h.labels()).toContain('check.failed')
+    expect(h.renderPreview).not.toHaveBeenCalled()
+    expect(h.reviews()).toHaveLength(0)
+    expect(h.mem.state.run.status).toBe('blocked')
+  })
+
   it('reviews a passing draft once, with its screenshots, and commits it with its sample data', async () => {
     const h = harness([readFiles, { calls: [tweak(1), sample(), call('run_checks')] }, { calls: [finish()] }, ready])
     await h.slice()
@@ -113,6 +128,35 @@ describe('the design review', () => {
     expect(after).toMatch(/Phase: improving\./)
     expect(h.labels()).toContain('review.changes')
     expect(h.labels()).toContain('improve.round')
+  })
+
+  it('an improve verdict survives a slice handoff: the next slice’s builder still reads the findings, in the improving phase', async () => {
+    const clock = { t: Date.UTC(2026, 9, 2) }
+    const h = harness(
+      [
+        readFiles,
+        { calls: [tweak(1), call('run_checks')] },
+        { calls: [finish()] },
+        // The review uses up the slice, so the builder sees its findings only in the next one.
+        () => ((clock.t += 10_000), improve().calls),
+        { calls: [tweak(2), call('run_checks')] },
+        { calls: [finish()] },
+        ready,
+      ],
+      { clock },
+    )
+    const deadline = () => clock.t + STUDIO_BUILDER_SLICE_CUSHION_MS + 1_000
+    expect(await h.slice(deadline())).toBe('handed off')
+    expect(h.model.prompts).toHaveLength(4)
+    expect(h.reviews()).toHaveLength(1)
+
+    expect(await h.slice(deadline())).toBe('stopped')
+    const after = h.model.prompts[4].prompt
+    expect(after).toMatch(/# Design review/)
+    expect(after).toMatch(/<data_[a-z0-9]+ kind="review" provenance="check-output">[\s\S]*add a StatCard with the number of cards/)
+    expect(after).toMatch(/Phase: improving\./)
+    expect(h.mem.state.run).toMatchObject({ status: 'preview_ready', sliceNo: 2 })
+    expect(h.reviews()).toHaveLength(2)
   })
 
   it(`stops reviewing after ${STUDIO_BUILDER_MAX_REVIEW_ROUNDS} rounds and commits the improved draft`, async () => {
@@ -218,8 +262,28 @@ describe('the design review', () => {
     // The review model was never called: a crash is a finding on its own.
     expect(h.reviews()).toHaveLength(0)
     expect(h.model.prompts[3].prompt).toMatch(/professor view crashed or didn’t start[\s\S]*hook/)
-    expect(h.mem.state.run.status).toBe('blocked')
+    expect(h.mem.state.steps.find((s) => s.label === 'review.changes')?.resultSummary).toMatchObject({ crashed: true, major: 1 })
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'repair_rounds' })
     expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it.each(['studio_paused', 'not_entitled', 'ai_disabled', 'access_lost', 'project_archived'] as const)(
+    'commits nothing when the gate refuses (%s) after the review, before the draft lands',
+    async (refusal) => {
+      // Four model calls: read, edit, finish, then the review. The refusal starts after the review.
+      const h = harness([readFiles, { calls: [tweak(1), call('run_checks')] }, { calls: [finish()] }, ready], { gate: (prompts) => (prompts >= 4 ? refusal : null) })
+      await h.slice()
+      expect(h.reviews()).toHaveLength(1)
+      expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: refusal })
+      expect(h.mem.state.snapshots.size).toBe(0)
+    },
+  )
+
+  it('still commits a checked draft at the daily spend limit: the commit calls no model', async () => {
+    const h = harness([readFiles, { calls: [tweak(1), call('run_checks')] }, { calls: [finish()] }, ready], { gate: (prompts) => (prompts >= 4 ? 'limit_daily_cost' : null) })
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    expect(h.mem.state.snapshots.size).toBe(1)
   })
 
   it('does not review a build that changed nothing', async () => {
@@ -251,6 +315,58 @@ describe('convergence after a design review (live failure, office-hours queue, 2
     expect(h.mem.state.run.counters.modelTurns).toBeLessThan(STUDIO_BUILDER_MAX_MODEL_TURNS)
     const files = [...h.mem.state.snapshots.values()][0].files as Record<string, string>
     expect(files['views/professor.tsx']).toMatch(/Add a card!+/)
+  })
+
+  it('settling commits nothing once Studio is paused', async () => {
+    // Model calls: read, edit, finish, review, then the 4 improvement turns. The pause lands
+    // after the last of them, so the next thing to see it is the settle, not a model call.
+    const h = harness([...reviewedFirstBuild, ...Array.from({ length: 30 }, (_, i) => nudge(i))], {
+      gate: (prompts) => (prompts >= 4 + STUDIO_BUILDER_IMPROVE_MAX_TURNS ? 'studio_paused' : null),
+    })
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(4 + STUDIO_BUILDER_IMPROVE_MAX_TURNS)
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'studio_paused' })
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('a run that reaches its turn cap while polishing is settled with the improved draft that still passes', async () => {
+    // Read, edit, finish, review, then one improvement turn lands on the cap.
+    const h = harness([...reviewedFirstBuild, { calls: [tweak(2)] }], { modelTurns: STUDIO_BUILDER_MAX_MODEL_TURNS - 5 })
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(5)
+    expect(h.mem.state.run).toMatchObject({ status: 'preview_ready', errorCode: null })
+    expect((h.mem.state.run.result as { polish_stopped?: boolean }).polish_stopped).toBe(true)
+    const files = [...h.mem.state.snapshots.values()][0].files as Record<string, string>
+    expect(files['views/professor.tsx']).toContain('Add one card')
+  })
+
+  it('a builder that only makes refused calls while polishing is settled, not failed', async () => {
+    const h = harness([...reviewedFirstBuild, { calls: [call('nope'), call('nope'), call('nope')] }])
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(5)
+    expect(h.mem.state.run).toMatchObject({ status: 'preview_ready', errorCode: null })
+    expect((h.mem.state.run.result as { polish_stopped?: boolean }).polish_stopped).toBe(true)
+    expect(h.mem.state.snapshots.size).toBe(1)
+  })
+
+  it('the school’s daily spend limit while polishing ends on that limit and is not settled', async () => {
+    const h = harness([...reviewedFirstBuild, nudge(0)], { gate: (prompts) => (prompts >= 4 ? 'limit_daily_cost' : null) })
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(4)
+    expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_daily_cost' })
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('settling commits nothing when Studio is paused while it checks the draft', async () => {
+    // The first gate in the settle passes; the pause lands during its checks and render.
+    let settleGates = 0
+    const h = harness([...reviewedFirstBuild, ...Array.from({ length: 30 }, (_, i) => nudge(i))], {
+      gate: (prompts) => (prompts >= 4 + STUDIO_BUILDER_IMPROVE_MAX_TURNS && ++settleGates > 1 ? 'studio_paused' : null),
+    })
+    await h.slice()
+    expect(settleGates).toBe(2)
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'studio_paused' })
+    expect(h.mem.state.snapshots.size).toBe(0)
   })
 
   it('an improvement that breaks the checks falls back to the draft the review saw, never an unchecked one', async () => {

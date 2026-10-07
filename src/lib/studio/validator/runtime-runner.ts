@@ -5,7 +5,7 @@
  *
  *   unavailable (the default)
  *       No runner is configured. The run ends as `error`, which blocks publication.
- *   local (STUDIO_VALIDATOR_RUNNER=local, refused in production)
+ *   local (STUDIO_VALIDATOR_RUNNER=local; refused in production unless the database is on this machine)
  *       Spawns validator-runtime/cli.mjs as a child process with a minimal environment (no
  *       Scholera secrets), which runs Playwright's Chromium on this machine. For development
  *       and tests only: a developer machine is not an isolated environment.

@@ -9,7 +9,8 @@
  * The model proposes; this file decides. Before every model call it checks, fresh: the
  * run is running, this slice still holds it, nobody pressed Stop, the professor still
  * has the section and the project, Studio and the studio-builder AI switch are on, the
- * school is under its daily spend, and every run budget has room. Before each tool it
+ * school is under its daily spend, and every run budget has room. It checks the same gate
+ * (all but the spend) once more before it commits a draft. Before each tool it
  * checks Stop and the claim again, and every write goes through a database function that
  * re-checks the claim token, Stop, the working copy's revision and the caps.
  *
@@ -163,7 +164,7 @@ export interface HarnessDeps {
   rehydrateMaterial(run: db.BuilderRunRow, searches: readonly MaterialSearch[]): Promise<RenderedSearch[] | null>
   recordUsage(run: db.BuilderRunRow, usage: ModelUsage, modelId: string, turn: number): Promise<void>
   /** Screenshots of the draft on its sample data, for the design review. Never throws for a
-   * render outcome; `unavailable` where no renderer runs (production, by design, for now). */
+   * render outcome; `unavailable` where no renderer runs (any deployed server, by design). */
   renderPreview(input: RenderInput): Promise<RenderOutcome>
   /** A milestone for the audit trail: ids and counters only. */
   audit(run: db.BuilderRunRow, event: string, metadata: Record<string, string | number>): void
@@ -393,6 +394,14 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     const ms = Math.max(0, now - activeSince)
     activeSince = now
     return Math.round(ms)
+  }
+
+  /** The gate once more, right before a draft is committed: none lands after Studio is paused,
+   * the entitlement or the AI switch is off, the professor loses the section or the project is
+   * archived. The daily spend limit doesn't stop a commit, which calls no model. */
+  const commitRefusal = async (run: db.BuilderRunRow): Promise<GateRefusal | null> => {
+    const refusal = await deps.gate(run)
+    return refusal === 'limit_daily_cost' ? null : refusal
   }
 
   let settling = false
@@ -927,6 +936,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     if (reviewed === 'improve') return 'continue'
     gateWork = reviewed
 
+    const refused = await commitRefusal(run)
+    if (refused) return await end(run, gateWork, plan, 'blocked', refused)
     if (await stopFor(await record('done', 'run.finishing', { status: 'completed' }, { error: false }))) return 'stop'
     const hash = snapshotHash(fresh.compiler, manifest, files, gateWork.sample)
     return await end(run, gateWork, plan, 'preview_ready', null, {
@@ -954,6 +965,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
    */
   async function settle(run: db.BuilderRunRow, work: Work, plan: Plan | null): Promise<'stop' | null> {
     if (!data) return null
+    const refused = await commitRefusal(run)
+    if (refused) return await end(run, work, plan, 'blocked', refused)
     const good = work.review.good
     const candidates: { manifest: StudioManifestV2 | null; files: Partial<Record<PluginPath, string>>; sample: SampleData | null; current: boolean }[] = [
       { manifest: work.manifest, files: work.files, sample: work.sample, current: true },
@@ -979,6 +992,9 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       if (data.base && workHash(data.base.manifest, data.base.files, data.base.sample) === workHash(c.manifest, files, c.sample)) {
         return await end(run, candidate, plan, 'completed', null, { summary: work.review.summary ?? undefined, passed: true })
       }
+      // Again here: the checks and the render above take long enough for Studio to be paused.
+      const late = await commitRefusal(run)
+      if (late) return await end(run, candidate, plan, 'blocked', late)
       const hash = snapshotHash(fresh.compiler, c.manifest, files, c.sample)
       logger.info('studio.builder.settled', { runId, kept: c.current ? 'improved' : 'reviewed' })
       return await end(run, candidate, plan, 'preview_ready', null, {

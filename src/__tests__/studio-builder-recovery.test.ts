@@ -1,6 +1,7 @@
 /**
- * Builder failure recovery and run budgets at their exact boundaries, hermetic: the real
- * harness, a scripted model and the in-memory run store (helpers/builder-memory-store.ts).
+ * Builder failure recovery, run budgets at their exact boundaries, and what a later slice or
+ * a follow-up build carries forward, hermetic: the real harness, a scripted model and the
+ * in-memory run store (helpers/builder-memory-store.ts).
  * The same rules in SQL, and the races between them, are in
  * src/__tests__/db/studio-builder-budgets.test.ts.
  *
@@ -30,10 +31,16 @@ vi.mock('@/lib/studio/db', () => ({
   loadBuilderProject: vi.fn(),
   listProjectRuns: vi.fn(async () => []),
   loadInstitutionBuilderSpend: vi.fn(async () => 0),
+  loadLatestProjectManifest: vi.fn(async () => null),
+  loadSnapshot: vi.fn(async () => null),
+  loadSectionCourse: vi.fn(async () => null),
+  loadSectionSkills: vi.fn(async () => null),
+  listProjectVersions: vi.fn(async () => []),
 }))
 vi.mock('@/lib/studio/validator/service', () => ({ validateAfterPublish: vi.fn(), currentVerdict: vi.fn() }))
 // A stand-in check worker whose behaviour the student view's text picks, so the real
-// check-worker.ts (thread, limits, replacement) can be driven through a crash or a hang.
+// check-worker.ts (thread, limits, replacement) can be driven through a crash, a hang,
+// its heap cap, or a look at what the thread was started with.
 vi.mock('@/lib/studio/builder/check-worker.generated', () => ({
   CHECK_WORKER_SOURCE: `
     const { parentPort } = require('node:worker_threads')
@@ -42,6 +49,18 @@ vi.mock('@/lib/studio/builder/check-worker.generated', () => ({
       if (s === 'CRASH') throw new Error('worker crashed')
       if (s === 'EXIT') process.exit(1)
       if (s === 'SILENT') return
+      if (s === 'ENV') {
+        const seen = { env: Object.keys(process.env), argv: process.argv.slice(2), execArgv: process.execArgv }
+        return parentPort.postMessage({ id: m.id, result: { compiler: JSON.stringify(seen), compile: {}, typecheck: { total: 0 } } })
+      }
+      if (s === 'HEAP') {
+        const mb = require('node:v8').getHeapStatistics().heap_size_limit / 2 ** 20
+        return parentPort.postMessage({ id: m.id, result: { compiler: String(mb), compile: {}, typecheck: { total: 0 } } })
+      }
+      if (s === 'OOM') {
+        const hold = []
+        for (;;) hold.push(new Array(1e5).fill(0).map((_, i) => ({ i })))
+      }
       parentPort.postMessage({ id: m.id, result: { compiler: 'stub', compile: {}, typecheck: { total: 0 } } })
     })`,
 }))
@@ -236,7 +255,25 @@ describe('the check worker crashes or runs over', () => {
     const files = (student: string) => ({ 'views/student.tsx': student, 'views/professor.tsx': '' })
     afterEach(() => {
       vi.useRealTimers()
+      vi.unstubAllEnvs()
     })
+
+    it('the thread starts with nothing of the server’s: no environment, no arguments, no Node flags', async () => {
+      vi.stubEnv('STUDIO_PARENT_SECRET', 'never-in-the-worker')
+      const seen = JSON.parse((await runWorkerCheck(files('ENV'))).compiler)
+      expect(seen).toEqual({ env: [], argv: [], execArgv: [] })
+    })
+
+    it('a thread past its heap cap is stopped as a memory timeout, and the next check gets a fresh worker', async () => {
+      // The cap is on the thread: V8's limit is the old-generation cap plus a small young
+      // generation, far below the default of several gigabytes that would also end in an OOM.
+      const heapMb = Number((await runWorkerCheck(files('HEAP'))).compiler)
+      expect(heapMb).toBeGreaterThanOrEqual(limits.STUDIO_BUILDER_CHECK_WORKER_MAX_MB)
+      expect(heapMb).toBeLessThanOrEqual(limits.STUDIO_BUILDER_CHECK_WORKER_MAX_MB + 256)
+      // A generous time limit, so only the heap cap can stop it.
+      await expect(runWorkerCheck(files('OOM'), 30_000)).rejects.toThrow(new CheckTimeout('memory'))
+      expect((await runWorkerCheck(files('OK'))).compiler).toBe('stub')
+    }, 60_000)
 
     it('a thread that throws or exits rejects that check, and the next check gets a fresh worker', async () => {
       await expect(runWorkerCheck(files('CRASH'))).rejects.toThrow(new CheckTimeout('crashed'))
@@ -343,7 +380,7 @@ describe('the professor refreshes the page', () => {
 })
 
 describe('the professor closes the page', () => {
-  it('a build hands off between slices and reaches its end on job kicks alone, with no progress read', async () => {
+  it('a build hands off between slices and reaches its end on job kicks alone, with no progress read, each slice picking up the plan, check and log', async () => {
     vi.mocked(db.builderRpcs.tend).mockClear()
     vi.mocked(db.loadBuilderRun).mockClear()
     const clock = { t: Date.UTC(2026, 9, 2) }
@@ -351,7 +388,7 @@ describe('the professor closes the page', () => {
     const turn = (calls: { name: string; input: unknown }[]) => () => ((clock.t += 10_000), calls)
     const h = harness(
       [
-        turn([call('read_file', { path: 'views/student.tsx' })]),
+        turn([plan(['views/student.tsx']), call('read_file', { path: 'views/student.tsx' })]),
         turn([call('edit_file', { path: 'views/student.tsx', old_text: '>I know this<', new_text: '>Got it<' }), call('run_checks')]),
         turn([finish()]),
       ],
@@ -369,6 +406,14 @@ describe('the professor closes the page', () => {
     expect(h.mem.state.run.sliceNo).toBe(3)
     expect(db.builderRpcs.tend).not.toHaveBeenCalled()
     expect(db.loadBuilderRun).not.toHaveBeenCalled()
+
+    // Each new slice's prompt is rebuilt from the stored run: the plan and the file it read
+    // in slice 1, then the passing check and the action log from slice 2.
+    const [, second, third] = h.model.prompts.map((p) => p.prompt)
+    expect(second).toMatch(/Your plan:\n<data_[a-z0-9]+ kind="plan" provenance="model-authored">\n\{[^<]*Flashcards for this week’s terms/)
+    expect(second).toMatch(/kind="file" provenance="plugin-code" path="views\/student\.tsx">\n {3}1\| import/)
+    expect(third).toContain('Last check: passed.')
+    expect(third).toMatch(/\n#\d+ submit_plan\n#\d+ read_file views\/student\.tsx\n#\d+ edit_file views\/student\.tsx: \d+ bytes\n#\d+ run_checks: passed\n/)
   })
 })
 
@@ -446,5 +491,152 @@ describe('run budgets at their exact boundaries', () => {
     expect(order).toEqual(['gate', 'addCost', 'gate'])
     expect(gateRuns[1].counters.costUsd).toBeCloseTo(TURN_USD, 9)
     expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_daily_cost' })
+  })
+
+  const refusals = (h: ReturnType<typeof harness>) => h.mem.state.steps.filter((s) => s.status === 'refused').map((s) => s.resultSummary.reason)
+  const variant = (n: number) => STUDENT_VIEW.replace('>Next<', `>Next ${n}<`)
+  // A student view without its error state: Stage 1 fails it on kit.required_states.
+  const failing = (n: number) =>
+    variant(n).replace(', ErrorState', '').replace(`if (cards.status === 'error') return <Screen title="Flashcards"><ErrorState onRetry={cards.retry} /></Screen>\n`, '')
+
+  it('writes: the last allowed write lands, the next in the same turn is refused, and the run ends before another model call', async () => {
+    const h = harness([{ calls: [write('views/student.tsx', variant(1)), write('views/student.tsx', variant(2))] }, { calls: [kit()] }], {
+      counters: { writes: limits.STUDIO_BUILDER_MAX_WRITES - 1 },
+    })
+    await h.slice()
+    expect(h.mem.state.steps.filter((s) => s.tool === 'write_file').map((s) => s.status)).toEqual(['done', 'refused'])
+    expect(refusals(h)).toEqual(['write_limit'])
+    expect(h.mem.state.run.counters.writes).toBe(limits.STUDIO_BUILDER_MAX_WRITES)
+    expect(h.model.prompts).toHaveLength(1)
+    expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_writes' })
+  })
+
+  it('bytes: a write that lands exactly on the cap runs and ends the run; one byte more is refused and counts nothing', async () => {
+    const size = Buffer.byteLength(variant(1))
+    const exact = harness([{ calls: [write('views/student.tsx', variant(1))] }, { calls: [kit()] }], { counters: { bytesWritten: limits.STUDIO_BUILDER_MAX_BYTES_WRITTEN - size } })
+    await exact.slice()
+    expect(exact.mem.state.run.counters.bytesWritten).toBe(limits.STUDIO_BUILDER_MAX_BYTES_WRITTEN)
+    expect(exact.model.prompts).toHaveLength(1)
+    expect(exact.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: 'limit_bytes' })
+
+    const over = harness([{ calls: [write('views/student.tsx', variant(1))] }, { calls: [finish('blocked', 'x')] }], { counters: { bytesWritten: limits.STUDIO_BUILDER_MAX_BYTES_WRITTEN - size + 1 } })
+    await over.slice()
+    expect(refusals(over)).toEqual(['bytes_limit'])
+    expect(over.mem.state.run.counters).toMatchObject({ writes: 0, bytesWritten: limits.STUDIO_BUILDER_MAX_BYTES_WRITTEN - size + 1 })
+    // A refused write isn't the end: the model hears why and the run goes on.
+    expect(over.model.prompts[1].prompt).toContain('Refused write_file (bytes_limit)')
+    expect(over.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'agent_blocked' })
+  })
+
+  it.each([
+    ['writes', { writes: limits.STUDIO_BUILDER_MAX_WRITES }, 'limit_writes'],
+    ['bytes', { bytesWritten: limits.STUDIO_BUILDER_MAX_BYTES_WRITTEN }, 'limit_bytes'],
+  ])('%s: at the cap no model call is made', async (_name, counters, code) => {
+    const h = harness([{ calls: [kit()] }], { counters })
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(0)
+    expect(h.mem.state.run).toMatchObject({ status: 'budget_exhausted', errorCode: code })
+  })
+
+  it('repair rounds: the last allowed round gets another turn; the next failed check ends the run blocked, saving nothing', async () => {
+    const h = harness(
+      [
+        { calls: [write('views/student.tsx', failing(1)), call('run_checks')] },
+        { calls: [write('views/student.tsx', failing(2)), call('run_checks')] },
+        { calls: [finish()] },
+      ],
+      { counters: { repairRounds: limits.STUDIO_BUILDER_MAX_REPAIR_ROUNDS - 1 } },
+    )
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(2)
+    // Both failed checks are recorded: the harness ends the run itself, not the store's cap.
+    expect(h.mem.state.steps.filter((s) => s.tool === 'run_checks').map((s) => s.label)).toEqual(['check.failed', 'check.failed'])
+    expect(h.mem.state.run.counters).toMatchObject({ repairRounds: limits.STUDIO_BUILDER_MAX_REPAIR_ROUNDS, checkRuns: 2 })
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'repair_rounds' })
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('check runs: a failed check that uses the last run ends the run blocked; one run earlier the build goes on', async () => {
+    const h = harness(
+      [
+        { calls: [write('views/student.tsx', failing(1)), call('run_checks')] },
+        { calls: [write('views/student.tsx', failing(2)), call('run_checks')] },
+        { calls: [finish()] },
+      ],
+      { counters: { checkRuns: limits.STUDIO_BUILDER_MAX_CHECK_RUNS - 2 } },
+    )
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(2)
+    expect(h.mem.state.steps.filter((s) => s.tool === 'run_checks').map((s) => s.label)).toEqual(['check.failed', 'check.failed'])
+    expect(h.mem.state.run.counters.checkRuns).toBe(limits.STUDIO_BUILDER_MAX_CHECK_RUNS)
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'check_runs' })
+    expect(h.mem.state.snapshots.size).toBe(0)
+  })
+
+  it('check runs: with none left, run_checks is refused and finish can’t prove the draft, so nothing is saved', async () => {
+    const h = harness([{ calls: [write('views/student.tsx', variant(1)), call('run_checks')] }, { calls: [finish()] }], {
+      counters: { checkRuns: limits.STUDIO_BUILDER_MAX_CHECK_RUNS },
+    })
+    await h.slice()
+    expect(refusals(h)).toEqual(['check_limit'])
+    expect(h.mem.state.run.counters.checkRuns).toBe(limits.STUDIO_BUILDER_MAX_CHECK_RUNS)
+    expect(h.mem.state.run).toMatchObject({ status: 'blocked', errorCode: 'check_runs' })
+    expect(h.mem.state.snapshots.size).toBe(0)
+    expect(h.mem.state.project.draftHeadHash).toBe('b'.repeat(64))
+  })
+})
+
+describe('a follow-up build and the builds before it', () => {
+  const ended = new Date(Date.UTC(2026, 9, 1)).toISOString()
+  const files = (changed: string[]) => ['views/student.tsx', 'views/professor.tsx'].map((path) => ({ path, changed: changed.includes(path) }))
+
+  it('the loader keeps the last three finished builds, oldest first, never the current build or an unfinished one', async () => {
+    const current = newRun({ status: 'running' })
+    const earlier = (n: number, over: Partial<BuilderRunRow> = {}) =>
+      newRun({ projectId: current.projectId, status: 'preview_ready', request: `REQUEST-${n}`, endedAt: ended, result: { summary: `SUMMARY-${n}`, files: files(['views/student.tsx']) }, ...over })
+    vi.mocked(db.loadBuilderProject).mockResolvedValueOnce({ slug: SLUG, materialSources: [] } as never)
+    // Newest first, as the database returns them. The current run's own row carries an end,
+    // so the unfinished filter can't hide it: only the id check keeps it out.
+    vi.mocked(db.listProjectRuns).mockResolvedValueOnce([
+      { ...current, status: 'failed', errorCode: 'internal', endedAt: ended },
+      earlier(1),
+      newRun({ projectId: current.projectId, status: 'waiting_for_professor', request: 'REQUEST-OPEN', endedAt: null }),
+      earlier(2, { result: { summary: 'SUMMARY-2', files: files(['views/student.tsx', 'views/professor.tsx']) } }),
+      earlier(3, { status: 'blocked', errorCode: 'repair_rounds', result: { files: files([]) } }),
+      earlier(4),
+    ])
+    const data = await realHarnessDeps(scriptedModel([])).loadSliceData(current)
+    expect(db.listProjectRuns).toHaveBeenCalledWith(current.projectId, limits.STUDIO_BUILDER_HISTORY_RUNS + 1)
+    expect(data!.history).toEqual([
+      { status: 'blocked', reason: 'repair_rounds', request: 'REQUEST-3', summary: null, filesChanged: [] },
+      { status: 'preview_ready', reason: null, request: 'REQUEST-2', summary: 'SUMMARY-2', filesChanged: ['views/student.tsx', 'views/professor.tsx'] },
+      { status: 'preview_ready', reason: null, request: 'REQUEST-1', summary: 'SUMMARY-1', filesChanged: ['views/student.tsx'] },
+    ])
+  })
+
+  it('the prompt carries the earlier request cut short and its summary, fenced, and none of that build’s questions, answers or plan', async () => {
+    const h = harness([{ calls: [finish('blocked', 'x')] }])
+    h.mem.state.run.request = 'REQUEST-NOW: make the cards bigger'
+    const earlier = newRun({
+      projectId: h.run.projectId,
+      status: 'preview_ready',
+      request: `REQUEST-EARLIER ${'x'.repeat(2000)}`,
+      questions: [{ id: 'q1', question: 'Q-EARLIER?', answer: 'A-EARLIER', askedAt: ended }],
+      plan: { goal: 'PLAN-EARLIER' },
+      endedAt: ended,
+      result: { summary: 'SUMMARY-EARLIER', goal: 'PLAN-EARLIER', files: files(['views/student.tsx']) },
+    })
+    vi.mocked(db.loadBuilderProject).mockResolvedValueOnce({ slug: SLUG, materialSources: [] } as never)
+    vi.mocked(db.loadSnapshot).mockResolvedValueOnce({ manifest: base()!.manifest, files: views, sampleData: null } as never)
+    vi.mocked(db.listProjectRuns).mockResolvedValueOnce([structuredClone(h.mem.state.run), earlier])
+    await h.slice({ ...h.deps, loadSliceData: realHarnessDeps(h.model).loadSliceData })
+
+    const prompt = h.model.prompts[0].prompt
+    expect(prompt).toContain('Build 1: preview_ready. Files changed: views/student.tsx.')
+    const request = prompt.match(/kind="earlier-request" provenance="earlier-request">\n([^<]*)\n<\/data_/)
+    expect(request?.[1]).toBe(earlier.request!.slice(0, limits.STUDIO_BUILDER_HISTORY_REQUEST_MAX_CHARS))
+    expect(prompt).toMatch(/kind="run-summary" provenance="model-authored">\nSUMMARY-EARLIER\n<\/data_/)
+    expect(prompt).not.toMatch(/Q-EARLIER|A-EARLIER|PLAN-EARLIER/)
+    expect(prompt.endsWith('REQUEST-NOW: make the cards bigger')).toBe(true)
   })
 })
