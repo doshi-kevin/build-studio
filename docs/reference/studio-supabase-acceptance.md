@@ -121,3 +121,50 @@ Each needs something this machine doesn't have. None changes the design.
 Out of Step 11's scope, so not pending: a production design-review renderer (deployed builds review the code without screenshots), any check that clicks through a plugin (neither Stage 2 nor the design review does), and a Bridge method for `course.weakSpots`, which stays registered and refused.
 
 Open before student access, unchanged by this pass: rule N9 in [studio-plugin-rules.md](./studio-plugin-rules.md). A plugin can navigate its own frame to a URL carrying data. The host detects it only after the request has left, and the closure audit confirmed the name-based static scan can be routed around. The rules record whether a professor view, which reads every student's records by handle, may hold that data as an open decision.
+
+## Paused after Step 12A.3 evaluator engineering (2026-10-07)
+
+**Studio work is paused here.** Step 12A built a way to measure how good the builder's plugins are as products. Its evaluator is engineered and frozen. Human calibration was deliberately not done, and nothing in Step 12A changed the builder.
+
+Done, on branch `feature/studio-generation-quality-eval` (last evaluator commit `b787b030`):
+
+| Step | State |
+|---|---|
+| 12A.1 | The quality contract: rubric, cases, judge rules |
+| 12A.2 | The framework in `eval/studio-quality/` (`05a983e0`) |
+| 12A.3 | Evaluator engineering. Live judge on Gemini, contrast pairs, repeatability, limited live builds. Tier 2 cases added (`bae1ac1b`). The judge is grounded in what each screen actually renders (`f36305fc` and fixes), anchors every evidence source and measures cramped phone layouts (`031981a4`), and scores workflow completeness none when a requested role's core action is absent (`b787b030`) |
+| 12A.3 human calibration | Deferred on purpose. The blind pack's human score sheet is blank (0 of 72). A scoring by another AI model is kept only as a cross-model reference |
+| 12A.4 | Not started: the 52-build baseline |
+
+Frozen evaluator:
+- Rubric `studio-generation-quality-v1`, weights unchanged since 12A.1.
+- Judge `sgq-judge-v5` (`eval/studio-quality/quality-freeze.ts`). Every result has the rendered evidence: what each screen showed, read from the live DOM, and checks for anything the source claims that never rendered.
+- Suite: 28 cases. Tier 1 has 20 core workflows (6 holdout). Tier 2 has 8 deeper product cases (D02, D05 and D06 sealed). 6 variance cases.
+- The sealed calibration key is `tmp/studio-quality/calibration/sealed/pack-key-final.json` (local, gitignored). All eight pack items were judged by the final evaluator.
+
+Unchanged by Step 12A: the builder, its instructions, review instructions, model and thinking level, ScholeraKit, the runtime and the validator. No file under `src/lib`, `src/app`, `src/components`, `validator-runtime` or `supabase` changed after `05a983e0`, and the Step 11 freeze test still passes.
+
+Checks at the pause: Studio unit tests 2,172 of 2,172 in 67 files; typecheck and lint clean. No live model call is part of these checks.
+
+Found and recorded, not fixed (the runtime is frozen for Step 12A): the kit drops RosterTable columns whose keys aren't camelCase, so a plugin can lose its main controls while passing the draft gate and Stage 2. The evaluator now penalizes the broken result.
+
+### Next product direction
+
+When work resumes, the goal is not better attendance trackers, forms, queues or other record-keeping tools. Studio should understand a professor's teaching problem, course and constraints, then invent and build domain-specific educational software the professor may not have thought to ask for. Examples:
+- chemistry lab companions, and reaction or equilibrium reasoning tools;
+- physics prediction and simulation activities;
+- circuit debugging and experimental reasoning;
+- proof, strategy and counterexample tools in mathematics;
+- choosing a statistical test, and designing an experiment;
+- valuation, DCF, portfolio and scenario simulators in finance;
+- staged case studies;
+- loops where students predict, commit, see the result and reflect;
+- tools that expose misconceptions rather than store records.
+
+The intended shape, not yet designed or built:
+1. Read the professor and course context, and understand the teaching problem.
+2. Generate several genuinely different software concepts.
+3. Critique them for product quality and pedagogy, and choose the strongest one the platform can build.
+4. Design the learning loop, then the professor's workflow, the student's workflow, the data model and the interface.
+5. Implement it.
+6. Render, review and repair.

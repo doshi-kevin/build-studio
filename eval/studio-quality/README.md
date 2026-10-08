@@ -2,7 +2,7 @@
 
 Measures how good the plugins the Studio builder makes are as products, against the rubric `studio-generation-quality-v1`. It exists to freeze an honest baseline of the Step 11 builder before Step 12 changes it. The design and the decisions behind it are in `docs/designs/studio/studio-generation-quality.md` (local only).
 
-Status: the framework is built (Step 12A.2). The evaluator is calibrated against contrast pairs and repeatability, and awaits blind human scoring (Step 12A.3). There is no baseline yet (12A.4).
+Status: paused after Step 12A.3 (2026-10-07). The framework is built (12A.2), and the evaluator is engineered and frozen at rubric `studio-generation-quality-v1` and judge `sgq-judge-v5`. Human calibration was deferred on purpose, and there is no baseline yet (12A.4). The checkpoint, with the next product direction, is in `docs/reference/studio-supabase-acceptance.md`.
 
 ## What a run does
 
