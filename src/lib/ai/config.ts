@@ -82,6 +82,14 @@ export const STUDIO_BUILDER_MODEL = 'gemini-3.1-pro-preview'
 export const STUDIO_BUILDER_ANTHROPIC_MODEL = 'claude-opus-5-5'
 export const STUDIO_BUILDER_ANTHROPIC_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium'
 
+/**
+ * Product Intelligence (Step 12B): the model that decides what educational product a
+ * teaching problem should become. Its own constants so it can be tuned apart from the
+ * coding builder; ideation is one short call per build, so it spends more effort.
+ */
+export const STUDIO_PRODUCT_INTELLIGENCE_MODEL = 'claude-opus-5-5'
+export const STUDIO_PRODUCT_INTELLIGENCE_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'high'
+
 /** Questions generated per item, then dealt 5 at a time, fixed per student (§14.2). */
 export const NODE_CHECK_POOL_SIZE = 15
 export const NODE_CHECK_DEAL = 5

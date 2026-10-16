@@ -21,7 +21,7 @@
 import 'server-only'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { STUDIO_BUILDER_ANTHROPIC_MODEL } from '@/lib/ai/config'
+import { STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_PRODUCT_INTELLIGENCE_EFFORT, STUDIO_PRODUCT_INTELLIGENCE_MODEL } from '@/lib/ai/config'
 import { computeCostUsd } from '@/lib/ai/cost'
 import { checkAiFeature } from '@/lib/ai/kill-switch'
 import { recordAiUsage } from '@/lib/ai/usage'
@@ -78,6 +78,7 @@ import { emptyMaterial, provenanceEntries, withSources, type MaterialFocus, type
 import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome } from './course-retriever'
 import { professorTextsOf, type ProjectMemory } from './memory'
 import { createAnthropicModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
+import { ideate } from './ideation'
 import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
 import { buildReviewPrompt, crashFindings, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
@@ -412,6 +413,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   const productIntelligenceFor = async (run: db.BuilderRunRow, slice: SliceData): Promise<ProductIntelligence | null> => {
     if (!deps.productIntelligence) return null
     try {
+      // A paid call: the same gate as a model turn (daily cap, kill switch) comes first. A refusal skips ideation; the loop ends the run.
+      if (await deps.gate(run)) return null
       const raw = await deps.productIntelligence(run, slice)
       const artifact = readProductIntelligence(raw)
       if (raw !== null && !artifact) logger.warn('studio.builder.productIntelligence: invalid, building without it', { runId })
@@ -1305,12 +1308,33 @@ async function gate(run: db.BuilderRunRow): Promise<GateRefusal | null> {
   return null
 }
 
-export function realHarnessDeps(model: AgentModel = createAnthropicModel()): HarnessDeps {
+export function realHarnessDeps(
+  model: AgentModel = createAnthropicModel(),
+  intelligenceModel: AgentModel = createAnthropicModel(STUDIO_PRODUCT_INTELLIGENCE_MODEL, STUDIO_PRODUCT_INTELLIGENCE_EFFORT),
+): HarnessDeps {
   return {
     store: builderRunStore,
     model,
     loadSliceData,
     loadMemories,
+    // Its own model and effort (config.ts); its spend joins the run and the ledger.
+    productIntelligence: async (run, data) => {
+      const { artifact, calls } = await ideate(intelligenceModel, {
+        request: run.request ?? '',
+        course: data.course,
+        skills: data.skills,
+      })
+      for (const { modelId, usage } of calls) {
+        const costUsd = computeCostUsd(modelId, { inputTokens: usage.input, cachedInputTokens: usage.cachedInput, outputTokens: usage.output })
+        await builderRunStore.addCost(run.id, { input: usage.input, cached: usage.cachedInput, output: usage.output, costUsd })
+        await recordAiUsage({
+          feature: BUILDER_LEDGER_FEATURE, model: modelId, institutionId: run.institutionId, sectionId: run.sectionId, userId: run.ownerId,
+          usage: { inputTokens: usage.input, cachedInputTokens: usage.cachedInput, outputTokens: usage.output, reasoningTokens: 0 },
+          metadata: { runId: run.id, turn: 0, step: 'product_intelligence' },
+        })
+      }
+      return artifact
+    },
     gate,
     runChecks: async (run, data, work) => {
       const roster = await db.loadOwnerRosterFullNames(run.ownerId)

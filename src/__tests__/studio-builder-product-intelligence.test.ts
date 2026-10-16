@@ -58,9 +58,13 @@ describe('the Product Intelligence schema', () => {
     expect(productIntelligenceSchema.safeParse(value).success).toBe(false)
   })
 
+  // Every concept field at its own limit: a full ideation record is most of the budget.
+  const maxConcept = { name: 'n'.repeat(80), mechanic: 'diagnosis', idea: 'i'.repeat(300), learningMechanic: 'l'.repeat(300), studentLoop: 's'.repeat(300), professorValue: 'p'.repeat(250), dataProduced: 'd'.repeat(250), domainSpecificity: 'o'.repeat(250), whyBetterThanGenericLMS: 'w'.repeat(250), feasibility: 'feasible', limitations: 'x'.repeat(250) }
+  const maxIdeation = { candidates: [maxConcept, maxConcept, maxConcept], selectedIndex: 0, selectionRationale: 'r'.repeat(400), repaired: false, model: { provider: 'anthropic', id: 'claude-opus-5-5', calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0.1 } }
+
   it('refuses an artifact over its byte limit even when every field is within its own', () => {
     const long = (n: number) => Array.from({ length: n }, (_, i) => `${i} ${'w'.repeat(230)}`)
-    const big = { ...TEACHING, platformConstraints: long(8), learningLoop: long(8), professorWorkflow: long(10), studentWorkflow: long(10) }
+    const big = { ...TEACHING, platformConstraints: long(8), learningLoop: long(8), professorWorkflow: long(10), studentWorkflow: long(10), ideation: maxIdeation }
     expect(Buffer.byteLength(JSON.stringify(big))).toBeGreaterThan(PRODUCT_INTELLIGENCE_MAX_BYTES)
     expect(productIntelligenceSchema.safeParse(big)).toMatchObject({ success: false })
   })

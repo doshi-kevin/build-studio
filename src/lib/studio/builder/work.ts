@@ -136,7 +136,52 @@ export const PRODUCT_INTELLIGENCE_FORMAT = 'studio-product-intelligence-v1'
 
 /** Kept small beside the files in the run row's 256 KiB working copy. Here rather than in
  * limits.ts, which the check worker bundles whole. */
-export const PRODUCT_INTELLIGENCE_MAX_BYTES = 6 * 1024
+export const PRODUCT_INTELLIGENCE_MAX_BYTES = 12 * 1024
+
+/** The primary way a concept teaches. Closed on purpose: three concepts that share one are
+ * the same idea in different layouts (ideation.ts refuses them). */
+export const LEARNING_MECHANICS = [
+  'predict_commit_reveal', 'simulation_what_if', 'diagnosis', 'staged_case', 'debugging', 'branching_decision',
+  'reverse_reasoning', 'experiment_design', 'misconception_mapping', 'compare_contrast', 'scenario_stress_test',
+  'mastery_repetition', 'argument_evidence',
+] as const
+
+/** One candidate educational product from divergent ideation (Step 12B.2). */
+export const conceptSchema = z.strictObject({
+  name: prose(80),
+  mechanic: z.enum(LEARNING_MECHANICS),
+  idea: prose(300),
+  learningMechanic: prose(300),
+  studentLoop: prose(300),
+  professorValue: prose(250),
+  dataProduced: prose(250),
+  domainSpecificity: prose(250),
+  whyBetterThanGenericLMS: prose(250),
+  feasibility: z.enum(['feasible', 'adapted', 'infeasible']),
+  /** What the tool leaves out or what the professor must supply; "None." when nothing. */
+  limitations: prose(250),
+})
+
+export type Concept = z.infer<typeof conceptSchema>
+
+/** What ideation produced and what it cost, kept with the artifact. */
+export const ideationSchema = z.strictObject({
+  candidates: z.array(conceptSchema).length(3),
+  selectedIndex: z.number().int().min(0).max(2),
+  selectionRationale: prose(400),
+  /** Whether the first set failed the divergence or platform checks and was regenerated once. */
+  repaired: z.boolean(),
+  model: z.strictObject({
+    provider: z.literal('anthropic'),
+    id: prose(60),
+    calls: z.number().int().min(1).max(2),
+    inputTokens: z.number().int().min(0),
+    outputTokens: z.number().int().min(0),
+    costUsd: z.number().min(0),
+  }),
+})
+
+export type Ideation = z.infer<typeof ideationSchema>
 
 /**
  * The Product Intelligence artifact (Step 12B): what educational product a build is for,
@@ -159,6 +204,8 @@ export const productIntelligenceSchema = z
     learningLoop: items(8, 240),
     professorWorkflow: items(10, 240),
     studentWorkflow: items(10, 240),
+    /** Absent on a direct build and on an artifact saved before 12B.2. */
+    ideation: ideationSchema.nullable().optional(),
   })
   .refine((p) => utf8Bytes(JSON.stringify(p)) <= PRODUCT_INTELLIGENCE_MAX_BYTES, 'The product intelligence is too long')
 

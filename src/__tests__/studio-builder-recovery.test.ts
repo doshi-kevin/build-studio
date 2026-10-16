@@ -675,8 +675,25 @@ describe('Product Intelligence across slices and crashes (Step 12B.1)', () => {
     return { deps: { ...deps, store }, writes }
   }
 
-  it('production wires no provider, so a real build seeds none, as before', () => {
-    expect(realHarnessDeps(scriptedModel([])).productIntelligence).toBeUndefined()
+  it('production wires ideation, with its own model beside the builder\'s', () => {
+    expect(realHarnessDeps(scriptedModel([])).productIntelligence).toBeTypeOf('function')
+  })
+
+  it('a seeded ideation (three candidates, the pick, its cost) is kept as saved through a pause and the next slice', async () => {
+    const { ideate } = await import('@/lib/studio/builder/ideation')
+    const { callInput, ideationModel } = await import('./helpers/ideation-fixtures')
+    const stub = ideationModel([callInput()])
+    const h = harness([{ calls: [call('ask_professor', { question: 'Which unit should this cover?' })] }, { calls: [finish('blocked', 'Nothing to change.')] }])
+    const provider = vi.fn(async () => (await ideate(stub, { request: 'My students can calculate a DCF but do not understand what drives the value.', course: null, skills: null })).artifact)
+    const r = recording(h, { ...h.deps, productIntelligence: provider })
+    expect(await h.slice(r.deps)).toBe('stopped')
+    const saved = structuredClone(live(h)) as ProductIntelligence
+    expect(saved.ideation?.candidates).toHaveLength(3)
+    expect(saved.selectedConcept?.title).toBe('Reverse DCF')
+    expect(h.mem.professor.answer(h.mem.state.run.questions[0].id, 'Unit 4.')).toBe('answered')
+    expect(await h.slice(r.deps)).toBe('stopped')
+    expect(provider).toHaveBeenCalledTimes(1)
+    expect(r.writes.every((w) => JSON.stringify(w) === JSON.stringify(saved))).toBe(true)
   })
 
   it('is seeded once, kept by every write through a pause and the next slice, and changes nothing else the run does', async () => {
