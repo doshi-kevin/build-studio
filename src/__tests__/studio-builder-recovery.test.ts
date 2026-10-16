@@ -679,17 +679,18 @@ describe('Product Intelligence across slices and crashes (Step 12B.1)', () => {
     expect(realHarnessDeps(scriptedModel([])).productIntelligence).toBeTypeOf('function')
   })
 
-  it('a seeded ideation (three candidates, the pick, its cost) is kept as saved through a pause and the next slice', async () => {
-    const { ideate } = await import('@/lib/studio/builder/ideation')
-    const { callInput, ideationModel } = await import('./helpers/ideation-fixtures')
-    const stub = ideationModel([callInput()])
+  it('a seeded ideation and specification (three candidates, the pick, the spec, their cost) are kept as saved through a pause and the next slice', async () => {
+    const { productIntelligence } = await import('@/lib/studio/builder/specification')
+    const { callInput, ideationModel, specInput } = await import('./helpers/ideation-fixtures')
+    const stub = ideationModel([callInput(), specInput()])
     const h = harness([{ calls: [call('ask_professor', { question: 'Which unit should this cover?' })] }, { calls: [finish('blocked', 'Nothing to change.')] }])
-    const provider = vi.fn(async () => (await ideate(stub, { request: 'My students can calculate a DCF but do not understand what drives the value.', course: null, skills: null })).artifact)
+    const provider = vi.fn(async () => (await productIntelligence(stub, { request: 'My students can calculate a DCF but do not understand what drives the value.', course: null, skills: null })).artifact)
     const r = recording(h, { ...h.deps, productIntelligence: provider })
     expect(await h.slice(r.deps)).toBe('stopped')
     const saved = structuredClone(live(h)) as ProductIntelligence
     expect(saved.ideation?.candidates).toHaveLength(3)
     expect(saved.selectedConcept?.title).toBe('Reverse DCF')
+    expect(saved.specification?.learningLoop[1]).toMatch(/^Solve for/)
     expect(h.mem.professor.answer(h.mem.state.run.questions[0].id, 'Unit 4.')).toBe('answered')
     expect(await h.slice(r.deps)).toBe('stopped')
     expect(provider).toHaveBeenCalledTimes(1)

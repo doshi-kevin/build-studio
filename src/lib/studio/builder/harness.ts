@@ -78,7 +78,7 @@ import { emptyMaterial, provenanceEntries, withSources, type MaterialFocus, type
 import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome } from './course-retriever'
 import { professorTextsOf, type ProjectMemory } from './memory'
 import { createAnthropicModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
-import { ideate } from './ideation'
+import { productIntelligence } from './specification'
 import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
 import { buildReviewPrompt, crashFindings, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
@@ -1319,7 +1319,7 @@ export function realHarnessDeps(
     loadMemories,
     // Its own model and effort (config.ts); its spend joins the run and the ledger.
     productIntelligence: async (run, data) => {
-      const { artifact, calls } = await ideate(intelligenceModel, {
+      const { artifact, calls } = await productIntelligence(intelligenceModel, {
         request: run.request ?? '',
         course: data.course,
         skills: data.skills,

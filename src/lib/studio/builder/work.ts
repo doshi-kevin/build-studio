@@ -136,7 +136,7 @@ export const PRODUCT_INTELLIGENCE_FORMAT = 'studio-product-intelligence-v1'
 
 /** Kept small beside the files in the run row's 256 KiB working copy. Here rather than in
  * limits.ts, which the check worker bundles whole. */
-export const PRODUCT_INTELLIGENCE_MAX_BYTES = 12 * 1024
+export const PRODUCT_INTELLIGENCE_MAX_BYTES = 24 * 1024
 
 /** The primary way a concept teaches. Closed on purpose: three concepts that share one are
  * the same idea in different layouts (ideation.ts refuses them). */
@@ -164,24 +164,64 @@ export const conceptSchema = z.strictObject({
 
 export type Concept = z.infer<typeof conceptSchema>
 
+/** The provider call(s) behind a stage, with their cost. */
+const modelRecordSchema = z.strictObject({
+  provider: z.literal('anthropic'),
+  id: prose(60),
+  calls: z.number().int().min(1).max(2),
+  inputTokens: z.number().int().min(0),
+  outputTokens: z.number().int().min(0),
+  costUsd: z.number().min(0),
+})
+
+export type ModelRecord = z.infer<typeof modelRecordSchema>
+
 /** What ideation produced and what it cost, kept with the artifact. */
 export const ideationSchema = z.strictObject({
   candidates: z.array(conceptSchema).length(3),
   selectedIndex: z.number().int().min(0).max(2),
-  selectionRationale: prose(400),
+  selectionRationale: prose(600),
   /** Whether the first set failed the divergence or platform checks and was regenerated once. */
   repaired: z.boolean(),
-  model: z.strictObject({
-    provider: z.literal('anthropic'),
-    id: prose(60),
-    calls: z.number().int().min(1).max(2),
-    inputTokens: z.number().int().min(0),
-    outputTokens: z.number().int().min(0),
-    costUsd: z.number().min(0),
-  }),
+  model: modelRecordSchema,
 })
 
 export type Ideation = z.infer<typeof ideationSchema>
+
+/** The Product Specification (Step 12B.3): the selected concept elaborated into how the
+ * product works, for the builder to implement. Behaviour and intent only: no code, no manifest. */
+export const specificationSchema = z.strictObject({
+  productGoal: prose(300),
+  /** Must equal the selected concept's mechanic. */
+  mechanic: z.enum(LEARNING_MECHANICS),
+  /** Ordered steps, each naming what the student does: "Predict: ...", "Reveal: ...". */
+  learningLoop: z.array(prose(200)).min(3).max(8),
+  professorWorkflow: z.strictObject({ setup: prose(260), contentCreation: prose(260), running: prose(260), interpreting: prose(260) }),
+  studentWorkflow: z.array(prose(180)).min(3).max(8),
+  states: z.array(z.strictObject({ name: prose(30), meaning: prose(140) })).min(1).max(7),
+  contentStrategy: z.strictObject({
+    /** Fixed scenarios, cases, questions, benchmarks: records the professor writes. */
+    professorAuthored: z.array(prose(180)).max(5),
+    /** Items or outcomes computed in code from formulas and random parameters. */
+    generated: z.array(prose(180)).max(5),
+  }),
+  computation: z.array(prose(300)).max(6),
+  professorInsight: z.array(prose(180)).min(1).max(5),
+  dataModel: z.array(z.strictObject({
+    name: z.string().regex(/^[a-z][A-Za-z0-9]{1,39}$/, 'a camelCase collection name'),
+    access: z.enum(['perStudent', 'staffPerStudent', 'shared', 'staffOnly']),
+    purpose: prose(160),
+    /** Who creates its records. */
+    writtenBy: z.enum(['professor', 'student', 'both']),
+  })).max(6),
+  relationships: z.array(prose(160)).max(4),
+  primaryInteractions: z.array(prose(150)).min(2).max(6),
+  edgeStates: z.array(prose(200)).max(6),
+  limitations: z.array(prose(180)).max(5),
+  model: modelRecordSchema,
+})
+
+export type Specification = z.infer<typeof specificationSchema>
 
 /**
  * The Product Intelligence artifact (Step 12B): what educational product a build is for,
@@ -206,6 +246,8 @@ export const productIntelligenceSchema = z
     studentWorkflow: items(10, 240),
     /** Absent on a direct build and on an artifact saved before 12B.2. */
     ideation: ideationSchema.nullable().optional(),
+    /** Absent until 12B.3 fills it, and when the specification failed its checks twice. */
+    specification: specificationSchema.nullable().optional(),
   })
   .refine((p) => utf8Bytes(JSON.stringify(p)) <= PRODUCT_INTELLIGENCE_MAX_BYTES, 'The product intelligence is too long')
 

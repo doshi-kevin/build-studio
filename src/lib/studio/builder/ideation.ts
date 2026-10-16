@@ -12,12 +12,12 @@ import { logger } from '@/lib/logger'
 import { KIT_IMPORTS } from '../kit/plugin-kit-types'
 import { CAPABILITIES } from '../capabilities'
 import { AVAILABLE_CAPABILITIES } from './manifest-delta'
-import type { AgentModel, ModelUsage } from './model'
+import type { AgentModel, ModelToolDecl, ModelUsage } from './model'
 import {
   conceptSchema,
   PRODUCT_INTELLIGENCE_FORMAT,
   type Concept,
-  type Ideation,
+  type ModelRecord,
   type ProductIntelligence,
 } from './work'
 
@@ -55,7 +55,7 @@ export const PLATFORM_CONSTRAINTS: string[] = [
   'Feedback and scoring are rules written into the view. No model grades or explains anything inside a tool.',
 ]
 
-const PLATFORM_BRIEF = `${PLATFORM_CONSTRAINTS.map((c) => `- ${c}`).join('\n')}
+export const PLATFORM_BRIEF = `${PLATFORM_CONSTRAINTS.map((c) => `- ${c}`).join('\n')}
 Kit components (the whole screen vocabulary): ${kitComponents.join(', ')}.
 Capabilities a view can declare:
 ${capabilityList.map((c) => `- ${c}`).join('\n')}
@@ -81,7 +81,7 @@ A concept that needs something above that is missing is either adapted into a ve
 # Choosing
 selectedIndex is the strongest concept by pedagogical leverage, domain specificity, meaningful student interaction, useful professor insight, novelty beyond ordinary LMS features and feasibility here. Never pick an infeasible one. selectionRationale is two sentences on why it beat the other two.
 
-Write plain sentences, no markdown. Length limits are in characters, not words, and an answer over any one is rejected, so aim for about 80% of each: name 80; idea, learningMechanic and studentLoop 300; every other concept field, limitations included, 250; selectionRationale 400; teachingProblem, domainContext and studentDifficulty 600; professorGoal 400. teachingProblem, domainContext, studentDifficulty and professorGoal restate what the professor said, with the course context when it is given; write "Not stated." for what you cannot tell, and never invent a course.`
+Write plain sentences, no markdown. Length limits are in characters, not words, and an answer over any one is rejected, so aim for about 80% of each: name 80; idea, learningMechanic and studentLoop 300; every other concept field, limitations included, 250; selectionRationale 400 (two short sentences); teachingProblem, domainContext and studentDifficulty 600; professorGoal 400. teachingProblem, domainContext, studentDifficulty and professorGoal restate what the professor said, with the course context when it is given; write "Not stated." for what you cannot tell, and never invent a course.`
 
 /** submit_concepts's arguments: the restated problem, three concepts and the pick. */
 export const conceptsCallSchema = z.strictObject({
@@ -91,7 +91,7 @@ export const conceptsCallSchema = z.strictObject({
   professorGoal: z.string().min(1).max(400),
   concepts: z.array(conceptSchema).length(3),
   selectedIndex: z.number().int().min(0).max(2),
-  selectionRationale: z.string().min(1).max(400),
+  selectionRationale: z.string().min(1).max(600),
 })
 
 export type ConceptsCall = z.infer<typeof conceptsCallSchema>
@@ -109,14 +109,14 @@ const UNSUPPORTED: { name: string; pattern: RegExp }[] = [
   { name: 'uploads or media', pattern: /\b(uploads?|uploaded|photos?|videos?|audio|voice|webcam|camera|microphone|PDFs?)\b/gi },
   { name: 'grades from elsewhere in Scholera', pattern: /\b(gradebook|grades? sync\w*|submissions? from|existing grades)\b/gi },
   { name: 'students seeing other students', pattern: /\b(each other'?s|classmates'?|peers'?|other students'?)\s+(answers?|responses?|results?|scores?|work|predictions?|portfolios?)\b/gi },
-  { name: 'drawing, drag and drop or 3D', pattern: /\b(canvas|free-?hand|drag(?:-| )and(?:-| )drop|3-?D|draw(?:s|ing)? (?:a|their|on))\b/gi },
+  { name: 'drawing, drag and drop or 3D', pattern: /\b(canvas|free-?hand|drag(?:-| )and(?:-| )drop|3-?D|sketch\w*|draw(?:s|ing)? (?:a|the|their) (?:line|curve|diagram|graph|picture|shape|chart))\b/gi },
 ]
 
 const DOES_TEXT = ['idea', 'learningMechanic', 'studentLoop', 'dataProduced', 'professorValue'] as const
 
-function unsupportedIn(c: Concept): string[] {
+/** Capabilities the platform lacks that this text says a tool uses, negations skipped. */
+export function unsupportedIn(text: string): string[] {
   const found = new Set<string>()
-  const text = DOES_TEXT.map((k) => c[k]).join(' . ')
   for (const { name, pattern } of UNSUPPORTED) {
     for (const m of text.matchAll(pattern)) {
       if (!NEGATION.test(text.slice(Math.max(0, m.index - 40), m.index))) found.add(name)
@@ -148,8 +148,7 @@ const HARDCODED_BANK = [
   /\b(built-?in|starter|default|pre-?loaded|bundled|hard-?coded)\s+(?:\w+\s+){0,2}(?:scenarios?|cases?|banks?|items?|questions?|sets?|reactions?|problems?|examples?|datasets?)\b/gi,
 ]
 
-function hardcodedBank(c: Concept): boolean {
-  const text = [...DOES_TEXT.map((k) => c[k]), c.limitations].join(' . ')
+export function hardcodedBank(text: string): boolean {
   return HARDCODED_BANK.some((re) => [...text.matchAll(re)].some((m) => !NEGATION.test(text.slice(Math.max(0, m.index - 40), m.index))))
 }
 
@@ -170,8 +169,8 @@ export function validateConcepts(concepts: readonly Concept[], selectedIndex: nu
       add('layout_mechanic', `${who} describes its mechanic as a screen layout. State what the student does that makes them think.`)
     }
     if (c.feasibility === 'feasible') {
-      for (const name of unsupportedIn(c)) add(`unsupported_capability:${name}`, `${who} is marked feasible but needs ${name}, which tools lack. Adapt it so it does not, or mark it adapted or infeasible.`)
-      if (hardcodedBank(c)) add('hardcoded_content_bank', `${who} is marked feasible but keeps a bank of fixed scenarios, questions or cases in the tool's code. Tools show content from records the professor writes; only formulas and logic live in code. Say the professor writes the content, generate items from a formula, or mark it adapted and say what changed.`)
+      for (const name of unsupportedIn(DOES_TEXT.map((k) => c[k]).join(' . '))) add(`unsupported_capability:${name}`, `${who} is marked feasible but needs ${name}, which tools lack. Adapt it so it does not, or mark it adapted or infeasible.`)
+      if (hardcodedBank([...DOES_TEXT.map((k) => c[k]), c.limitations].join(' . '))) add('hardcoded_content_bank', `${who} is marked feasible but keeps a bank of fixed scenarios, questions or cases in the tool's code. Tools show content from records the professor writes; only formulas and logic live in code. Say the professor writes the content, generate items from a formula, or mark it adapted and say what changed.`)
     } else if (/^none\b/i.test(c.limitations)) {
       add('invalid_feasibility', `${who} is marked ${c.feasibility} but its limitations say none. Say what changed or what is missing.`)
     }
@@ -234,38 +233,44 @@ function promptFor(req: IdeationRequest, rejected: { issues: Issue[]; previous: 
   ].join('\n\n')
 }
 
-async function ask(model: AgentModel, prompt: string, calls: IdeationCall[]) {
+const ask = (model: AgentModel, prompt: string, calls: IdeationCall[]) => askTool(model, IDEATION_INSTRUCTIONS, prompt, conceptsTool, calls)
+
+/** One forced-tool model call; its usage is added to `calls`. */
+export async function askTool(model: AgentModel, system: string, prompt: string, tool: ModelToolDecl, calls: IdeationCall[]) {
   const res = await model.step({
-    system: IDEATION_INSTRUCTIONS,
+    system,
     prompt,
-    tools: [conceptsTool],
+    tools: [tool],
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal: new AbortController().signal,
     timeoutMs: CALL_TIMEOUT_MS,
   })
   calls.push({ modelId: res.modelId, usage: res.usage })
-  const call = res.toolCalls.find((c) => c.name === conceptsTool.name && !c.invalid)
+  const call = res.toolCalls.find((c) => c.name === tool.name && !c.invalid)
   return { call, finishReason: res.finishReason }
 }
 
 /** A schema failure as a code (field_too_long:studentLoop, field_missing:name, schema:<zod code>:<field>) and a sentence. */
-function schemaIssue(i: z.core.$ZodIssue): Issue {
+export const schemaIssue = (input: unknown) => (i: z.core.$ZodIssue): Issue => {
   const field = [...i.path].reverse().find((p) => typeof p === 'string') ?? 'arguments'
   const at = i.path.map(String).join('.') || 'arguments'
   const code = i.code === 'too_big' ? `field_too_long:${field}` : i.code === 'invalid_type' ? `field_missing:${field}` : `schema:${i.code}:${field}`
-  return { code, message: `${at}: ${i.message}` }
+  // The repair call is told how far over it was: a model can't count characters unaided.
+  const value = i.path.reduce<unknown>((v, k) => (v as Record<PropertyKey, unknown> | null | undefined)?.[k], input)
+  const over = i.code === 'too_big' && typeof value === 'string' ? ` (it has ${value.length} characters; shorten it well under the limit)` : ''
+  return { code, message: `${at}: ${i.message}${over}` }
 }
 
 /** Checks one answer: its schema, then the divergence and platform rules. */
 function check(input: unknown): { parsed: ConceptsCall | null; issues: Issue[] } {
   const parsed = conceptsCallSchema.safeParse(input)
   if (!parsed.success) {
-    return { parsed: null, issues: parsed.error.issues.slice(0, 8).map(schemaIssue) }
+    return { parsed: null, issues: parsed.error.issues.slice(0, 8).map(schemaIssue(input)) }
   }
   return { parsed: parsed.data, issues: validateConcepts(parsed.data.concepts, parsed.data.selectedIndex) }
 }
 
-function sumCalls(calls: IdeationCall[]): Ideation['model'] {
+export function sumCalls(calls: IdeationCall[]): ModelRecord {
   const modelId = calls[0]?.modelId ?? ''
   const inputTokens = calls.reduce((n, c) => n + c.usage.input, 0)
   const outputTokens = calls.reduce((n, c) => n + c.usage.output, 0)

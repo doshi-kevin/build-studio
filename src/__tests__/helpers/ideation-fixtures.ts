@@ -50,10 +50,42 @@ export const callInput = (concepts: Concept[] = CONCEPTS, selectedIndex = 0) => 
 /** A model that answers each call with the next scripted input, recording calls. */
 export function ideationModel(replies: unknown[]): AgentModel & { step: ReturnType<typeof vi.fn> } {
   let i = 0
-  const step = vi.fn(async (): Promise<ModelStepResult> => ({
-    toolCalls: [{ name: 'submit_concepts', input: replies[i++], invalid: false }],
+  const step = vi.fn(async (input: { tools: { name: string }[] }): Promise<ModelStepResult> => ({
+    toolCalls: [{ name: input.tools[0].name, input: replies[i++], invalid: false }],
     textLength: 0, finishReason: 'tool-calls', timedOut: false, latencyMs: 1, modelId: 'claude-opus-5-5',
     usage: { input: 3000, cachedInput: 0, output: 5000, reasoning: 0 },
   }))
   return { id: 'claude-opus-5-5', step }
 }
+
+/** A specification submission for CONCEPTS[0] (Reverse DCF, reverse_reasoning). */
+export const specInput = () => ({
+  productGoal: 'Students recover the assumptions a market price implies and judge whether they are believable.',
+  mechanic: 'reverse_reasoning',
+  learningLoop: [
+    'Read: a company, its price and every DCF input but one.',
+    'Solve for: the missing input until the in-view DCF matches the price.',
+    'Judge: mark the implied value plausible or not and pick the reason.',
+    'Compare: see the professor benchmark range and the gap.',
+    'Reflect: name which input the price depends on most.',
+  ],
+  professorWorkflow: {
+    setup: 'Open the activity for the section and choose which inputs may be hidden.',
+    contentCreation: 'Write each company case and its benchmark range as a record.',
+    running: 'Open and close the activity; students work on their own.',
+    interpreting: 'See which implied assumptions the class accepted as plausible and which reasons they gave.',
+  },
+  studentWorkflow: ['Open a case.', 'Solve for the hidden input.', 'Judge plausibility.', 'Compare with the benchmark.'],
+  states: [{ name: 'open', meaning: 'Students can solve and judge.' }, { name: 'revealed', meaning: 'The benchmark range is shown after the judgement.' }],
+  contentStrategy: { professorAuthored: ['Company cases with price, inputs and benchmark ranges, as records.'], generated: ['The DCF value for each trial input, computed from the formula.'] },
+  computation: ['Discounted cash flow value from the inputs.', 'Gap between the model value and the price.'],
+  professorInsight: ['Which implied assumptions the class wrongly accepts, such as terminal growth above nominal GDP.', 'How many students finished each case.'],
+  dataModel: [
+    { name: 'cases', access: 'shared', purpose: 'The company cases and benchmark ranges the professor writes.', writtenBy: 'professor' },
+    { name: 'judgements', access: 'perStudent', purpose: 'Each student solved value, plausibility verdict and reason.', writtenBy: 'student' },
+  ],
+  relationships: ['A judgement belongs to one case by its case key.'],
+  primaryInteractions: ['Solve for the hidden input until the model matches the price.', 'Judge whether the implied input is plausible, before seeing the benchmark.'],
+  edgeStates: ['No cases written yet: the student sees what the professor must add.'],
+  limitations: ['No live prices: the professor enters them.'],
+})

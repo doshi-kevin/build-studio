@@ -60,11 +60,22 @@ describe('the Product Intelligence schema', () => {
 
   // Every concept field at its own limit: a full ideation record is most of the budget.
   const maxConcept = { name: 'n'.repeat(80), mechanic: 'diagnosis', idea: 'i'.repeat(300), learningMechanic: 'l'.repeat(300), studentLoop: 's'.repeat(300), professorValue: 'p'.repeat(250), dataProduced: 'd'.repeat(250), domainSpecificity: 'o'.repeat(250), whyBetterThanGenericLMS: 'w'.repeat(250), feasibility: 'feasible', limitations: 'x'.repeat(250) }
+  const t = (n: number) => 't'.repeat(n)
+  const maxSpecification = {
+    productGoal: t(300), mechanic: 'diagnosis', learningLoop: Array(8).fill(t(200)),
+    professorWorkflow: { setup: t(260), contentCreation: t(260), running: t(260), interpreting: t(260) },
+    studentWorkflow: Array(8).fill(t(180)), states: Array(7).fill({ name: t(30), meaning: t(140) }),
+    contentStrategy: { professorAuthored: Array(5).fill(t(180)), generated: Array(5).fill(t(180)) },
+    computation: Array(6).fill(t(300)), professorInsight: Array(5).fill(t(180)),
+    dataModel: Array(6).fill({ name: 'cases', access: 'shared', purpose: t(160), writtenBy: 'both' }),
+    relationships: Array(4).fill(t(160)), primaryInteractions: Array(6).fill(t(150)), edgeStates: Array(6).fill(t(200)), limitations: Array(5).fill(t(180)),
+    model: { provider: 'anthropic', id: 'claude-opus-5-5', calls: 2, inputTokens: 1, outputTokens: 1, costUsd: 0.1 },
+  }
   const maxIdeation = { candidates: [maxConcept, maxConcept, maxConcept], selectedIndex: 0, selectionRationale: 'r'.repeat(400), repaired: false, model: { provider: 'anthropic', id: 'claude-opus-5-5', calls: 1, inputTokens: 1, outputTokens: 1, costUsd: 0.1 } }
 
   it('refuses an artifact over its byte limit even when every field is within its own', () => {
     const long = (n: number) => Array.from({ length: n }, (_, i) => `${i} ${'w'.repeat(230)}`)
-    const big = { ...TEACHING, platformConstraints: long(8), learningLoop: long(8), professorWorkflow: long(10), studentWorkflow: long(10), ideation: maxIdeation }
+    const big = { ...TEACHING, platformConstraints: long(8), learningLoop: long(8), professorWorkflow: long(10), studentWorkflow: long(10), ideation: maxIdeation, specification: maxSpecification }
     expect(Buffer.byteLength(JSON.stringify(big))).toBeGreaterThan(PRODUCT_INTELLIGENCE_MAX_BYTES)
     expect(productIntelligenceSchema.safeParse(big)).toMatchObject({ success: false })
   })
