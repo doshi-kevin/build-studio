@@ -35,6 +35,30 @@ describe('the specification stage', () => {
     expect(codes({ mechanic: 'diagnosis' })).toContain('mechanic_changed')
   })
 
+  it('keeps a reverse-reasoning specification that names its action as finding the hidden cause (live chemistry rejection, 2026-10-16)', () => {
+    // The specification's own loop and interactions from the rejected live attempt, abridged.
+    const concept = { ...CONCEPTS[0], mechanic: 'reverse_reasoning' as const }
+    const chemistry = specificationCallSchema.parse(spec({
+      learningLoop: [
+        'Inspect: read the before and after equilibrium concentrations of each species, and K before and after.',
+        'Check K: decide whether K increased, decreased or stayed the same.',
+        'Commit: choose the cause (add or remove a species, compress, heat, catalyst or inert gas), the K claim and the shift direction.',
+        'Reveal: see the true perturbation and the Q right after the disturbance compared with the new K.',
+      ],
+      primaryInteractions: [
+        'Student chooses the cause, K claim and shift direction for a generated before/after case, then commits, and the answer locks.',
+        'The New case button creates a distinct hidden perturbation on a professor-written reaction.',
+      ],
+    }))
+    expect(validateSpecification(chemistry, concept).map((i) => i.code)).toEqual([])
+    // Still strict: "because" is not "cause", and a loop with no backward step fails.
+    const forward = specificationCallSchema.parse(spec({
+      learningLoop: ['Read: the reaction.', 'Answer: a question because it is set.', 'Submit: the answer.'],
+      primaryInteractions: ['Student answers questions because they are assigned.', 'Professor sees scores.'],
+    }))
+    expect(validateSpecification(forward, concept).map((i) => i.code)).toEqual(['mechanic_missing_from_loop', 'mechanic_missing_from_interactions'])
+  })
+
   it('refuses a fixed content bank built into the code, and generic-only professor insight', () => {
     expect(codes({ contentStrategy: { professorAuthored: ['A bank of twenty cases ships in the view code.'], generated: [] } })).toEqual(['hardcoded_content_bank'])
     expect(codes({ professorInsight: ['Average score across the class.', 'Number of submissions.'] })).toEqual(['generic_insight'])

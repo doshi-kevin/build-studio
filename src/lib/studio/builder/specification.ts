@@ -33,7 +33,8 @@ const MECHANIC_ACTION: Record<(typeof LEARNING_MECHANICS)[number], RegExp> = {
   staged_case: /stage|phase|unfold|next part|decid/i,
   debugging: /debug|find (?:the )?(?:error|bug|fault|mistake|flaw)|planted|fix|correct the/i,
   branching_decision: /branch|choose|decision|path|consequence/i,
-  reverse_reasoning: /reverse|backward|infer|recover|solve for|implied|given the (?:result|outcome|price|change)/i,
+  // Working back from a result to what produced it: the hidden input, change or cause.
+  reverse_reasoning: /reverse|backward|infer|recover|solve for|implied|given the (?:result|outcome|price|change)|cause|deduc|hidden|work(?:s|ed)? out which/i,
   experiment_design: /experiment|hypothes|design (?:a|the) (?:test|study)|control|variable to (?:test|vary)/i,
   misconception_mapping: /misconception|wrong model|diagnostic|profile|tag/i,
   compare_contrast: /compar|contrast|differ|distinguish|twin|side by side|separat/i,
@@ -41,6 +42,9 @@ const MECHANIC_ACTION: Record<(typeof LEARNING_MECHANICS)[number], RegExp> = {
   mastery_repetition: /repeat|repetition|streak|mastery|until|again|retry|varied/i,
   argument_evidence: /argu|evidence|claim|justif|defend|support/i,
 }
+
+/** The mechanic's student action, matched at the start of a word ("cause", never "because"). */
+const actionOf = (mechanic: (typeof LEARNING_MECHANICS)[number]) => new RegExp(`\\b(?:${MECHANIC_ACTION[mechanic].source})`, 'i')
 
 /** An insight that is only a status or an average tells the professor nothing the mechanic produced. */
 const GENERIC_INSIGHT = /^\W*(?:the )?(?:average|mean|median|overall|total|completion|number of|count of|how many)\b|\b(?:completion (?:rate|count)|submission count|average score)\b/i
@@ -50,7 +54,7 @@ export function validateSpecification(spec: SpecificationCall, concept: Concept)
   const issues: Issue[] = []
   const add = (code: string, message: string) => issues.push({ code, message })
   if (spec.mechanic !== concept.mechanic) add('mechanic_changed', `The specification's mechanic is ${spec.mechanic} but the selected concept is ${concept.mechanic}. Elaborate the selected concept; do not change it.`)
-  const action = MECHANIC_ACTION[concept.mechanic]
+  const action = actionOf(concept.mechanic)
   if (!spec.learningLoop.some((s) => action.test(s))) add('mechanic_missing_from_loop', `No learning loop step shows the student doing the concept's mechanic (${concept.mechanic}: ${concept.studentLoop}). The loop must be the concept's loop, not a form to fill in.`)
   if (!spec.primaryInteractions.some((s) => action.test(s))) add('mechanic_missing_from_interactions', `No primary interaction is the concept's defining student action (${concept.mechanic}). List it first.`)
   if (spec.professorInsight.every((s) => GENERIC_INSIGHT.test(s))) add('generic_insight', 'Every professor insight is a count or an average. At least one must be what the mechanic reveals about the class, such as the misconception, the signed error or the confusion between choices.')
@@ -76,7 +80,7 @@ export const SPECIFICATION_INSTRUCTIONS = `You are Athena's product designer in 
 # Content architecture (a hard rule)
 - Fixed scenarios, cases, question sets, benchmark inputs and stages are professor-authored content. They are records in a collection the professor writes, and are never built into the tool's code. List them in contentStrategy.professorAuthored and give them a collection in dataModel.
 - Randomized numeric parameters, calculated outcomes and formula-based variants are generated in code from formulas. List them in contentStrategy.generated.
-- Say which each piece is. Do not claim content "ships in the tool" or "lives in code".
+- Say which each piece is. Do not claim content "ships in the tool" or "lives in code". Send both lists every time; a list with nothing in it is [], never left out.
 
 # Computation
 List the deterministic calculations the views perform (DCF math, scoring, kinematics, ICE-table calculations, what-if recomputation). Views run ordinary JavaScript. Describe the calculation, not code.
@@ -265,7 +269,7 @@ export function planSpecificationIssues(plan: Plan, spec: Specification): string
   const text = [plan.goal, ...plan.professor_view, ...plan.student_view, ...plan.requirements].join(' . ')
   const planStems = stems(text)
   // Word-initial, so "commit" is not found inside "committee".
-  const action = new RegExp(`\\b(?:${MECHANIC_ACTION[spec.mechanic].source})`, 'i')
+  const action = actionOf(spec.mechanic)
   if (!action.test([plan.goal, ...plan.student_view, ...plan.requirements].join(' . '))) {
     issues.push(`The plan drops the product's learning mechanic (${spec.mechanic}). The student view and requirements must have the student do it.`)
   }
@@ -274,7 +278,7 @@ export function planSpecificationIssues(plan: Plan, spec: Specification): string
     const have = want.filter((w) => planStems.has(w)).length
     // A criterion that names the mechanic's action (predict, commit, solve for) needs that action
     // in the plan, not just its nouns: "see the valuation" doesn't cover "commit a prediction".
-    const actionStems = [...stems((criterion.match(new RegExp(`\\b(?:${MECHANIC_ACTION[spec.mechanic].source})\\w*`, 'gi')) ?? []).join(' '))]
+    const actionStems = [...stems((criterion.match(new RegExp(`${actionOf(spec.mechanic).source}\\w*`, 'gi')) ?? []).join(' '))]
     const missesAction = actionStems.length > 0 && !actionStems.some((w) => planStems.has(w))
     if (want.length && (missesAction || (have < Math.max(2, Math.ceil(want.length * COVER_SHARE)) && have < want.length))) {
       issues.push(`Acceptance criterion ${i + 1} of the product design is not in the plan. Add it to requirements.`)

@@ -658,9 +658,9 @@ describe('fewer turns per build (latency)', () => {
   })
 
   it('an over-long argument is refused with its length, so the next try can fit', async () => {
-    const long = 'x'.repeat(limits.STUDIO_BUILDER_SUMMARY_MAX_CHARS + 37)
+    const long = 'x'.repeat(limits.STUDIO_BUILDER_QUESTION_MAX_CHARS + 37)
     const h = harness([
-      { calls: [finish('blocked', long)] },
+      { calls: [call('ask_professor', { question: long })] },
       (input) => {
         expect(input.prompt).toContain(`(this one has ${long.length})`)
         return [finish('blocked', 'Short.')]
@@ -668,6 +668,22 @@ describe('fewer turns per build (latency)', () => {
     ])
     await h.slice()
     expect(h.mem.state.run.status).toBe('blocked')
+  })
+
+  it('a long finish summary is fitted, not refused: one finish call, whole lines, the left-out line kept', async () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `• Feature ${i + 1}: students predict, commit and compare against the computed result in round ${i + 1}.`)
+    const leftOut = 'Not included: grades are not sent to the gradebook.'
+    const long = [...lines, leftOut].join('\n')
+    expect(long.length).toBeGreaterThan(limits.STUDIO_BUILDER_SUMMARY_MAX_CHARS)
+    const h = harness([{ calls: [finish('blocked', long)] }])
+    await h.slice()
+    expect(h.model.prompts).toHaveLength(1)
+    expect(h.mem.state.run.status).toBe('blocked')
+    const saved = String((h.mem.state.run.result as { summary?: string }).summary)
+    expect(saved.length).toBeLessThanOrEqual(limits.STUDIO_BUILDER_SUMMARY_MAX_CHARS)
+    expect(saved.startsWith(lines[0])).toBe(true)
+    expect(saved.endsWith(leftOut)).toBe(true)
+    expect(saved.split('\n').every((l) => l === leftOut || lines.includes(l))).toBe(true)
   })
 })
 

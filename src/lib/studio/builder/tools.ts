@@ -54,6 +54,37 @@ import { contentHash, sha16, workHash } from './snapshot'
 import { planSpecificationIssues } from './specification'
 import { planSchema, type Plan, type ValidationCode, type Work } from './work'
 
+/** The longest finish summary accepted before it is fitted: a bound on the input, not the saved length. */
+const SUMMARY_INPUT_MAX_CHARS = 4 * STUDIO_BUILDER_SUMMARY_MAX_CHARS
+
+/** A line saying what the tool leaves out: kept when the summary is cut, since it is what the professor can't see. */
+const LEFT_OUT = /^\W*(?:not included|left out|what's not|what is not|tools can'?t|not built|missing)/i
+
+/**
+ * A finish summary at most `max` characters long. Models overshoot a length they can't count, and a
+ * refusal costs a whole turn to fix prose, so a long summary is cut here instead: whole lines from
+ * the start, plus its closing left-out line when that still fits. A single line longer than `max`
+ * is cut at its last sentence end, else its last space. Professor-facing prose only.
+ */
+export function fitSummary(text: string, max: number): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= max) return trimmed
+  const lines = trimmed.split('\n')
+  const last = lines.length > 1 && LEFT_OUT.test(lines[lines.length - 1]) ? lines[lines.length - 1].trim() : null
+  const budget = last && last.length + 1 < max ? max - last.length - 1 : max
+  const kept: string[] = []
+  for (const line of last ? lines.slice(0, -1) : lines) {
+    if ([...kept, line].join('\n').length > budget) break
+    kept.push(line)
+  }
+  if (kept.length === 0) {
+    const head = lines[0].slice(0, budget)
+    const sentence = head.lastIndexOf('. ')
+    kept.push(sentence > budget / 2 ? head.slice(0, sentence + 1) : head.slice(0, Math.max(head.lastIndexOf(' '), 1)).trimEnd())
+  }
+  return [...kept, ...(last && budget < max ? [last] : [])].join('\n').trim()
+}
+
 /** Off-spec plans refused per run before one is accepted anyway. */
 export const PLAN_SPEC_MAX_REFUSALS = 2
 
@@ -605,22 +636,22 @@ const TOOL_LIST: ToolSpec[] = [
   {
     name: 'finish',
     kind: 'control',
-    description:
-      'End the build. "completed" asks the platform to check everything and save the draft for preview; it keeps working with you if a check fails. "blocked" ends it with a plain reason.',
+    description: `End the build. "completed" asks the platform to check everything and save the draft for preview; it keeps working with you if a check fails. "blocked" ends it with a plain reason. Keep summary to ${STUDIO_BUILDER_SUMMARY_MAX_CHARS} characters: one short line per feature, then one line on what is left out. A longer summary is cut to whole lines.`,
     schema: z.strictObject({
       status: z.enum(['completed', 'blocked']),
-      summary: prose(STUDIO_BUILDER_SUMMARY_MAX_CHARS),
+      summary: prose(SUMMARY_INPUT_MAX_CHARS),
       open_questions: z.array(prose(200)).max(STUDIO_BUILDER_OPEN_QUESTIONS_MAX),
     }),
     execute: (_state, args: { status: 'completed' | 'blocked'; summary: string; open_questions: string[] }) => {
-      const summary: Summary = { status: args.status, summary_chars: args.summary.length, questions: args.open_questions.length }
-      for (const text of [args.summary, ...args.open_questions]) {
+      const kept = fitSummary(args.summary, STUDIO_BUILDER_SUMMARY_MAX_CHARS)
+      const summary: Summary = { status: args.status, summary_chars: args.summary.length, ...(kept.length < args.summary.length ? { kept_chars: kept.length } : {}), questions: args.open_questions.length }
+      for (const text of [kept, ...args.open_questions]) {
         const chars = characterProblem(text)
         if (chars) return refused('bad_characters', summary, [chars])
         // The note is read by a professor: no backticks, no access-mode identifiers.
         if (CODE_IN_NOTE.test(text)) return refused('note_has_code', summary)
       }
-      return { kind: 'finish', args: summary, status: args.status, summary: args.summary, openQuestions: args.open_questions }
+      return { kind: 'finish', args: summary, status: args.status, summary: kept, openQuestions: args.open_questions }
     },
   },
 ]
