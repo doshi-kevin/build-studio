@@ -5,8 +5,9 @@
  * proposes (docs/reference/studio-agent-harness.md, "The model").
  *
  * `AgentModel` speaks in strings, tool declarations and plain results: no message
- * arrays, no provider options, no SDK types. Gemini-specific translation lives only in
- * `createGeminiModel`, the one builder module that imports a provider SDK.
+ * arrays, no provider options, no SDK types. Provider translation lives only in this file:
+ * `createAnthropicModel` (production) and `createGeminiModel` (the Step 11 builder, kept
+ * for the frozen evals). Neither falls back to the other.
  *
  * The adapter never throws for a model outcome (no tool call, an invalid call, a cut-off
  * reply, a timeout). It throws only when the call didn't happen (ModelUnavailable) or was
@@ -15,8 +16,9 @@
 import 'server-only'
 import { generateText, stepCountIs, tool, type ToolSet } from 'ai'
 import { google } from '@ai-sdk/google'
-import type { z } from 'zod'
-import { STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
+import Anthropic from '@anthropic-ai/sdk'
+import { z } from 'zod'
+import { STUDIO_BUILDER_ANTHROPIC_EFFORT, STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
 import { logger } from '@/lib/logger'
 
 export interface ModelToolDecl {
@@ -32,7 +34,8 @@ export interface ModelUsage {
   cachedInput: number
   /** All billed output: text, tool-call arguments and thinking. */
   output: number
-  /** The thinking share of `output`. Never shown or stored as text. */
+  /** The thinking share of `output`. Never shown or stored as text. 0 when the provider
+   * doesn't report it separately: Anthropic bills thinking inside `output` with no split. */
   reasoning: number
 }
 
@@ -180,6 +183,110 @@ export function createGeminiModel(modelId = STUDIO_BUILDER_MODEL): AgentModel {
           name: typeof e?.name === 'string' ? e.name : 'unknown',
           status: typeof e?.statusCode === 'number' ? e.statusCode : null,
           cause: typeof e?.cause?.name === 'string' ? e.cause.name : null,
+          ms: Date.now() - started,
+        })
+        throw new ModelUnavailable()
+      }
+    },
+  }
+}
+
+// ── Anthropic ──
+
+/** What the adapter needs of the SDK client; tests pass a stand-in. */
+export interface AnthropicClientLike {
+  messages: {
+    stream(params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal; timeout?: number }): { finalMessage(): Promise<Anthropic.Message> }
+  }
+}
+
+/** Anthropic usage to builder usage. `input_tokens` excludes cache reads and writes, so the
+ * whole prompt is their sum. Thinking is billed inside `output_tokens` with no separate count,
+ * so `reasoning` is 0 (not reported), never an estimate; the cost is right either way. */
+export function anthropicUsage(usage: Partial<Anthropic.Usage> | null | undefined): ModelUsage {
+  if (!usage) return ZERO
+  const read = usage.cache_read_input_tokens ?? 0
+  return {
+    input: (usage.input_tokens ?? 0) + read + (usage.cache_creation_input_tokens ?? 0),
+    cachedInput: read,
+    output: usage.output_tokens ?? 0,
+    reasoning: 0,
+  }
+}
+
+/** Anthropic's stop reasons in the vocabulary the harness reads ('length' means cut off). */
+const FINISH: Record<string, string> = { tool_use: 'tool-calls', end_turn: 'stop', max_tokens: 'length', stop_sequence: 'stop', refusal: 'refusal', pause_turn: 'pause' }
+
+export function createAnthropicModel(
+  modelId = STUDIO_BUILDER_ANTHROPIC_MODEL,
+  effort = STUDIO_BUILDER_ANTHROPIC_EFFORT,
+  client?: AnthropicClientLike,
+): AgentModel {
+  return {
+    id: modelId,
+    async step(input) {
+      const started = Date.now()
+      const apiKey = process.env.ANTHROPIC_API_KEY
+      if (!client && !apiKey) {
+        // A configuration fault, not a model outcome: the run ends model_unavailable, and
+        // nothing falls back to another provider.
+        logger.error('studio.builder.model.no_key: ANTHROPIC_API_KEY is not set', { model: modelId })
+        throw new ModelUnavailable()
+      }
+      const anthropic = client ?? new Anthropic({ apiKey, maxRetries: 2 })
+      const timeout = AbortSignal.timeout(input.timeoutMs)
+      // The same flat strict schemas the tool registry validates against; nothing runs here.
+      const tools: Anthropic.Tool[] = input.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: z.toJSONSchema(t.inputSchema) as Anthropic.Tool.InputSchema,
+      }))
+      const images = input.images ?? []
+      const content: Anthropic.ContentBlockParam[] = [
+        { type: 'text', text: input.prompt },
+        ...images.flatMap((img): Anthropic.ContentBlockParam[] => [
+          { type: 'text', text: img.label },
+          { type: 'image', source: { type: 'base64', media_type: img.mediaType, data: Buffer.from(img.bytes).toString('base64') } },
+        ]),
+      ]
+      try {
+        const res = await anthropic.messages
+          .stream(
+            {
+              model: modelId,
+              max_tokens: input.maxOutputTokens,
+              system: input.system,
+              messages: [{ role: 'user', content }],
+              tools,
+              // Forced tool choice isn't accepted on this model: the instructions require a
+              // call, and a turn without one is refused by the harness like any other.
+              tool_choice: { type: 'auto' },
+              output_config: { effort },
+            },
+            { signal: AbortSignal.any([input.abortSignal, timeout]) },
+          )
+          .finalMessage()
+        const calls = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        return {
+          // Arguments that aren't an object can't be a tool's input: marked invalid, refused by the harness.
+          toolCalls: calls.map((c) => ({ name: c.name, input: c.input, invalid: typeof c.input !== 'object' || c.input === null || Array.isArray(c.input) })),
+          textLength: res.content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : 0), 0),
+          finishReason: FINISH[res.stop_reason ?? ''] ?? String(res.stop_reason ?? 'unknown'),
+          timedOut: false,
+          usage: anthropicUsage(res.usage),
+          latencyMs: Date.now() - started,
+          // The id asked for, not res.model: cost is priced by exact id, and a dated id would miss its rate row.
+          modelId,
+        }
+      } catch (error) {
+        if (input.abortSignal.aborted) throw new BuilderAbort()
+        if (timeout.aborted || isTimeout(error)) {
+          return { toolCalls: [], textLength: 0, finishReason: 'timeout', timedOut: true, usage: ZERO, latencyMs: Date.now() - started, modelId }
+        }
+        // Name and HTTP status only: a provider message can quote the request.
+        logger.warn('studio.builder.model.unavailable', {
+          name: error instanceof Error ? error.name : 'unknown',
+          status: error instanceof Anthropic.APIError && typeof error.status === 'number' ? error.status : null,
           ms: Date.now() - started,
         })
         throw new ModelUnavailable()

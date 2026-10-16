@@ -25,7 +25,7 @@ flowchart LR
   B -- "poll" --> P["progress route: owner only"]
   A --> DB[("Postgres: server-only tables, security definer functions")]
   DB -- "job: run id and slice number only" --> H["harness slice (job worker)"]
-  H -- "fenced prompt" --> M["AgentModel: Gemini"]
+  H -- "fenced prompt" --> M["AgentModel: Anthropic"]
   M -. "proposed tool calls" .-> H
   H -- "two view files" --> W["check worker thread: compile and typecheck"]
   H -- "every write carries the claim token" --> DB
@@ -33,6 +33,8 @@ flowchart LR
 ```
 
 Dotted arrows carry model output. Each ends at code that validates it.
+
+**The model.** Builds run on Claude Opus 5.5 (`claude-opus-5-5`) through the official Anthropic SDK, at effort `medium`. Both are constants in `src/lib/ai/config.ts` (`STUDIO_BUILDER_ANTHROPIC_MODEL`, `STUDIO_BUILDER_ANTHROPIC_EFFORT`). The key is `ANTHROPIC_API_KEY`, read on the server only. Without it every call fails as `model_unavailable`. Nothing falls back to Gemini. The harness sees the provider only through `AgentModel` in `builder/model.ts`. `createGeminiModel` stays there for the frozen Step 11 and 12A evals, which still build on `gemini-3.1-pro-preview`. Every step and ledger row records the model id the provider reported. Anthropic doesn't report thinking tokens separately, so they are billed inside output and `reasoning_tokens` is 0.
 
 | Input | Why it is untrusted | How it is contained |
 |---|---|---|
@@ -434,7 +436,7 @@ Before every model call the harness checks, fresh:
 - Studio is on and the school has the `studio` entitlement (`studioAccess`);
 - the `studio-builder` AI switch is on (a new group in `ai-features.ts`);
 - the school's 24-hour builder spend leaves room for one more call;
-- every run budget, including the run's spend plus a worst-case next call ($0.42 at Pro rates).
+- every run budget, including the run's spend plus a worst-case next call ($0.74 at Opus 5.5 rates).
 
 Turning the AI switch off stops every build at its next model call. The access, Studio, entitlement and AI-switch checks run once more right before a draft is committed (see [Checks and repair](#checks-and-repair)), so a switch turned off during the last turn or the design review still stops the commit. The daily spend and the run budgets aren't checked again there, because a commit calls no model.
 
@@ -444,7 +446,7 @@ Spend is recorded in three places, for different jobs:
 - `studio_builder_add_cost` runs the moment a reply lands, before anything else. It adds to the run's counter, which the per-run cap reads, and writes a `studio_plugin_builder_spend` row, which the school's daily cap sums by when it was spent. It runs whatever state the run is in, so a reply that lands after Stop, after a lost claim or after the run ended still counts.
 - The model-turn step carries the same cost, for the trajectory only.
 
-A call whose usage never comes back (a timeout, or a call cut off by Stop or a lost claim) is charged to both caps at the worst case for one call ($0.42 at Pro rates), since the provider may still bill it. The ledger keeps what the provider reported.
+A call whose usage never comes back (a timeout, or a call cut off by Stop or a lost claim) is charged to both caps at the worst case for one call ($0.74 at Opus 5.5 rates), since the provider may still bill it. The ledger keeps what the provider reported.
 
 Token semantics are the shared ledger's (`TokenUsage` in `src/lib/ai/cost.ts`), fixed platform-wide in Step 7C. In AI SDK v6, `outputTokens` already includes reasoning tokens (`@ai-sdk/google` adds `thoughtsTokenCount` into it), so cost bills `outputTokens` at the output rate, and `reasoningTokens` is only the thinking share, never added again. Before the fix every thinking call was billed for its reasoning twice. The tool-loop surfaces (Athena's turn, the professor and assignment assistants) now record `totalUsage`, all steps, instead of the final step only. Rows written before the fix keep their stored cost; the dashboard sums stored cost and never recomputes it.
 

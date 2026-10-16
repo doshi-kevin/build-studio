@@ -60,7 +60,7 @@ const { kickWorker } = await import('@/lib/jobs/enqueue')
 const { startBuild, issueDraftPreview } = await import('@/lib/studio/builder/service')
 const { draftFrameUrl, signDraftFrameTicket } = await import('@/lib/studio/runtime/frame-ticket')
 const { draftFrameResponse } = await import('@/lib/studio/runtime/frame')
-const { STUDIO_BUILDER_MODEL } = await import('@/lib/ai/config')
+const { STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_BUILDER_MODEL } = await import('@/lib/ai/config')
 const { isPricedModel } = await import('@/lib/ai/cost')
 const { createMemoryStore, newRun } = await import('./helpers/builder-memory-store')
 const { call, scriptedModel } = await import('./helpers/builder-fixtures')
@@ -304,6 +304,7 @@ describe('no runtime origin or frame ticket secret', () => {
 
 describe('the model id', () => {
   it('has its own price row, so the run and school cost caps never fall back to a cheaper rate', () => {
+    expect(isPricedModel(STUDIO_BUILDER_ANTHROPIC_MODEL)).toBe(true)
     expect(isPricedModel(STUDIO_BUILDER_MODEL)).toBe(true)
   })
 
@@ -311,8 +312,8 @@ describe('the model id', () => {
     const dir = 'src/lib/studio/builder'
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== 'model.ts' && f !== 'check-worker.generated.ts')) {
       const source = readFileSync(`${dir}/${file}`, 'utf8')
-      expect(source, file).not.toMatch(/from ['"](?:ai|@ai-sdk\/[^'"]+)['"]/)
-      expect(source, file).not.toMatch(/['"]gemini-/)
+      expect(source, file).not.toMatch(/from ['"](?:ai|@ai-sdk\/[^'"]+|@anthropic-ai\/[^'"]+)['"]/)
+      expect(source, file).not.toMatch(/['"](?:gemini|claude)-/)
     }
   })
 })

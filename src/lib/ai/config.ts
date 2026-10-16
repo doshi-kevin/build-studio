@@ -66,11 +66,21 @@ export const NODE_CHECK_MODEL = 'gemini-3.1-flash-lite-preview'
 export const STUDIO_PURPOSE_MODEL = 'gemini-3-flash-preview'
 
 /**
- * The Studio builder's model (docs/reference/studio-agent-harness.md): a coding-capable
- * Pro model at low thinking, reached only through the AgentModel interface in
- * src/lib/studio/builder/model.ts. Changing it needs a fresh builder eval run.
+ * The Step 11 builder's model: Gemini Pro at low thinking. Production builds no longer use
+ * it (see STUDIO_BUILDER_ANTHROPIC_MODEL); it stays because the frozen Step 11 and 12A
+ * evals build with `createGeminiModel` and pin this id.
  */
 export const STUDIO_BUILDER_MODEL = 'gemini-3.1-pro-preview'
+
+/**
+ * The Studio builder's live model (docs/reference/studio-agent-harness.md): Claude Opus 5.5
+ * through the Anthropic SDK, reached only through the AgentModel interface in
+ * src/lib/studio/builder/model.ts. Needs ANTHROPIC_API_KEY. Thinking is always on for this
+ * model; effort sets its depth. `medium` (the model's default) to start, since every turn
+ * counts against the run's $2.50 cap; raise it here if builds need more care.
+ */
+export const STUDIO_BUILDER_ANTHROPIC_MODEL = 'claude-opus-5-5'
+export const STUDIO_BUILDER_ANTHROPIC_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium'
 
 /** Questions generated per item, then dealt 5 at a time, fixed per student (§14.2). */
 export const NODE_CHECK_POOL_SIZE = 15

@@ -21,7 +21,7 @@
 import 'server-only'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
+import { STUDIO_BUILDER_ANTHROPIC_MODEL } from '@/lib/ai/config'
 import { computeCostUsd } from '@/lib/ai/cost'
 import { checkAiFeature } from '@/lib/ai/kill-switch'
 import { recordAiUsage } from '@/lib/ai/usage'
@@ -77,7 +77,7 @@ import { buildTurnContext, estimateTokens, skillsWanted, type HistoryEntry, type
 import { emptyMaterial, provenanceEntries, withSources, type MaterialFocus, type MaterialSearch, type MaterialSourceEntry, type RenderedSearch } from './course-material'
 import { loadGuardSources, postgresRetriever, retrievalScope, type SearchOutcome } from './course-retriever'
 import { professorTextsOf, type ProjectMemory } from './memory'
-import { createGeminiModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
+import { createAnthropicModel, BuilderAbort, ModelUnavailable, type AgentModel, type ModelImage, type ModelUsage } from './model'
 import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
 import { buildReviewPrompt, crashFindings, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
 import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
@@ -114,8 +114,8 @@ import {
 export const BUILDER_JOB_TYPE = 'studio_builder_slice'
 export const BUILDER_LEDGER_FEATURE = 'studio_builder'
 
-/** The worst a single next call can cost: a full prompt and a full reply at Pro rates. */
-export const WORST_CASE_CALL_USD = computeCostUsd(STUDIO_BUILDER_MODEL, {
+/** The worst a single next call can cost: a full prompt and a full reply at the live model's rates. */
+export const WORST_CASE_CALL_USD = computeCostUsd(STUDIO_BUILDER_ANTHROPIC_MODEL, {
   inputTokens: STUDIO_BUILDER_CONTEXT_MAX_TOKENS,
   outputTokens: STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
 })
@@ -1305,7 +1305,7 @@ async function gate(run: db.BuilderRunRow): Promise<GateRefusal | null> {
   return null
 }
 
-export function realHarnessDeps(model: AgentModel = createGeminiModel()): HarnessDeps {
+export function realHarnessDeps(model: AgentModel = createAnthropicModel()): HarnessDeps {
   return {
     store: builderRunStore,
     model,
