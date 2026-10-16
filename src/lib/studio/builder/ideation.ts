@@ -206,11 +206,21 @@ export interface IdeationCall {
   usage: ModelUsage
 }
 
+/** What the caller does around each paid call: the spend gate before it, the ledger after it. */
+export interface CallHooks {
+  /** False means the gate refused: the call is not made and the stage stops. */
+  mayCall?(): Promise<boolean>
+  /** Bills one finished call as soon as it returns, so a later failure can't lose it. */
+  onCall?(call: IdeationCall): Promise<void>
+}
+
+/** The rejection recorded when the gate stops a stage before a call. */
+export const GATE_REFUSED = 'gate_refused'
+
 export interface IdeationOutcome {
   /** Null when ideation failed twice: the build goes on without Product Intelligence. */
   artifact: ProductIntelligence | null
   calls: IdeationCall[]
-  /** Why it failed, for the log. */
   /** Why each rejected attempt was rejected, as compact codes (field_too_long:studentLoop, duplicate_mechanic, ...). */
   rejections?: string[][]
 }
@@ -233,10 +243,10 @@ function promptFor(req: IdeationRequest, rejected: { issues: Issue[]; previous: 
   ].join('\n\n')
 }
 
-const ask = (model: AgentModel, prompt: string, calls: IdeationCall[]) => askTool(model, IDEATION_INSTRUCTIONS, prompt, conceptsTool, calls)
-
-/** One forced-tool model call; its usage is added to `calls`. */
-export async function askTool(model: AgentModel, system: string, prompt: string, tool: ModelToolDecl, calls: IdeationCall[]) {
+/** One tool call to the model, behind the gate; its usage is added to `calls` and billed at once.
+ * `blocked` when the gate refused it, in which case nothing was sent. */
+export async function askTool(model: AgentModel, system: string, prompt: string, tool: ModelToolDecl, calls: IdeationCall[], hooks: CallHooks) {
+  if (hooks.mayCall && !(await hooks.mayCall())) return { blocked: true as const, call: undefined, finishReason: 'gate' }
   const res = await model.step({
     system,
     prompt,
@@ -245,9 +255,11 @@ export async function askTool(model: AgentModel, system: string, prompt: string,
     abortSignal: new AbortController().signal,
     timeoutMs: CALL_TIMEOUT_MS,
   })
-  calls.push({ modelId: res.modelId, usage: res.usage })
+  const made = { modelId: res.modelId, usage: res.usage }
+  calls.push(made)
+  await hooks.onCall?.(made)
   const call = res.toolCalls.find((c) => c.name === tool.name && !c.invalid)
-  return { call, finishReason: res.finishReason }
+  return { blocked: false as const, call, finishReason: res.finishReason }
 }
 
 /** A schema failure as a code (field_too_long:studentLoop, field_missing:name, schema:<zod code>:<field>) and a sentence. */
@@ -257,8 +269,10 @@ export const schemaIssue = (input: unknown) => (i: z.core.$ZodIssue): Issue => {
   const code = i.code === 'too_big' ? `field_too_long:${field}` : i.code === 'invalid_type' ? `field_missing:${field}` : `schema:${i.code}:${field}`
   // The repair call is told how far over it was: a model can't count characters unaided.
   const value = i.path.reduce<unknown>((v, k) => (v as Record<PropertyKey, unknown> | null | undefined)?.[k], input)
-  const over = i.code === 'too_big' && typeof value === 'string' ? ` (it has ${value.length} characters; shorten it well under the limit)` : ''
-  return { code, message: `${at}: ${i.message}${over}` }
+  if (i.code === 'too_big' && typeof value === 'string') {
+    return { code, message: `${at}: ${field} has ${value.length} characters; the maximum is ${String(i.maximum)}. Shorten it well under the limit.` }
+  }
+  return { code, message: `${at}: ${i.message}` }
 }
 
 /** Checks one answer: its schema, then the divergence and platform rules. */
@@ -286,7 +300,7 @@ export function sumCalls(calls: IdeationCall[]): ModelRecord {
  * makes one, and one repair call when its concepts fail the checks; a second failure means no
  * artifact. The model never decides routing and never sees the build.
  */
-export async function ideate(model: AgentModel, req: IdeationRequest): Promise<IdeationOutcome> {
+export async function ideate(model: AgentModel, req: IdeationRequest, hooks: CallHooks = {}): Promise<IdeationOutcome> {
   const requestType = classifyRequest(req.request)
   if (requestType === 'direct_build') {
     return {
@@ -304,7 +318,11 @@ export async function ideate(model: AgentModel, req: IdeationRequest): Promise<I
   const rejections: string[][] = []
   let previous: unknown = null
   for (const attempt of [0, 1]) {
-    const { call, finishReason } = await ask(model, promptFor(req, attempt === 0 ? null : { issues: failure, previous }), calls)
+    const { blocked, call, finishReason } = await askTool(model, IDEATION_INSTRUCTIONS, promptFor(req, attempt === 0 ? null : { issues: failure, previous }), conceptsTool, calls, hooks)
+    if (blocked) {
+      logger.info('studio.builder.ideation: gate refused, stopping', { attempt })
+      return { artifact: null, calls, rejections: [...rejections, [GATE_REFUSED]] }
+    }
     if (!call) {
       failure = [{ code: `no_tool_call:${finishReason}`, message: 'You did not call submit_concepts. Call it with the complete answer.' }]
       rejections.push(failure.map((f) => f.code))

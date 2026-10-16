@@ -174,7 +174,7 @@ export interface HarnessDeps {
    * Absent (as in production today), a throw or an invalid value means none: the build
    * runs exactly as it would without it. Nothing reads the artifact yet.
    */
-  productIntelligence?(run: db.BuilderRunRow, data: SliceData): Promise<ProductIntelligence | null>
+  productIntelligence?(run: db.BuilderRunRow, data: SliceData, mayCall: () => Promise<boolean>): Promise<ProductIntelligence | null>
   /** Everything outside the run that can stop it before a model call. */
   gate(run: db.BuilderRunRow): Promise<GateRefusal | null>
   runChecks(run: db.BuilderRunRow, data: SliceData, work: Work): Promise<DraftCheckResult>
@@ -413,9 +413,9 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   const productIntelligenceFor = async (run: db.BuilderRunRow, slice: SliceData): Promise<ProductIntelligence | null> => {
     if (!deps.productIntelligence) return null
     try {
-      // A paid call: the same gate as a model turn (daily cap, kill switch) comes first. A refusal skips ideation; the loop ends the run.
-      if (await deps.gate(run)) return null
-      const raw = await deps.productIntelligence(run, slice)
+      // Every paid call passes the same gate as a model turn (daily cap, kill switch) first. A
+      // refusal stops Product Intelligence where it is; the loop then ends the run.
+      const raw = await deps.productIntelligence(run, slice, async () => (await deps.gate(run)) === null)
       const artifact = readProductIntelligence(raw)
       if (raw !== null && !artifact) logger.warn('studio.builder.productIntelligence: invalid, building without it', { runId })
       return artifact
@@ -1318,13 +1318,9 @@ export function realHarnessDeps(
     loadSliceData,
     loadMemories,
     // Its own model and effort (config.ts); its spend joins the run and the ledger.
-    productIntelligence: async (run, data) => {
-      const { artifact, calls } = await productIntelligence(intelligenceModel, {
-        request: run.request ?? '',
-        course: data.course,
-        skills: data.skills,
-      })
-      for (const { modelId, usage } of calls) {
+    productIntelligence: async (run, data, mayCall) => {
+      // Each call is billed as it returns, so a later failure or throw can't lose it.
+      const onCall = async ({ modelId, usage }: { modelId: string; usage: ModelUsage }) => {
         const costUsd = computeCostUsd(modelId, { inputTokens: usage.input, cachedInputTokens: usage.cachedInput, outputTokens: usage.output })
         await builderRunStore.addCost(run.id, { input: usage.input, cached: usage.cachedInput, output: usage.output, costUsd })
         await recordAiUsage({
@@ -1333,6 +1329,7 @@ export function realHarnessDeps(
           metadata: { runId: run.id, turn: 0, step: 'product_intelligence' },
         })
       }
+      const { artifact } = await productIntelligence(intelligenceModel, { request: run.request ?? '', course: data.course, skills: data.skills }, null, { mayCall, onCall })
       return artifact
     },
     gate,

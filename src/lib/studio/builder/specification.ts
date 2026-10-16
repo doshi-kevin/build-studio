@@ -10,11 +10,13 @@
 import { logger } from '@/lib/logger'
 import { z } from 'zod'
 import {
-  askTool, hardcodedBank, ideate, PLATFORM_BRIEF, schemaIssue, sumCalls, unsupportedIn,
-  type Issue, type IdeationCall, type IdeationOutcome, type IdeationRequest,
+  askTool, GATE_REFUSED, hardcodedBank, ideate, PLATFORM_BRIEF, schemaIssue, sumCalls, unsupportedIn,
+  type CallHooks, type Issue, type IdeationCall, type IdeationOutcome, type IdeationRequest,
 } from './ideation'
+import { fenceBlock } from '@/lib/ai/prompt-fence'
 import type { AgentModel } from './model'
-import { LEARNING_MECHANICS, specificationSchema, type Concept, type ProductIntelligence, type Specification } from './work'
+import { utf8Bytes } from './paths'
+import { LEARNING_MECHANICS, PRODUCT_INTELLIGENCE_MAX_BYTES, specificationSchema, type Concept, type ProductIntelligence, type Specification } from './work'
 
 /** What the model submits: the specification without the model record, which the harness adds. */
 export const specificationCallSchema = specificationSchema.omit({ model: true })
@@ -121,7 +123,7 @@ export interface SpecificationOutcome {
 }
 
 /** One specification call for the selected concept, and one repair call when it fails the checks. */
-export async function specify(model: AgentModel, req: IdeationRequest, pi: ProductIntelligence): Promise<SpecificationOutcome> {
+export async function specify(model: AgentModel, req: IdeationRequest, pi: ProductIntelligence, hooks: CallHooks = {}): Promise<SpecificationOutcome> {
   const concept = pi.ideation?.candidates[pi.ideation.selectedIndex]
   const calls: IdeationCall[] = []
   const rejections: string[][] = []
@@ -129,7 +131,11 @@ export async function specify(model: AgentModel, req: IdeationRequest, pi: Produ
   let failure: Issue[] = []
   let previous: unknown = null
   for (const attempt of [0, 1]) {
-    const { call, finishReason } = await askTool(model, SPECIFICATION_INSTRUCTIONS, promptFor(req, pi, concept, attempt === 0 ? null : { issues: failure, previous }), specificationTool, calls)
+    const { blocked, call, finishReason } = await askTool(model, SPECIFICATION_INSTRUCTIONS, promptFor(req, pi, concept, attempt === 0 ? null : { issues: failure, previous }), specificationTool, calls, hooks)
+    if (blocked) {
+      logger.info('studio.builder.specification: gate refused, stopping', { attempt })
+      return { specification: null, calls, rejections: [...rejections, [GATE_REFUSED]] }
+    }
     const parsed = call ? specificationCallSchema.safeParse(call.input) : null
     failure = !call
       ? [{ code: `no_tool_call:${finishReason}`, message: 'You did not call submit_specification. Call it with the complete specification.' }]
@@ -151,19 +157,35 @@ export interface IntelligenceOutcome extends IdeationOutcome {
 
 /**
  * Product Intelligence for a request: ideation, then the specification for the selected
- * concept. A finished stage in `existing` is kept and never asked for again. A failed
- * specification leaves the ideation in place with no specification.
+ * concept. A finished stage in `existing` is kept and never asked for again. A specification
+ * that fails, is refused by the gate, or would push the artifact over its byte cap is dropped
+ * and the paid ideation kept. `hooks` gate and bill every call.
  */
-export async function productIntelligence(model: AgentModel, req: IdeationRequest, existing: ProductIntelligence | null = null): Promise<IntelligenceOutcome> {
-  const first: IdeationOutcome = existing?.ideation ? { artifact: existing, calls: [] } : await ideate(model, req)
+export async function productIntelligence(model: AgentModel, req: IdeationRequest, existing: ProductIntelligence | null = null, hooks: CallHooks = {}): Promise<IntelligenceOutcome> {
+  const first: IdeationOutcome = existing?.ideation ? { artifact: existing, calls: [] } : await ideate(model, req, hooks)
   const pi = first.artifact
   if (!pi?.ideation || pi.specification) return { ...first, specificationRejections: [] }
-  const spec = await specify(model, req, pi)
-  return {
-    ...first,
-    calls: [...first.calls, ...spec.calls],
-    artifact: { ...pi, specification: spec.specification },
-    specificationRejections: spec.rejections,
+  const spec = await specify(model, req, pi, hooks)
+  const calls = [...first.calls, ...spec.calls]
+  const withSpec = { ...pi, specification: spec.specification }
+  if (spec.specification && utf8Bytes(JSON.stringify(withSpec)) > PRODUCT_INTELLIGENCE_MAX_BYTES) {
+    logger.info('studio.builder.specification: too large, keeping the ideation without it', { bytes: utf8Bytes(JSON.stringify(withSpec)) })
+    return { ...first, calls, artifact: { ...pi, specification: null }, specificationRejections: [...spec.rejections, ['specification_too_large']] }
   }
+  return { ...first, calls, artifact: withSpec, specificationRejections: spec.rejections }
+}
+
+/** Room for the escapes: every "<" becomes six characters. */
+const FENCED_MAX_BYTES = PRODUCT_INTELLIGENCE_MAX_BYTES * 2
+
+/**
+ * The artifact as untrusted data for a prompt (Step 12B.4 will place it in the builder's).
+ * Model-authored text, steered by the professor's request, so it is fenced like plugin code:
+ * a per-prompt nonce tag that its content cannot close (fenceBlock), and JSON with every
+ * angle bracket escaped, so no tag, closing or otherwise, appears in the body at all.
+ */
+export function fenceProductIntelligence(nonce: string, pi: ProductIntelligence): string {
+  const json = JSON.stringify(pi, null, 1).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+  return fenceBlock(nonce, 'product-intelligence', 'model-authored', json, FENCED_MAX_BYTES)
 }
 
