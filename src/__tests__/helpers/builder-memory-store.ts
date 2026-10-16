@@ -219,6 +219,8 @@ export function createMemoryStore(
       state.run.pendingApproval = a.pending ? structuredClone(a.pending) : null
       if (a.question) state.run.questions = [...state.run.questions, structuredClone(a.question) as BuilderRunRow['questions'][number]]
       state.run.counters.toolCalls += 1
+      // As studio_builder_pause: a call that pauses the run for the professor was not an error.
+      state.run.counters.consecutiveErrors = 0
       state.run.counters.writes += Number(a.delta.writes ?? 0)
       state.run.counters.bytesWritten += Number(a.delta.bytes_written ?? 0)
       state.token = null

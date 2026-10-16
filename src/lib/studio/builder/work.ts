@@ -55,6 +55,9 @@ export interface Work {
   /** What educational product this build is for (Step 12B). Null when the run has none, which
    * is every run until something fills it; nothing reads it yet. */
   product_intelligence: ProductIntelligence | null
+  /** What Product Intelligence spent seeding this run, inside the run's cost counter but outside
+   * the builder's budget (Step 12B.4). Absent before then: none. */
+  product_intelligence_cost_usd?: number
 }
 
 /** Per collection, the records the preview shows. `student` indexes the synthetic roster

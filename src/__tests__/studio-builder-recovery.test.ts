@@ -586,6 +586,91 @@ describe('run budgets at their exact boundaries', () => {
   })
 })
 
+describe('fewer turns per build (latency)', () => {
+  const BROKEN = 'export default function Broken() { return <NotAKitComponent /> }'
+
+  it('a turn that changes the draft without checking it is checked at its end, and the repair turns that follow think less', async () => {
+    const { STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT } = await import('@/lib/ai/config')
+    const h = harness([
+      { calls: [kit('Button')] },
+      { calls: [write('views/student.tsx', BROKEN)] },
+      (input) => {
+        // The findings are already here: no turn was spent asking for them.
+        expect(input.prompt).toContain('NotAKitComponent')
+        return [call('edit_file', { path: 'views/student.tsx', old_text: '<NotAKitComponent />', new_text: 'null' })]
+      },
+      { calls: [finish('blocked', 'Nothing to change.')] },
+    ])
+    expect(await h.slice()).toBe('stopped')
+    const writeTurn = h.mem.state.steps.find((s) => s.tool === 'write_file')!.toolCallId.split('.')[0]
+    expect(h.mem.state.steps.filter((s) => s.toolCallId.startsWith(`${writeTurn}.`)).map((s) => [s.tool, s.label])).toEqual([['write_file', 'file.written'], ['run_checks', 'check.failed']])
+    // The edit turn gets its own check as well.
+    expect(h.mem.state.steps.filter((s) => s.tool === 'run_checks')).toHaveLength(2)
+    // Writing keeps the configured effort, in fast mode; only turns that answer a failed check think
+    // less, at standard speed.
+    expect(h.model.prompts.map((p) => p.effort ?? null)).toEqual([null, null, STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT, STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT])
+    const { STUDIO_BUILDER_ANTHROPIC_FAST } = await import('@/lib/ai/config')
+    const fast = STUDIO_BUILDER_ANTHROPIC_FAST ? 'fast' : null
+    expect(h.model.prompts.map((p) => p.speed ?? null)).toEqual([fast, fast, null, null])
+  })
+
+  it('an incomplete draft is not checked by itself: a failed check would spend a repair round for nothing', async () => {
+    const h = harness([{ calls: [write('views/student.tsx', BROKEN)] }, { calls: [finish('blocked', 'Nothing to change.')] }], { base: { manifest: base()!.manifest, files: { 'views/student.tsx': STUDENT_VIEW } } })
+    expect(await h.slice()).toBe('stopped')
+    expect(h.mem.state.steps.some((s) => s.tool === 'run_checks')).toBe(false)
+    expect(h.mem.state.run.counters.repairRounds).toBe(0)
+  })
+
+  it('refusals after a change end the turn without a check, so their streak still ends the run', async () => {
+    const h = harness([{ calls: [call('edit_file', { path: 'views/student.tsx', old_text: "if (cards.status === 'loading')", new_text: "if (cards.status === 'loading' || false)" }), call('nope'), call('nope'), call('nope')] }, { calls: [finish('blocked', 'x')] }])
+    // read_file first, so the edit applies.
+    h.mem.state.run.work = { ...(await import('@/lib/studio/builder/work')).initialWork(base()), working_set: ['views/student.tsx'] } as never
+    await h.slice()
+    expect(h.mem.state.steps.find((s) => s.tool === 'edit_file')?.status).toBe('done')
+    expect(h.mem.state.steps.some((s) => s.tool === 'run_checks')).toBe(false)
+    expect(h.mem.state.run.errorCode).toBe('repeated_tool_errors')
+  })
+
+  it('a turn whose every write is refused gets no check, so refusals in a row still end the run', async () => {
+    const h = harness([{ calls: [write('views/student.tsx', 'x\u0007'), call('nope'), call('nope')] }, { calls: [finish('blocked', 'x')] }])
+    await h.slice()
+    expect(h.mem.state.steps.some((s) => s.tool === 'run_checks')).toBe(false)
+    expect(h.mem.state.run.errorCode).toBe('repeated_tool_errors')
+  })
+
+  it('a variable named like a browser frame is reported with what to rename, not as an undeclared Bridge call', async () => {
+    const { initialWork } = await import('@/lib/studio/builder/work')
+    const b = base()!
+    const student = STUDENT_VIEW.replace('export default function', 'const top = 1\nexport default function')
+    const result = await runDraftChecks({ ...initialWork({ ...b, files: { ...b.files, 'views/student.tsx': student } }) }, { workerCheck: inProcessWorkerCheck, rosterFullNames: [], published: null, disclosureSources: [] })
+    const bridge = result.findings.filter((f) => f.check_id === 'code.bridge_usage')
+    expect(bridge.length).toBeGreaterThan(0)
+    expect(bridge[0]).toMatchObject({ file: 'views/student.tsx', message: expect.stringContaining('Rename every one of them') })
+  })
+
+  it('views can use the standard Math functions their models need (a live chemistry build was blocked on Math.log)', async () => {
+    const { initialWork } = await import('@/lib/studio/builder/work')
+    const b = base()!
+    const model = "const k2 = (k1: number, dh: number, t1: number, t2: number) => k1 * Math.exp((-dh / 8.314) * (1 / t2 - 1 / t1))\nconst ok = (x: number) => isFinite(x) && x !== Infinity && !Number.isNaN(Math.log(x)) && Math.pow(x, 2) >= 0 && Math.sqrt(4) === 2\n"
+    const student = STUDENT_VIEW.replace('export default function', `${model}export default function`).replace('<Screen title="Flashcards">', '<Screen title={ok(k2(1, 1, 300, 310)) ? "Flashcards" : "Cards"}>')
+    const result = await runDraftChecks({ ...initialWork({ ...b, files: { ...b.files, 'views/student.tsx': student } }) }, { workerCheck: inProcessWorkerCheck, rosterFullNames: [], published: null, disclosureSources: [] })
+    expect(result.findings.filter((f) => f.check_id === 'builder.typecheck' || f.check_id === 'builder.compile')).toEqual([])
+  })
+
+  it('an over-long argument is refused with its length, so the next try can fit', async () => {
+    const long = 'x'.repeat(limits.STUDIO_BUILDER_SUMMARY_MAX_CHARS + 37)
+    const h = harness([
+      { calls: [finish('blocked', long)] },
+      (input) => {
+        expect(input.prompt).toContain(`(this one has ${long.length})`)
+        return [finish('blocked', 'Short.')]
+      },
+    ])
+    await h.slice()
+    expect(h.mem.state.run.status).toBe('blocked')
+  })
+})
+
 describe('a follow-up build and the builds before it', () => {
   const ended = new Date(Date.UTC(2026, 9, 1)).toISOString()
   const files = (changed: string[]) => ['views/student.tsx', 'views/professor.tsx'].map((path) => ({ path, changed: changed.includes(path) }))
@@ -674,6 +759,92 @@ describe('Product Intelligence across slices and crashes (Step 12B.1)', () => {
     }
     return { deps: { ...deps, store }, writes }
   }
+
+  // 12B.4: a first build with a specification keeps its plan to it.
+  const designedFirstBuild = async () => {
+    const { productIntelligence } = await import('@/lib/studio/builder/specification')
+    const { callInput, ideationModel, specInput } = await import('./helpers/ideation-fixtures')
+    return (await productIntelligence(ideationModel([callInput(), specInput()]), { request: 'My students can calculate a DCF but do not understand what drives the value.', course: null, skills: null })).artifact
+  }
+
+  it('an off-spec plan ends its turn without an error, the next prompt says which criteria are missing, and the kept plan is accepted (12B.4)', async () => {
+    const { crudPlan, keptPlan } = await import('./helpers/ideation-fixtures')
+    const { REFUSAL_HINTS } = await import('@/lib/studio/builder/tools')
+    const designed = await designedFirstBuild()
+    const h = harness([
+      // Batched as models do: the calls after the refused plan would each be refused for want of one.
+      { calls: [call('submit_plan', crudPlan()), proposeManifest(), kit('Button')] },
+      (input) => {
+        expect(input.prompt).toContain('# The product to build')
+        expect(input.prompt).toContain(REFUSAL_HINTS.plan_off_spec)
+        expect(input.prompt).toMatch(/Acceptance criterion \d of the product design is not in the plan/)
+        return [call('submit_plan', keptPlan())]
+      },
+      { calls: [finish('blocked', 'Nothing to change.')] },
+    ], { base: null })
+    expect(await h.slice({ ...h.deps, productIntelligence: async () => designed })).toBe('stopped')
+    const plans = h.mem.state.steps.filter((s) => s.tool === 'submit_plan')
+    expect(plans.map((s) => [s.status, s.resultSummary.reason ?? null])).toEqual([['refused', 'plan_off_spec'], ['done', null]])
+    // The stored issues name spec items, never the plan's own words.
+    const stored = (plans[0].resultSummary.issues as string[]).join(' ').toLowerCase()
+    expect(stored.length).toBeGreaterThan(0)
+    const crud = crudPlan()
+    for (const own of [crud.goal, ...crud.professor_view, ...crud.student_view, ...crud.requirements]) expect(stored).not.toContain(own.toLowerCase())
+    const firstTurn = plans[0].toolCallId.split('.')[0]
+    expect(h.mem.state.steps.filter((s) => s.toolCallId.startsWith(`${firstTurn}.`) && s.tool !== 'submit_plan').map((s) => s.status)).toEqual(['interrupted', 'interrupted'])
+    expect(h.mem.state.run.status).toBe('blocked')
+    expect(h.mem.state.run.plan).toMatchObject({ goal: keptPlan().goal })
+  })
+
+  it('two off-spec plans and another refusal never end the build: the third plan is let through (12B.4)', async () => {
+    const { crudPlan } = await import('./helpers/ideation-fixtures')
+    const designed = await designedFirstBuild()
+    const h = harness([
+      // propose_manifest_change first is refused for want of a plan: a real error.
+      { calls: [proposeManifest(), call('submit_plan', crudPlan())] },
+      { calls: [call('submit_plan', crudPlan())] },
+      { truncated: true },
+      { calls: [call('submit_plan', crudPlan())] },
+      { calls: [finish('blocked', 'Nothing to change.')] },
+    ], { base: null })
+    expect(await h.slice({ ...h.deps, productIntelligence: async () => designed })).toBe('stopped')
+    const plans = h.mem.state.steps.filter((s) => s.tool === 'submit_plan').map((s) => [s.status, s.resultSummary.reason ?? null])
+    expect(plans).toEqual([['refused', 'plan_off_spec'], ['refused', 'plan_off_spec'], ['done', null]])
+    expect(h.mem.state.run.errorCode).not.toBe('repeated_tool_errors')
+    expect(h.mem.state.run.status).toBe('blocked')
+  })
+
+  it('Product Intelligence spend stays in the run total but out of the builder budget (12B.4)', async () => {
+    const designed = await designedFirstBuild()
+    const h = harness([{ calls: [kit('Button')] }, { calls: [finish('blocked', 'Nothing to change.')] }], { base: null })
+    // More than the builder could ever spend before a turn: counted against the builder, it would stop the build.
+    const piUsd = limits.STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD + 0.5
+    const provider = async () => {
+      await h.mem.store.addCost(h.run.id, { input: 0, cached: 0, output: 0, costUsd: piUsd })
+      return designed
+    }
+    expect(await h.slice({ ...h.deps, productIntelligence: provider })).toBe('stopped')
+    expect(h.mem.state.run.status).toBe('blocked')
+    expect(h.mem.state.run.errorCode).not.toBe('limit_cost')
+    expect(h.mem.state.run.counters.costUsd).toBeGreaterThan(piUsd)
+  })
+
+  it('a follow-up build carries no product design and is never held to it (12B.4)', async () => {
+    const { crudPlan } = await import('./helpers/ideation-fixtures')
+    const designed = await designedFirstBuild()
+    const h = harness([
+      (input) => {
+        expect(input.prompt).not.toContain('# The product to build')
+        return [call('submit_plan', crudPlan())]
+      },
+      { calls: [finish('blocked', 'Nothing to change.')] },
+    ])
+    expect(await h.slice({ ...h.deps, productIntelligence: async () => designed })).toBe('stopped')
+    expect(h.mem.state.steps.filter((s) => s.tool === 'submit_plan').map((s) => s.status)).toEqual(['done'])
+    // Production asks for no Product Intelligence on a follow-up at all.
+    const followUp = realHarnessDeps(scriptedModel([]), scriptedModel([]))
+    expect(await followUp.productIntelligence!(h.mem.state.run, {} as never, async () => true)).toBeNull()
+  })
 
   it('production wires ideation, with its own model beside the builder\'s', () => {
     expect(realHarnessDeps(scriptedModel([])).productIntelligence).toBeTypeOf('function')

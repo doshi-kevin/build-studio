@@ -6,7 +6,7 @@
  * missing answer) can fail a build that passed its checks. Stop still stops it.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { runBuilderSlice, WORST_CASE_CALL_USD, type GateRefusal, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
+import { runBuilderSlice, WORST_CASE_CALL_USD, WORST_CASE_REVIEW_USD, type GateRefusal, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
 import { runDraftChecks } from '@/lib/studio/builder/checks'
 import type { RenderOutcome } from '@/lib/studio/builder/renderer'
 import { parseReview, REVIEW_INSTRUCTIONS } from '@/lib/studio/builder/review'
@@ -214,7 +214,8 @@ describe('the design review', () => {
     expect(h.mem.state.run.status).toBe('preview_ready')
     expect(h.mem.state.steps.find((s) => s.label === 'review.skipped')?.resultSummary).toMatchObject({ reason: 'model_unavailable' })
     // The failed call is still charged at the worst case.
-    expect(h.mem.state.run.counters.costUsd).toBeGreaterThanOrEqual(WORST_CASE_CALL_USD)
+    // The review runs at standard speed: charged that call's worst case.
+    expect(h.mem.state.run.counters.costUsd).toBeGreaterThanOrEqual(WORST_CASE_REVIEW_USD)
   })
 
   it('commits unreviewed when the review returns no verdict', async () => {
@@ -225,7 +226,8 @@ describe('the design review', () => {
   })
 
   it('skips the review, without a model call, when the run can’t afford it and one more turn', async () => {
-    const h = harness([readFiles, { calls: [tweak(1), call('run_checks')] }, { calls: [finish()] }], { costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - 1.5 * WORST_CASE_CALL_USD })
+    // The review (standard speed) and one turn after it no longer fit.
+    const h = harness([readFiles, { calls: [tweak(1), call('run_checks')] }, { calls: [finish()] }], { costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD - 0.5 * WORST_CASE_REVIEW_USD })
     await h.slice()
     expect(h.mem.state.run.status).toBe('preview_ready')
     expect(h.reviews()).toHaveLength(0)

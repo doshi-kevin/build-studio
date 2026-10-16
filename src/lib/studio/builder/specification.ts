@@ -7,16 +7,19 @@
  * The call elaborates; it never reconsiders the three concepts. A deterministic check refuses
  * a specification that has lost the concept's defining mechanic.
  */
+import { ANTHROPIC_FAST_MODEL_SUFFIX, STUDIO_PRODUCT_INTELLIGENCE_FAST, STUDIO_PRODUCT_INTELLIGENCE_MODEL } from '@/lib/ai/config'
+import { computeCostUsd } from '@/lib/ai/cost'
 import { logger } from '@/lib/logger'
+import { STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD } from '../limits'
 import { z } from 'zod'
 import {
-  askTool, GATE_REFUSED, hardcodedBank, ideate, PLATFORM_BRIEF, schemaIssue, sumCalls, unsupportedIn,
+  askTool, GATE_REFUSED, hardcodedBank, ideate, PI_MAX_OUTPUT_TOKENS, PLATFORM_BRIEF, schemaIssue, sumCalls, unsupportedIn,
   type CallHooks, type Issue, type IdeationCall, type IdeationOutcome, type IdeationRequest,
 } from './ideation'
 import { fenceBlock } from '@/lib/ai/prompt-fence'
 import type { AgentModel } from './model'
 import { utf8Bytes } from './paths'
-import { LEARNING_MECHANICS, PRODUCT_INTELLIGENCE_MAX_BYTES, specificationSchema, type Concept, type ProductIntelligence, type Specification } from './work'
+import { LEARNING_MECHANICS, PRODUCT_INTELLIGENCE_MAX_BYTES, specificationSchema, type Concept, type Plan, type ProductIntelligence, type Specification } from './work'
 
 /** What the model submits: the specification without the model record, which the harness adds. */
 export const specificationCallSchema = specificationSchema.omit({ model: true })
@@ -161,7 +164,16 @@ export interface IntelligenceOutcome extends IdeationOutcome {
  * that fails, is refused by the gate, or would push the artifact over its byte cap is dropped
  * and the paid ideation kept. `hooks` gate and bill every call.
  */
-export async function productIntelligence(model: AgentModel, req: IdeationRequest, existing: ProductIntelligence | null = null, hooks: CallHooks = {}): Promise<IntelligenceOutcome> {
+export async function productIntelligence(model: AgentModel, req: IdeationRequest, existing: ProductIntelligence | null = null, outer: CallHooks = {}): Promise<IntelligenceOutcome> {
+  // Its own budget: a call goes ahead only if its worst case still fits, then the caller's gate.
+  let spentUsd = outer.spentUsd ?? 0
+  const hooks: CallHooks = {
+    mayCall: async () => spentUsd + PI_WORST_CALL_USD <= STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD && (outer.mayCall ? await outer.mayCall() : true),
+    onCall: async (call) => {
+      spentUsd += computeCostUsd(call.modelId, { inputTokens: call.usage.input, cachedInputTokens: call.usage.cachedInput, outputTokens: call.usage.output })
+      await outer.onCall?.(call)
+    },
+  }
   const first: IdeationOutcome = existing?.ideation ? { artifact: existing, calls: [] } : await ideate(model, req, hooks)
   const pi = first.artifact
   if (!pi?.ideation || pi.specification) return { ...first, specificationRejections: [] }
@@ -175,17 +187,104 @@ export async function productIntelligence(model: AgentModel, req: IdeationReques
   return { ...first, calls, artifact: withSpec, specificationRejections: spec.rejections }
 }
 
+/** The worst one Product Intelligence call can cost: a generous prompt and a full reply. Its prompts
+ * (instructions, the request, a concept, one rejected answer clipped to 8,000 characters) stay
+ * well under 16k tokens. */
+export const PI_WORST_CALL_USD = computeCostUsd(`${STUDIO_PRODUCT_INTELLIGENCE_MODEL}${STUDIO_PRODUCT_INTELLIGENCE_FAST ? ANTHROPIC_FAST_MODEL_SUFFIX : ''}`, { inputTokens: 16_000, outputTokens: PI_MAX_OUTPUT_TOKENS })
+
 /** Room for the escapes: every "<" becomes six characters. */
 const FENCED_MAX_BYTES = PRODUCT_INTELLIGENCE_MAX_BYTES * 2
 
 /**
- * The artifact as untrusted data for a prompt (Step 12B.4 will place it in the builder's).
- * Model-authored text, steered by the professor's request, so it is fenced like plugin code:
- * a per-prompt nonce tag that its content cannot close (fenceBlock), and JSON with every
- * angle bracket escaped, so no tag, closing or otherwise, appears in the body at all.
+ * The builder's acceptance criteria: the specification's primary interactions, defining student
+ * action first, then the insight the professor must get. The plan has to carry each one into its
+ * requirements, which the design review then checks against the finished tool.
  */
-export function fenceProductIntelligence(nonce: string, pi: ProductIntelligence): string {
-  const json = JSON.stringify(pi, null, 1).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+export function acceptanceCriteria(spec: Specification): string[] {
+  return [...spec.primaryInteractions, ...(spec.professorInsight[0] ? [`Professor sees: ${spec.professorInsight[0]}`] : [])]
+}
+
+/**
+ * What the builder needs of the artifact, once: the problem, the chosen concept, its
+ * specification (no model record, no other candidates, no platform list the builder already
+ * has) and the acceptance criteria. `compact` drops the detail the context trim can spare.
+ */
+export function productBrief(pi: ProductIntelligence, compact = false) {
+  const spec = pi.specification
+  const concept = pi.ideation?.candidates[pi.ideation.selectedIndex]
+  // The model record is bookkeeping; the primary interactions are the acceptance criteria below.
+  const kept: Partial<Specification> | null = spec ? { ...spec } : null
+  if (kept) {
+    delete kept.model
+    delete kept.primaryInteractions
+  }
+  const specification = kept && compact ? { ...kept, edgeStates: [], limitations: [], relationships: [], states: (kept.states ?? []).map((s) => ({ name: s.name, meaning: '' })) } : kept
+  return {
+    teachingProblem: pi.teachingProblem,
+    studentDifficulty: pi.studentDifficulty,
+    professorGoal: pi.professorGoal,
+    concept: concept ? { name: concept.name, mechanic: concept.mechanic, learningMechanic: concept.learningMechanic, studentLoop: concept.studentLoop } : pi.selectedConcept,
+    specification,
+    acceptanceCriteria: spec ? acceptanceCriteria(spec) : [],
+  }
+}
+
+/**
+ * The artifact as untrusted data for a prompt: the builder's brief (`productBrief`), never the
+ * whole artifact. Model-authored text, steered by the professor's request, so it is fenced like
+ * plugin code: a per-prompt nonce tag that its content cannot close (fenceBlock), and JSON with
+ * every angle bracket escaped, so no tag, closing or otherwise, appears in the body at all.
+ */
+export function fenceProductIntelligence(nonce: string, pi: ProductIntelligence, compact = false): string {
+  const escape = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+  // Escaping can grow text sixfold, and a clamped block would be broken JSON. So the block is
+  // always complete: the brief, else the compact brief, else the concept and its criteria.
+  const full = productBrief(pi, compact)
+  const tries = [escape(full), escape(productBrief(pi, true)), escape({ concept: full.concept, acceptanceCriteria: full.acceptanceCriteria })]
+  const json = tries.find((t) => utf8Bytes(t) <= FENCED_MAX_BYTES) ?? tries[2]
   return fenceBlock(nonce, 'product-intelligence', 'model-authored', json, FENCED_MAX_BYTES)
+}
+
+/** Words too common to show that a plan covers an interaction. */
+const STOP = new Set('about after again also before being both each from have into more only other over same sees some such than that their them then there these they this those through tool view what when where which while with will without your student students professor professors class staff instructor'.split(' '))
+
+/** Distinctive words, cut to a five-letter stem so predict, predicts and prediction match. */
+const stems = (text: string) => new Set((text.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter((w) => !STOP.has(w)).map((w) => w.slice(0, 5)))
+
+/** How much of an interaction's wording the plan must share to count as covering it. */
+const COVER_SHARE = 0.4
+
+/**
+ * Why a plan has left the specification behind, as fixed sentences that name spec items by
+ * number (never the plan's own text: refusal issues are stored on the step). Empty means the
+ * plan keeps the product: the mechanic's student action, every acceptance criterion, both
+ * workflows, and professor-authored content in a collection staff write.
+ */
+export function planSpecificationIssues(plan: Plan, spec: Specification): string[] {
+  const issues: string[] = []
+  const text = [plan.goal, ...plan.professor_view, ...plan.student_view, ...plan.requirements].join(' . ')
+  const planStems = stems(text)
+  // Word-initial, so "commit" is not found inside "committee".
+  const action = new RegExp(`\\b(?:${MECHANIC_ACTION[spec.mechanic].source})`, 'i')
+  if (!action.test([plan.goal, ...plan.student_view, ...plan.requirements].join(' . '))) {
+    issues.push(`The plan drops the product's learning mechanic (${spec.mechanic}). The student view and requirements must have the student do it.`)
+  }
+  acceptanceCriteria(spec).forEach((criterion, i) => {
+    const want = [...stems(criterion)]
+    const have = want.filter((w) => planStems.has(w)).length
+    // A criterion that names the mechanic's action (predict, commit, solve for) needs that action
+    // in the plan, not just its nouns: "see the valuation" doesn't cover "commit a prediction".
+    const actionStems = [...stems((criterion.match(new RegExp(`\\b(?:${MECHANIC_ACTION[spec.mechanic].source})\\w*`, 'gi')) ?? []).join(' '))]
+    const missesAction = actionStems.length > 0 && !actionStems.some((w) => planStems.has(w))
+    if (want.length && (missesAction || (have < Math.max(2, Math.ceil(want.length * COVER_SHARE)) && have < want.length))) {
+      issues.push(`Acceptance criterion ${i + 1} of the product design is not in the plan. Add it to requirements.`)
+    }
+  })
+  if (!plan.professor_view.length || !plan.requirements.some((r) => /^Professor (can|sees)\b/i.test(r))) issues.push("The plan has no professor workflow. Add the specification's professor workflow to professor_view and requirements.")
+  if (!plan.student_view.length || !plan.requirements.some((r) => /^Student (can|sees)\b/i.test(r))) issues.push("The plan has no student workflow. Add the specification's student workflow to student_view and requirements.")
+  if (spec.contentStrategy.professorAuthored.length && !plan.data.some((d) => /\b(shared|staff[- ]?only)\b/i.test(d))) {
+    issues.push('Professor-authored content must be records in a shared or staffOnly collection the professor writes, listed in data. Never put it in view code.')
+  }
+  return issues.slice(0, 5)
 }
 

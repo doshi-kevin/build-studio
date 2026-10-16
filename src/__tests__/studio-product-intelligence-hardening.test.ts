@@ -5,7 +5,7 @@
  * A scripted model; no network.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { fenceProductIntelligence, productIntelligence } from '@/lib/studio/builder/specification'
+import { fenceProductIntelligence, productBrief, productIntelligence } from '@/lib/studio/builder/specification'
 import { ModelUnavailable, type AgentModel, type ModelStepResult } from '@/lib/studio/builder/model'
 import { PRODUCT_INTELLIGENCE_MAX_BYTES, readProductIntelligence } from '@/lib/studio/builder/work'
 import { utf8Bytes } from '@/lib/studio/builder/paths'
@@ -58,9 +58,10 @@ describe('Product Intelligence hardening', () => {
     const badIdeation = callInput(CONCEPTS.map((c) => ({ ...c, mechanic: 'diagnosis' as const })))
     const model = scripted([badIdeation, callInput(), new ModelUnavailable()])
     await expect(productIntelligence(model, REQ, null, { onCall })).rejects.toBeInstanceOf(ModelUnavailable)
-    // The first ideation, its repair, and nothing for the specification call that never returned.
+    // The first ideation, its repair, and the specification call that failed at the worst case:
+    // the provider may still bill an attempt.
     expect(model.step).toHaveBeenCalledTimes(3)
-    expect(billed).toEqual([3000, 3000])
+    expect(billed).toEqual([3000, 3000, 16_000])
   })
 
   it('asks the gate before every paid call: a refusal after ideation stops the specification, keeping the ideation', async () => {
@@ -87,6 +88,48 @@ describe('Product Intelligence hardening', () => {
   })
 })
 
+describe('the Product Intelligence budget', () => {
+  it('stops before a call whose worst case would cross its own cap, keeping what it paid for', async () => {
+    const { PI_WORST_CALL_USD } = await import('@/lib/studio/builder/specification')
+    const { STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD } = await import('@/lib/studio/limits')
+    // One ideation call that spends enough that a worst-case specification call no longer fits.
+    const spend = STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD - PI_WORST_CALL_USD + 0.01
+    let i = 0
+    const replies = [callInput(), specInput()]
+    const step = vi.fn(async (input: { tools: { name: string }[] }): Promise<ModelStepResult> => ({
+      toolCalls: [{ name: input.tools[0].name, input: replies[i++], invalid: false }], textLength: 0, finishReason: 'tool-calls', timedOut: false, latencyMs: 1,
+      modelId: 'claude-opus-5-5', usage: { input: 0, cachedInput: 0, output: Math.round((spend * 1e6) / 20), reasoning: 0 },
+    }))
+    const mayCall = vi.fn(async () => true)
+    const out = await productIntelligence({ id: 'claude-opus-5-5', step }, REQ, null, { mayCall })
+    expect(step).toHaveBeenCalledTimes(1)
+    expect(mayCall).toHaveBeenCalledTimes(1)
+    expect(out.artifact?.ideation?.candidates).toHaveLength(3)
+    expect(out.artifact?.specification).toBeNull()
+    expect(out.specificationRejections).toEqual([['gate_refused']])
+  })
+})
+
+describe('what an unanswered Product Intelligence call costs', () => {
+  it('a timed-out call is billed at the worst case, so neither the PI cap nor the daily cap misses it', async () => {
+    const { PI_MAX_OUTPUT_TOKENS } = await import('@/lib/studio/builder/ideation')
+    const timedOut = vi.fn(async (): Promise<ModelStepResult> => ({ toolCalls: [], textLength: 0, finishReason: 'timeout', timedOut: true, latencyMs: 1, modelId: 'claude-opus-5-5', usage: { input: 0, cachedInput: 0, output: 0, reasoning: 0 } }))
+    const billed: { usage: { input: number; output: number }; estimated?: true }[] = []
+    await productIntelligence({ id: 'claude-opus-5-5', step: timedOut }, REQ, null, { onCall: async (c) => void billed.push(c) })
+    expect(billed.length).toBeGreaterThan(0)
+    // Charged at the worst case, and marked as an estimate so the usage ledger doesn't record it as reported.
+    for (const c of billed) expect(c).toMatchObject({ usage: { input: 16_000, output: PI_MAX_OUTPUT_TOKENS }, estimated: true })
+  })
+
+  it('a run that already spent its PI budget in a cut-off slice is not given a fresh one', async () => {
+    const { STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD } = await import('@/lib/studio/limits')
+    const model = scripted([callInput(), specInput()])
+    const out = await productIntelligence(model, REQ, null, { spentUsd: STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD })
+    expect(model.step).not.toHaveBeenCalled()
+    expect(out.artifact).toBeNull()
+  })
+})
+
 describe('fenceProductIntelligence', () => {
   const NONCE = 'k3j9x2'
   const hostile = [
@@ -107,8 +150,8 @@ describe('fenceProductIntelligence', () => {
     // No angle bracket survives in the body: no tag of any kind, closing or tool-shaped.
     expect(body).not.toMatch(/[<>]/)
     expect(fenced.match(new RegExp(`</data_${NONCE}>`, 'g'))).toHaveLength(1)
-    // Still the same artifact, losslessly.
-    expect(JSON.parse(body)).toEqual(pi)
+    // Still the same brief, losslessly.
+    expect(JSON.parse(body)).toEqual(productBrief(pi))
   })
 
   it('refuses a nonce that could itself break the tag', () => {

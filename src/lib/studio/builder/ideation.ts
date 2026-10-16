@@ -7,6 +7,7 @@
  * Pure apart from the model call, which goes through AgentModel like every builder turn.
  */
 import { z } from 'zod'
+import { ANTHROPIC_FAST_MODEL_SUFFIX, STUDIO_PRODUCT_INTELLIGENCE_FAST } from '@/lib/ai/config'
 import { computeCostUsd } from '@/lib/ai/cost'
 import { logger } from '@/lib/logger'
 import { KIT_IMPORTS } from '../kit/plugin-kit-types'
@@ -190,7 +191,8 @@ export function validateConcepts(concepts: readonly Concept[], selectedIndex: nu
 // ── The call ──
 
 const CALL_TIMEOUT_MS = 120_000
-const MAX_OUTPUT_TOKENS = 24_000
+/** A Product Intelligence reply cap, thinking included. */
+export const PI_MAX_OUTPUT_TOKENS = 24_000
 
 const conceptsTool = { name: 'submit_concepts', description: 'Submit the restated problem, three concepts that teach in different ways, and the strongest one.', inputSchema: conceptsCallSchema }
 
@@ -204,6 +206,9 @@ export interface IdeationRequest {
 export interface IdeationCall {
   modelId: string
   usage: ModelUsage
+  /** The usage is the worst case charged for a call that timed out or failed, not what the provider
+   * reported: budgets count it, the usage ledger records nothing for it. */
+  estimated?: true
 }
 
 /** What the caller does around each paid call: the spend gate before it, the ledger after it. */
@@ -212,7 +217,13 @@ export interface CallHooks {
   mayCall?(): Promise<boolean>
   /** Bills one finished call as soon as it returns, so a later failure can't lose it. */
   onCall?(call: IdeationCall): Promise<void>
+  /** What this run already spent on Product Intelligence, from a slice that ended before seeding. */
+  spentUsd?: number
 }
+
+/** What a call that timed out or failed is billed at: its usage is unknown and the provider may
+ * still charge for it, so it is a full prompt and a full reply, as the builder's turns are. */
+const WORST_USAGE = (): ModelUsage => ({ input: 16_000, cachedInput: 0, output: PI_MAX_OUTPUT_TOKENS, reasoning: 0 })
 
 /** The rejection recorded when the gate stops a stage before a call. */
 export const GATE_REFUSED = 'gate_refused'
@@ -247,15 +258,25 @@ function promptFor(req: IdeationRequest, rejected: { issues: Issue[]; previous: 
  * `blocked` when the gate refused it, in which case nothing was sent. */
 export async function askTool(model: AgentModel, system: string, prompt: string, tool: ModelToolDecl, calls: IdeationCall[], hooks: CallHooks) {
   if (hooks.mayCall && !(await hooks.mayCall())) return { blocked: true as const, call: undefined, finishReason: 'gate' }
-  const res = await model.step({
-    system,
-    prompt,
-    tools: [tool],
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
-    abortSignal: new AbortController().signal,
-    timeoutMs: CALL_TIMEOUT_MS,
-  })
-  const made = { modelId: res.modelId, usage: res.usage }
+  let res: Awaited<ReturnType<AgentModel['step']>>
+  try {
+    res = await model.step({
+      system,
+      prompt,
+      tools: [tool],
+      maxOutputTokens: PI_MAX_OUTPUT_TOKENS,
+      abortSignal: new AbortController().signal,
+      timeoutMs: CALL_TIMEOUT_MS,
+      ...(STUDIO_PRODUCT_INTELLIGENCE_FAST ? { speed: 'fast' as const } : {}),
+    })
+  } catch (error) {
+    // Unavailable after its retries: billed at the worst case, then the stage fails as before.
+    const lost: IdeationCall = { modelId: STUDIO_PRODUCT_INTELLIGENCE_FAST ? `${model.id}${ANTHROPIC_FAST_MODEL_SUFFIX}` : model.id, usage: WORST_USAGE(), estimated: true }
+    calls.push(lost)
+    await hooks.onCall?.(lost)
+    throw error
+  }
+  const made: IdeationCall = res.timedOut ? { modelId: res.modelId, usage: WORST_USAGE(), estimated: true } : { modelId: res.modelId, usage: res.usage }
   calls.push(made)
   await hooks.onCall?.(made)
   const call = res.toolCalls.find((c) => c.name === tool.name && !c.invalid)

@@ -89,3 +89,31 @@ export const specInput = () => ({
   edgeStates: ['No cases written yet: the student sees what the professor must add.'],
   limitations: ['No live prices: the professor enters them.'],
 })
+
+/** A plan that keeps the Reverse DCF specification (helpers/ideation-fixtures.ts specInput). */
+export const keptPlan = () => ({
+  goal: 'Students solve for the input a price implies and judge whether it is plausible.',
+  files_to_change: ['views/student.tsx', 'views/professor.tsx'],
+  manifest_changes: ['Add cases and judgements collections'],
+  capabilities_needed: [],
+  checks: ['Both views show loading, empty and error states'],
+  professor_view: ['Write company cases with a benchmark range', 'See which implied assumptions the class accepts'],
+  student_view: ['Solve for the hidden input with the in-view DCF', 'Judge plausibility, then see the benchmark'],
+  data: ['cases (shared): company cases and benchmark ranges the professor writes', 'judgements (perStudent): each student’s solved value and verdict'],
+  requirements: [
+    'Student can solve for the hidden input until the DCF value matches the price',
+    'Student can judge whether the implied input is plausible before seeing the benchmark',
+    'Professor sees which implied assumptions the class wrongly accepts, such as terminal growth above nominal GDP',
+    'Professor can write company cases with a benchmark range',
+  ],
+  enhancements: [],
+})
+
+/** The same product collapsed into data entry: enter values, fill a form, see a table. */
+export const crudPlan = () => ({
+  ...keptPlan(),
+  goal: 'A form for DCF values.',
+  professor_view: ['Enter company values', 'View a table of submissions'],
+  student_view: ['Fill in the form', 'Submit'],
+  requirements: ['Professor can enter company values', 'Student can fill in the form and submit it', 'Professor sees a table of every submission'],
+})

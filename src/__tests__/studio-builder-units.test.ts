@@ -16,7 +16,7 @@ import { mapUsage } from '@/lib/studio/builder/model'
 import { budgetStop, WORST_CASE_CALL_USD } from '@/lib/studio/builder/harness'
 import { checkStep, orderCalls, planGate, TOOL_NAMES, TOOLS, toolDeclarations, type ToolState } from '@/lib/studio/builder/tools'
 import { initialWork } from '@/lib/studio/builder/work'
-import { STUDIO_BUILDER_CONTEXT_MAX_TOKENS, STUDIO_BUILDER_FILE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
+import { STUDIO_BUILDER_CONTEXT_MAX_TOKENS, STUDIO_BUILDER_FILE_MAX_BYTES, STUDIO_BUILDER_RUN_MAX_ACTIVE_MS, STUDIO_BUILDER_RUN_MAX_COST_USD } from '@/lib/studio/limits'
 import { FLASHCARDS_MANIFEST, PROFESSOR_VIEW, STUDENT_VIEW } from './helpers/builder-fixtures'
 import { newRun } from './helpers/builder-memory-store'
 
@@ -372,8 +372,16 @@ describe('usage and budgets', () => {
     expect(budgetStop({ ...c, costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD - 0.01 })).toBeNull()
     expect(budgetStop({ ...c, costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD + 0.01 })?.code).toBe('limit_cost')
     expect(budgetStop({ ...c, modelTurns: 24 })?.code).toBe('limit_turns')
-    expect(budgetStop({ ...c, activeMs: 20 * 60_000 })?.code).toBe('limit_active_time')
+    expect(budgetStop({ ...c, activeMs: STUDIO_BUILDER_RUN_MAX_ACTIVE_MS })?.code).toBe('limit_active_time')
     expect(budgetStop({ ...c, consecutiveErrors: 3 })?.code).toBe('repeated_tool_errors')
+  })
+  it('leaves Product Intelligence spend out of the builder budget, never more than it spent', () => {
+    const c = newRun().counters
+    const pi = { product_intelligence_cost_usd: 1 }
+    expect(budgetStop({ ...c, costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD + 0.5 }, pi)).toBeNull()
+    expect(budgetStop({ ...c, costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD + 1.01 }, pi)?.code).toBe('limit_cost')
+    // A run from before 12B.4 records none: everything counts.
+    expect(budgetStop({ ...c, costUsd: STUDIO_BUILDER_RUN_MAX_COST_USD - WORST_CASE_CALL_USD + 0.5 }, {})?.code).toBe('limit_cost')
   })
 })
 

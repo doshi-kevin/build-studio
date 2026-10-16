@@ -21,7 +21,7 @@
 import 'server-only'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_PRODUCT_INTELLIGENCE_EFFORT, STUDIO_PRODUCT_INTELLIGENCE_MODEL } from '@/lib/ai/config'
+import { ANTHROPIC_FAST_MODEL_SUFFIX, STUDIO_BUILDER_ANTHROPIC_FAST, STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS, STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS, STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT, STUDIO_PRODUCT_INTELLIGENCE_EFFORT, STUDIO_PRODUCT_INTELLIGENCE_MODEL } from '@/lib/ai/config'
 import { computeCostUsd } from '@/lib/ai/cost'
 import { checkAiFeature } from '@/lib/ai/kill-switch'
 import { recordAiUsage } from '@/lib/ai/usage'
@@ -115,11 +115,31 @@ import {
 export const BUILDER_JOB_TYPE = 'studio_builder_slice'
 export const BUILDER_LEDGER_FEATURE = 'studio_builder'
 
-/** The worst a single next call can cost: a full prompt and a full reply at the live model's rates. */
-export const WORST_CASE_CALL_USD = computeCostUsd(STUDIO_BUILDER_ANTHROPIC_MODEL, {
+/** The worst a single next call can cost: a full prompt and a full reply at the live model's rates,
+ * in fast mode at its own reply cap when that is on. */
+export const WORST_CASE_CALL_USD = computeCostUsd(`${STUDIO_BUILDER_ANTHROPIC_MODEL}${STUDIO_BUILDER_ANTHROPIC_FAST ? ANTHROPIC_FAST_MODEL_SUFFIX : ''}`, {
   inputTokens: STUDIO_BUILDER_CONTEXT_MAX_TOKENS,
-  outputTokens: STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
+  outputTokens: STUDIO_BUILDER_ANTHROPIC_FAST ? STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS : STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS,
 })
+
+/** The worst a standard-speed call can cost: the design review, repairs and the turn after a passing
+ * check. */
+export const WORST_CASE_REVIEW_USD = computeCostUsd(STUDIO_BUILDER_ANTHROPIC_MODEL, {
+  inputTokens: STUDIO_BUILDER_CONTEXT_MAX_TOKENS,
+  outputTokens: STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS,
+})
+
+/** Builder phases whose turns write: they run in fast mode when it is on. Repairs (short, low effort)
+ * and the turn after a passing check (usually finish, a short reply on a long prompt) don't. */
+const FAST_PHASES = new Set(['understanding', 'planning', 'editing', 'improving'])
+
+/** The run's spend that counts against the builder's budget: everything but Product Intelligence. */
+export function builderSpend(c: { costUsd: number }, work: Pick<Work, 'product_intelligence_cost_usd'> | null): number {
+  return Math.max(0, c.costUsd - (work?.product_intelligence_cost_usd ?? 0))
+}
+
+/** The tools whose success changes what the checks see. */
+const CHANGES_DRAFT = new Set(['write_file', 'edit_file', 'write_sample_data', 'propose_manifest_change'])
 
 const CAPS = {
   tool_calls: STUDIO_BUILDER_MAX_TOOL_CALLS,
@@ -196,10 +216,13 @@ export interface HarnessDeps {
 /** One argument issue for the model: the path, the code and, for the codes whose message is the
  * schema's own words (limits, our refinements), the message. Never the message of a code that can
  * quote a model-chosen key. */
-function issueLine(i: z.core.$ZodIssue): string {
+function issueLine(i: z.core.$ZodIssue, input?: unknown): string {
   const at = i.path.map((p) => String(p).replace(/[^\w.-]/g, '').slice(0, 40)).join('.') || 'arguments'
   const own = i.code === 'too_big' || i.code === 'too_small' || i.code === 'custom' || i.code === 'invalid_type' || i.code === 'invalid_value'
-  return own ? `${at}: ${i.message.replace(/\s+/g, ' ').slice(0, 160)}` : `${at}: ${i.code}`
+  // A model can't count characters: an over-long string comes back with its length, a number only.
+  const value = i.code === 'too_big' ? i.path.reduce<unknown>((v, k) => (v as Record<PropertyKey, unknown> | null | undefined)?.[k], input) : undefined
+  const length = typeof value === 'string' ? ` (this one has ${value.length})` : ''
+  return own ? `${at}: ${i.message.replace(/\s+/g, ' ').slice(0, 160)}${length}` : `${at}: ${i.code}`
 }
 
 const readJson = (text: string): unknown => {
@@ -236,6 +259,7 @@ const paramsSchema = z.strictObject({ runId: z.uuid(), sliceNo: z.number().int()
 /** Budgets the harness checks before every model call, in order. */
 export function budgetStop(
   c: db.BuilderRunRow['counters'],
+  work: Pick<Work, 'product_intelligence_cost_usd'> | null = null,
 ): { status: TerminalStatus; code: RunErrorCode } | null {
   if (c.consecutiveErrors >= STUDIO_BUILDER_MAX_CONSECUTIVE_ERRORS) return { status: 'failed', code: 'repeated_tool_errors' }
   if (c.modelTurns >= STUDIO_BUILDER_MAX_MODEL_TURNS) return { status: 'budget_exhausted', code: 'limit_turns' }
@@ -243,7 +267,7 @@ export function budgetStop(
   if (c.writes >= STUDIO_BUILDER_MAX_WRITES) return { status: 'budget_exhausted', code: 'limit_writes' }
   if (c.bytesWritten >= STUDIO_BUILDER_MAX_BYTES_WRITTEN) return { status: 'budget_exhausted', code: 'limit_bytes' }
   if (c.activeMs >= STUDIO_BUILDER_RUN_MAX_ACTIVE_MS) return { status: 'budget_exhausted', code: 'limit_active_time' }
-  if (c.costUsd + WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD) return { status: 'budget_exhausted', code: 'limit_cost' }
+  if (builderSpend(c, work) + WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD) return { status: 'budget_exhausted', code: 'limit_cost' }
   return null
 }
 
@@ -407,6 +431,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   let memoryAliases: Record<string, { id: string; topic: ProjectMemory['topic']; slot: ProjectMemory['slot'] }> = {}
   let memoryApplied = 0
   let memoryProposals = 0
+  // submit_plan refusals for leaving the product specification, counted from the run's steps.
+  let planSpecRefusals = 0
   // The latest re-read of this run's course searches, for the prompt and the ending card.
   let lastMaterial: RenderedSearch[] = []
   /** The build's Product Intelligence, never fatal: no provider, a throw or an invalid value is none. */
@@ -491,7 +517,14 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     // The first slice persists the working copy, seeded from the draft it started on, with
     // the build's Product Intelligence when there is one. Later slices re-read it from the row.
     if (!run.work) {
-      const seed: Work = { ...initialWork(data.base), product_intelligence: await productIntelligenceFor(run, data) }
+      const product_intelligence = await productIntelligenceFor(run, data)
+      // Its spend is in the run's cost counter, so it still counts toward the school's daily cap;
+      // recorded here, it stays out of the builder's own budget. Nothing else spends before the seed,
+      // so it is the whole counter, a slice that died before seeding included. Unreadable: it
+      // counts against both.
+      const after = deps.productIntelligence ? await deps.store.loadRun(runId).catch(() => null) : null
+      const product_intelligence_cost_usd = after ? after.counters.costUsd : 0
+      const seed: Work = { ...initialWork(data.base), product_intelligence, product_intelligence_cost_usd }
       const seeded = await deps.store.apply({
         runId, token, step: step('system', 'sys:work', 'done', 'run.slice', { args: { event: 'work_initialised' } }),
         expectedWorkRev: -1, work: seed as unknown as Record<string, unknown>, plan: null, phase: null,
@@ -546,7 +579,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       const refusal = await deps.gate(run)
       if (refusal === 'limit_daily_cost') return await end(run, work, plan, 'budget_exhausted', 'limit_daily_cost')
       if (refusal) return await end(run, work, plan, 'blocked', refusal)
-      const budget = budgetStop(run.counters)
+      const budget = budgetStop(run.counters, work)
       if (budget) return await end(run, work, plan, budget.status, budget.code)
 
       const steps = (await deps.store.loadSteps(runId)) ?? []
@@ -610,8 +643,12 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       memoryAliases = Object.fromEntries(ctx.memory.map((m) => [m.alias, { id: m.id, topic: m.topic, slot: m.slot }]))
       memoryApplied = ctx.memory.length
       memoryProposals = steps.filter((s) => s.tool === 'propose_memory' && s.status === 'done').length
+      planSpecRefusals = Math.max(planSpecRefusals, steps.filter((s) => s.tool === 'submit_plan' && s.status === 'refused' && s.resultSummary.reason === 'plan_off_spec').length)
 
       // ── One model call ──
+      const fastTurn = STUDIO_BUILDER_ANTHROPIC_FAST && FAST_PHASES.has(run.phase ?? 'understanding')
+      // What a cut-off call is charged: the worst case of this call, fast or standard.
+      const worstThisCall = fastTurn ? WORST_CASE_CALL_USD : WORST_CASE_REVIEW_USD
       const callStart = deps.now()
       let reply
       try {
@@ -619,20 +656,26 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
           system: ctx.system,
           prompt: ctx.prompt,
           tools: toolDeclarations(),
-          maxOutputTokens: STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
+          // A model with its own reply cap (Anthropic) gets the fast-mode cap on a fast turn; the Gemini
+          // builder of the frozen evals keeps STUDIO_BUILDER_MAX_OUTPUT_TOKENS and ignores the speed.
+          maxOutputTokens: deps.model.maxOutputTokens ? (fastTurn ? STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS : deps.model.maxOutputTokens) : STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
           abortSignal: controller.signal,
           timeoutMs: STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS,
+          // A repair answers findings the checks already located: less thinking. Writing turns keep the
+          // configured effort and, when it is on, run in fast mode.
+          ...(run.phase === 'repairing' ? { effort: STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT } : {}),
+          ...(fastTurn ? { speed: 'fast' as const } : {}),
         })
       } catch (error) {
         if (error instanceof BuilderAbort) {
           // The call was cut off, so its usage is unknown and the provider may still bill it.
-          await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+          await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: worstThisCall })
           if (flags.cancel) return await end(run, work, plan, 'cancelled', null)
           return 'fence lost'
         }
         if (error instanceof ModelUnavailable) {
           // A provider that failed after its retries may still bill an attempt.
-          await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+          await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: worstThisCall })
           logger.error('studio.builder.model', { name: 'ModelUnavailable', message: 'provider failed after retries' }, { runId })
           return await end(run, work, plan, 'failed', 'model_unavailable')
         }
@@ -642,7 +685,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       // A timed-out call reports no usage but may still be billed: the budgets charge it at
       // the worst case, while the usage ledger records what the provider reported.
       const costUsd = reply.timedOut
-        ? WORST_CASE_CALL_USD
+        ? worstThisCall
         : computeCostUsd(reply.modelId, { inputTokens: reply.usage.input, cachedInputTokens: reply.usage.cachedInput, outputTokens: reply.usage.output, reasoningTokens: reply.usage.reasoning })
       await deps.recordUsage(run, reply.usage, reply.modelId, turnNo)
       await deps.store.addCost(runId, { input: reply.usage.input, cached: reply.usage.cachedInput, output: reply.usage.output, costUsd })
@@ -694,6 +737,24 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     const counters = { ...run.counters }
     const calls = rawCalls.slice(0, STUDIO_BUILDER_MAX_TOOL_CALLS_PER_TURN).map((c, index) => ({ ...c, index }))
     const ordered = orderCalls(calls)
+    // A turn that changed the draft and didn't check it gets run_checks at its end, as if it had
+    // asked: otherwise the next model turn exists only to ask for it. Same tool, same caps and
+    // budgets. Only after a change that applied, so refusals in a row still end the run.
+    const asksChecks = calls.some((c) => c.name === 'run_checks' || c.name === 'finish')
+    let changedDraft = false
+    let autoChecked = false
+    // Checked as the loop's condition, so every path out of a call (refusals included) reaches it.
+    const more = (k: number) => {
+      if (k < ordered.length) return true
+      // Only a complete draft: checking one with a view or the manifest missing can only fail, and
+      // a failed check spends one of the run's repair rounds.
+      // Not after refusals that ended the turn either: a check that passes would reset their streak.
+      if (counters.consecutiveErrors > 0) return false
+      if (!changedDraft || asksChecks || autoChecked || !work.manifest || PLUGIN_PATHS.some((p) => work.files[p] === undefined)) return false
+      autoChecked = true
+      ordered.push({ name: 'run_checks', input: {}, invalid: false, index: calls.length })
+      return true
+    }
 
     const persist = async (args: Omit<db.ApplyArgs, 'runId' | 'token' | 'caps' | 'activeMs'>): Promise<'ok' | 'stop'> => {
       const r = await deps.store.apply({ ...args, runId, token, caps: CAPS, activeMs: takeActive() })
@@ -720,7 +781,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       counters.toolCalls += 1
     }
 
-    for (let k = 0; k < ordered.length; k++) {
+    for (let k = 0; more(k); k++) {
       const call = ordered[k]
       const id = `${seq}.${call.index}`
       const later = ordered.slice(k + 1).map((c) => toolStep(`${seq}.${c.index}`, isToolName(c.name) ? c.name : null, 'interrupted', 'step.interrupted', {}, {}))
@@ -772,13 +833,26 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       }
 
       if (outcome.kind === 'refused') {
+        // An off-spec plan is no error streak: PLAN_SPEC_MAX_REFUSALS bounds it, and counting it
+        // would let two of them and any one other refusal end the build before the plan is let through.
+        const offSpec = outcome.code === 'plan_off_spec'
         const r = await persist({
           step: toolStep(id, tool, 'refused', 'step.refused', outcome.args, { reason: outcome.code, hint: REFUSAL_HINTS[outcome.code], ...(outcome.issues ? { issues: outcome.issues } : {}) }, ms),
-          expectedWorkRev: work.work_rev, work: null, plan: null, phase: null, delta: { tool_calls: 1, error: true },
+          expectedWorkRev: work.work_rev, work: null, plan: null, phase: null, delta: offSpec ? { tool_calls: 1 } : { tool_calls: 1, error: true },
         })
         if (r === 'stop') return 'stop'
         counters.toolCalls += 1
-        counters.consecutiveErrors += 1
+        if (!offSpec) counters.consecutiveErrors += 1
+        // An off-spec plan ends the turn: the calls after it were written for that plan, and each
+        // would only be refused for want of one, ending the build before the model sees why.
+        if (offSpec) {
+          planSpecRefusals += 1
+          for (const skipped of later) {
+            const s = await persist({ step: skipped, expectedWorkRev: work.work_rev, work: null, plan: null, phase: null, delta: {} })
+            if (s === 'stop') return 'stop'
+          }
+          return 'continue'
+        }
         continue
       }
       if (outcome.kind === 'error') {
@@ -851,6 +925,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         await end(run, work, plan, 'blocked', outcome.exhausted)
         return 'stop'
       }
+      if (nextWork && tool && CHANGES_DRAFT.has(tool)) changedDraft = true
     }
     return 'continue'
   }
@@ -866,6 +941,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       memory: { aliases: memoryAliases, professorTexts: professorTextsOf(run), proposals: memoryProposals },
       runChecks: (w) => deps.runChecks(run, data!, w),
       searchMaterial: (query, focus) => deps.searchMaterial(run, query, focus),
+      planSpecRefusals,
     }
   }
 
@@ -880,7 +956,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     const parsed = spec.schema.safeParse(input)
     if (!parsed.success) {
       const fields = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? '(arguments)')))].slice(0, 5)
-      const issues = parsed.error.issues.slice(0, 6).map(issueLine)
+      const issues = parsed.error.issues.slice(0, 6).map((i) => issueLine(i, input))
       return { kind: 'refused', code: 'invalid_args', args: { fields: fields.map((f) => f.replace(/[^\w.-]/g, '').slice(0, 40)) }, issues }
     }
     const state = toolState(work, plan, counters, run)
@@ -1102,7 +1178,8 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     const latest = (await deps.store.loadRun(runId)) ?? run
     const c = latest.counters
     if (!exhausted) {
-      if (c.costUsd + 2 * WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD || c.modelTurns + 2 > STUDIO_BUILDER_MAX_MODEL_TURNS) return skip('budget')
+      // Room for the review itself (standard speed) and one improving turn after it.
+      if (builderSpend(c, work) + WORST_CASE_REVIEW_USD + WORST_CASE_CALL_USD > STUDIO_BUILDER_RUN_MAX_COST_USD || c.modelTurns + 2 > STUDIO_BUILDER_MAX_MODEL_TURNS) return skip('budget')
       if ((await deps.gate(latest)) !== null) return skip('gate')
     }
     if (await cancelled()) return 'stop'
@@ -1151,18 +1228,18 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         prompt,
         images,
         tools: [REVIEW_TOOL],
-        maxOutputTokens: STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
+        maxOutputTokens: deps.model.maxOutputTokens ?? STUDIO_BUILDER_MAX_OUTPUT_TOKENS,
         abortSignal: controller.signal,
         timeoutMs: STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS,
       })
     } catch (error) {
       if (error instanceof BuilderAbort) {
-        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_REVIEW_USD })
         if (flags.cancel) await end(run, work, plan, 'cancelled', null)
         return 'stop'
       }
       if (error instanceof ModelUnavailable) {
-        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_CALL_USD })
+        await deps.store.addCost(runId, { input: 0, cached: 0, output: 0, costUsd: WORST_CASE_REVIEW_USD })
         logger.warn('studio.builder.review: model unavailable, committing unreviewed', { runId, round })
         return skip('model_unavailable')
       }
@@ -1170,7 +1247,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     }
     const turnNo = c.modelTurns + 1
     const costUsd = reply.timedOut
-      ? WORST_CASE_CALL_USD
+      ? WORST_CASE_REVIEW_USD
       : computeCostUsd(reply.modelId, { inputTokens: reply.usage.input, cachedInputTokens: reply.usage.cachedInput, outputTokens: reply.usage.output, reasoningTokens: reply.usage.reasoning })
     await deps.recordUsage(run, reply.usage, reply.modelId, turnNo)
     await deps.store.addCost(runId, { input: reply.usage.input, cached: reply.usage.cachedInput, output: reply.usage.output, costUsd })
@@ -1319,9 +1396,16 @@ export function realHarnessDeps(
     loadMemories,
     // Its own model and effort (config.ts); its spend joins the run and the ledger.
     productIntelligence: async (run, data, mayCall) => {
+      // Before the seed only Product Intelligence spends, so the run's counter is what an earlier,
+      // cut-off attempt already spent on it; the PI cap covers the whole run.
+      // A follow-up changes the tool it already has: no new product, and nothing to pay for.
+      if (run.baseHash !== null) return null
       // Each call is billed as it returns, so a later failure or throw can't lose it.
-      const onCall = async ({ modelId, usage }: { modelId: string; usage: ModelUsage }) => {
+      const onCall = async ({ modelId, usage, estimated }: { modelId: string; usage: ModelUsage; estimated?: true }) => {
         const costUsd = computeCostUsd(modelId, { inputTokens: usage.input, cachedInputTokens: usage.cachedInput, outputTokens: usage.output })
+        // A cut-off call's worst case counts against the budgets; the ledger records only what the
+        // provider reported, as builder turns do.
+        if (estimated) return void (await builderRunStore.addCost(run.id, { input: 0, cached: 0, output: 0, costUsd }))
         await builderRunStore.addCost(run.id, { input: usage.input, cached: usage.cachedInput, output: usage.output, costUsd })
         await recordAiUsage({
           feature: BUILDER_LEDGER_FEATURE, model: modelId, institutionId: run.institutionId, sectionId: run.sectionId, userId: run.ownerId,
@@ -1329,7 +1413,7 @@ export function realHarnessDeps(
           metadata: { runId: run.id, turn: 0, step: 'product_intelligence' },
         })
       }
-      const { artifact } = await productIntelligence(intelligenceModel, { request: run.request ?? '', course: data.course, skills: data.skills }, null, { mayCall, onCall })
+      const { artifact } = await productIntelligence(intelligenceModel, { request: run.request ?? '', course: data.course, skills: data.skills }, null, { mayCall, onCall, spentUsd: run.counters.costUsd })
       return artifact
     },
     gate,

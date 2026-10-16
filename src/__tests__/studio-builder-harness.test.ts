@@ -7,7 +7,7 @@
  * harness decides what runs, when the run pauses, how it ends and what it saves.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { runBuilderSlice, WORST_CASE_CALL_USD, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
+import { runBuilderSlice, WORST_CASE_CALL_USD, WORST_CASE_REVIEW_USD, type HarnessDeps, type SliceData } from '@/lib/studio/builder/harness'
 import { computeCostUsd } from '@/lib/ai/cost'
 import { runDraftChecks } from '@/lib/studio/builder/checks'
 import { parseManifest, type StudioManifestV2 } from '@/lib/studio/manifest'
@@ -619,7 +619,10 @@ describe('a model call cut off by Stop', () => {
     h.mem.professor.stop()
     await running
     expect(h.mem.state.run.status).toBe('cancelled')
-    expect(h.mem.state.run.counters.costUsd).toBeCloseTo(beforeStop + WORST_CASE_CALL_USD, 9)
+    // The write was checked by itself and passed, so the cut-off turn ran at standard speed: it is
+    // charged that call's worst case, not fast mode's.
+    expect(h.mem.state.run.phase).toBe('checking')
+    expect(h.mem.state.run.counters.costUsd).toBeCloseTo(beforeStop + WORST_CASE_REVIEW_USD, 9)
   })
 })
 

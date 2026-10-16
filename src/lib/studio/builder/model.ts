@@ -18,7 +18,7 @@ import { generateText, stepCountIs, tool, type ToolSet } from 'ai'
 import { google } from '@ai-sdk/google'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
-import { STUDIO_BUILDER_ANTHROPIC_EFFORT, STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
+import { ANTHROPIC_FAST_MODEL_SUFFIX, STUDIO_BUILDER_ANTHROPIC_EFFORT, STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS, STUDIO_BUILDER_ANTHROPIC_MODEL, STUDIO_BUILDER_MODEL } from '@/lib/ai/config'
 import { logger } from '@/lib/logger'
 
 export interface ModelToolDecl {
@@ -56,6 +56,10 @@ export interface ModelStepInput {
   maxOutputTokens: number
   abortSignal: AbortSignal
   timeoutMs: number
+  /** How hard to think, for a model that has a setting for it; others ignore it. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** Fast mode, for a model that has it; others ignore it. Same model and effort, served faster. */
+  speed?: 'fast'
 }
 
 export interface ModelStepResult {
@@ -71,6 +75,8 @@ export interface ModelStepResult {
 
 export interface AgentModel {
   id: string
+  /** The reply cap this model's builder turns use, when it differs from STUDIO_BUILDER_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number
   step(input: ModelStepInput): Promise<ModelStepResult>
 }
 
@@ -196,9 +202,19 @@ export function createGeminiModel(modelId = STUDIO_BUILDER_MODEL): AgentModel {
 /** What the adapter needs of the SDK client; tests pass a stand-in. */
 export interface AnthropicClientLike {
   messages: {
-    stream(params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal; timeout?: number }): { finalMessage(): Promise<Anthropic.Message> }
+    stream(params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal; timeout?: number; maxRetries?: number }): { finalMessage(): Promise<Anthropic.Message> }
+  }
+  /** Fast mode is on the beta endpoint. Without it, a fast request is sent at standard speed. */
+  beta?: {
+    messages: {
+      // The beta types differ only in names; the request is the standard one plus speed and betas.
+      stream(params: never, options?: { signal?: AbortSignal; timeout?: number; maxRetries?: number }): { finalMessage(): Promise<unknown> }
+    }
   }
 }
+
+/** The beta flag fast mode needs. */
+const FAST_MODE_BETA = 'fast-mode-2026-02-01'
 
 /** Anthropic usage to builder usage. `input_tokens` excludes cache reads and writes, so the
  * whole prompt is their sum. Thinking is billed inside `output_tokens` with no separate count,
@@ -224,6 +240,7 @@ export function createAnthropicModel(
 ): AgentModel {
   return {
     id: modelId,
+    maxOutputTokens: STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS,
     async step(input) {
       const started = Date.now()
       const apiKey = process.env.ANTHROPIC_API_KEY
@@ -234,7 +251,9 @@ export function createAnthropicModel(
         throw new ModelUnavailable()
       }
       const anthropic = client ?? new Anthropic({ apiKey, maxRetries: 2 })
-      const timeout = AbortSignal.timeout(input.timeoutMs)
+      let timeout = AbortSignal.timeout(input.timeoutMs)
+      // Whether the attempt in flight is fast mode, so a cut-off call is priced at its own row.
+      let fast = input.speed === 'fast' && Boolean(anthropic.beta)
       // The same flat strict schemas the tool registry validates against; nothing runs here.
       const tools: Anthropic.Tool[] = input.tools.map((t) => ({
         name: t.name,
@@ -250,22 +269,38 @@ export function createAnthropicModel(
         ]),
       ]
       try {
-        const res = await anthropic.messages
-          .stream(
-            {
-              model: modelId,
-              max_tokens: input.maxOutputTokens,
-              system: input.system,
-              messages: [{ role: 'user', content }],
-              tools,
-              // Forced tool choice isn't accepted on this model: the instructions require a
-              // call, and a turn without one is refused by the harness like any other.
-              tool_choice: { type: 'auto' },
-              output_config: { effort },
-            },
-            { signal: AbortSignal.any([input.abortSignal, timeout]) },
-          )
-          .finalMessage()
+        const params: Anthropic.MessageStreamParams = {
+          model: modelId,
+          max_tokens: input.maxOutputTokens,
+          system: input.system,
+          messages: [{ role: 'user', content }],
+          tools,
+          // Forced tool choice isn't accepted on this model: the instructions require a
+          // call, and a turn without one is refused by the harness like any other.
+          tool_choice: { type: 'auto' },
+          output_config: { effort: input.effort ?? effort },
+        }
+        const send = (asFast: boolean) => {
+          const signal = AbortSignal.any([input.abortSignal, timeout])
+          // A fast attempt isn't retried by the SDK: its rate limit goes straight to standard speed.
+          return asFast && anthropic.beta
+            ? (anthropic.beta.messages.stream({ ...params, speed: 'fast', betas: [FAST_MODE_BETA] } as never, { signal, maxRetries: 0 }).finalMessage() as Promise<Anthropic.Message>)
+            : anthropic.messages.stream(params, { signal }).finalMessage()
+        }
+        let res: Anthropic.Message
+        try {
+          res = await send(fast)
+        } catch (error) {
+          // Fast mode has its own rate limit: the same request again at standard speed, same model,
+          // with a timeout of its own.
+          if (!(fast && error instanceof Anthropic.RateLimitError) || input.abortSignal.aborted || timeout.aborted) throw error
+          logger.info('studio.builder.model.fast_rate_limited: sending at standard speed', { model: modelId })
+          fast = false
+          timeout = AbortSignal.timeout(input.timeoutMs)
+          // At standard speed the standard cap: a fast-mode reply cap wouldn't stream within the timeout.
+          params.max_tokens = Math.min(params.max_tokens, STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS)
+          res = await send(false)
+        }
         const calls = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
         return {
           // Arguments that aren't an object can't be a tool's input: marked invalid, refused by the harness.
@@ -275,13 +310,14 @@ export function createAnthropicModel(
           timedOut: false,
           usage: anthropicUsage(res.usage),
           latencyMs: Date.now() - started,
-          // The id asked for, not res.model: cost is priced by exact id, and a dated id would miss its rate row.
-          modelId,
+          // The id asked for, not res.model: cost is priced by exact id, and a dated id would miss its
+          // rate row. A fast-mode call is priced at its own row.
+          modelId: fast ? `${modelId}${ANTHROPIC_FAST_MODEL_SUFFIX}` : modelId,
         }
       } catch (error) {
         if (input.abortSignal.aborted) throw new BuilderAbort()
         if (timeout.aborted || isTimeout(error)) {
-          return { toolCalls: [], textLength: 0, finishReason: 'timeout', timedOut: true, usage: ZERO, latencyMs: Date.now() - started, modelId }
+          return { toolCalls: [], textLength: 0, finishReason: 'timeout', timedOut: true, usage: ZERO, latencyMs: Date.now() - started, modelId: fast ? `${modelId}${ANTHROPIC_FAST_MODEL_SUFFIX}` : modelId }
         }
         // Name and HTTP status only: a provider message can quote the request.
         logger.warn('studio.builder.model.unavailable', {

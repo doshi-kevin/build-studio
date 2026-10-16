@@ -81,6 +81,37 @@ export const STUDIO_BUILDER_MODEL = 'gemini-3.1-pro-preview'
  */
 export const STUDIO_BUILDER_ANTHROPIC_MODEL = 'claude-opus-5-5'
 export const STUDIO_BUILDER_ANTHROPIC_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium'
+/**
+ * The Anthropic builder's reply cap, thinking included. 24k cut off a turn that wrote a 23 KB
+ * view (2026-10-16). Opus streamed 139 tokens/s when measured, so the 240 s call timeout
+ * (STUDIO_BUILDER_MODEL_CALL_TIMEOUT_MS) fits about 33k; 28k leaves margin. The Gemini builder
+ * of the frozen evals keeps STUDIO_BUILDER_MAX_OUTPUT_TOKENS.
+ */
+export const STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS = 28_000
+/**
+ * The effort for repair turns: the checks have already said what is wrong and where, so the fix
+ * is mechanical, and thinking is most of a turn's output, which is most of its time (2026-10-16:
+ * 92k output tokens for 20k of code in one build). Writing the views stays at
+ * STUDIO_BUILDER_ANTHROPIC_EFFORT: at low they came out a third smaller, with invalid sample data
+ * twice, in a live finance build the same day.
+ */
+export const STUDIO_BUILDER_ANTHROPIC_REPAIR_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'low'
+
+/**
+ * Fast mode (Anthropic research preview, Claude API only): the same model at the same effort,
+ * served faster, at twice the per-token price. Output generation is most of a turn's time, and
+ * fast mode measured 384 output tokens/s against 139 (2026-10-16). On for Product Intelligence and
+ * for every builder turn but repairs, which are short and stay at standard speed. A call that hits
+ * fast mode's own rate limit is sent again at standard speed; there is no other fallback.
+ */
+export const STUDIO_BUILDER_ANTHROPIC_FAST = true
+export const STUDIO_PRODUCT_INTELLIGENCE_FAST = true
+/** A fast-mode builder turn's reply cap: 40k streams in about 104 s at the measured 384 tokens/s,
+ * well inside the 240 s call timeout. A turn that wrote one long view, its edits and the sample
+ * data ran past 28k (2026-10-16). Sent again at standard speed, a call keeps the standard cap. */
+export const STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS = 40_000
+/** Appended to the model id of a call served in fast mode, so it is priced at its own rate row. */
+export const ANTHROPIC_FAST_MODEL_SUFFIX = ':fast'
 
 /**
  * Product Intelligence (Step 12B): the model that decides what educational product a

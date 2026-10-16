@@ -13,7 +13,7 @@ vi.mock('@ai-sdk/google', () => ({ google: vi.fn(() => { throw new Error('Gemini
 const { google } = await import('@ai-sdk/google')
 const { logger } = await import('@/lib/logger')
 const { computeCostUsd } = await import('@/lib/ai/cost')
-const { STUDIO_BUILDER_ANTHROPIC_EFFORT, STUDIO_BUILDER_ANTHROPIC_MODEL } = await import('@/lib/ai/config')
+const { ANTHROPIC_FAST_MODEL_SUFFIX, STUDIO_BUILDER_ANTHROPIC_EFFORT, STUDIO_BUILDER_ANTHROPIC_FAST, STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS, STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS, STUDIO_BUILDER_ANTHROPIC_MODEL } = await import('@/lib/ai/config')
 const { STUDIO_BUILDER_CONTEXT_MAX_TOKENS, STUDIO_BUILDER_MAX_OUTPUT_TOKENS } = await import('@/lib/studio/limits')
 const { anthropicUsage, BuilderAbort, createAnthropicModel, ModelUnavailable } = await import('@/lib/studio/builder/model')
 const { runBuilderSlice, realHarnessDeps, WORST_CASE_CALL_USD } = await import('@/lib/studio/builder/harness')
@@ -69,6 +69,51 @@ describe('the Anthropic adapter', () => {
     expect(r).toMatchObject({ toolCalls: [{ name: 'run_checks', input: {}, invalid: false }], textLength: 9, finishReason: 'tool-calls', timedOut: false, modelId: 'claude-opus-5-5' })
   })
 
+  it('fast mode goes to the beta endpoint with its flag, is priced at its own rate, and a rate limit falls back to standard speed, same model', async () => {
+    const fastRequests: Record<string, unknown>[] = []
+    const reply = message([{ type: 'tool_use', id: 'toolu_1', name: 'run_checks', input: {} }])
+    const { RateLimitError } = (await import('@anthropic-ai/sdk')).default
+    const replies: (Anthropic.Message | Error)[] = [reply, new RateLimitError(429, undefined, 'fast mode rate limited', new Headers())]
+    let j = 0
+    const fastOptions: unknown[] = []
+    const client = { ...fakeClient([reply, reply]), beta: { messages: { stream: vi.fn((params: never, options?: unknown) => {
+      fastRequests.push(params)
+      fastOptions.push(options)
+      const next = replies[j++]
+      return { finalMessage: async () => { if (next instanceof Error) throw next; return next } }
+    }) } } }
+    const model = createAnthropicModel(undefined, undefined, client)
+    const served = await model.step(stepInput({ speed: 'fast' }))
+    expect(fastRequests[0]).toMatchObject({ model: 'claude-opus-5-5', speed: 'fast', betas: ['fast-mode-2026-02-01'] })
+    expect(served.modelId).toBe('claude-opus-5-5' + ANTHROPIC_FAST_MODEL_SUFFIX)
+    // No SDK retries in fast mode: its rate limit goes straight to standard speed.
+    expect(fastOptions[0]).toMatchObject({ maxRetries: 0 })
+    // Rate-limited in fast mode: the same request at standard speed, priced as standard.
+    const fallback = await model.step(stepInput({ speed: 'fast' }))
+    expect(client.requests).toHaveLength(1)
+    expect(client.requests[0]).not.toHaveProperty('speed')
+    expect(fallback.modelId).toBe('claude-opus-5-5')
+    // Without fast mode asked for, the standard endpoint.
+    await model.step(stepInput())
+    expect(client.requests).toHaveLength(2)
+    expect(google).not.toHaveBeenCalled()
+  })
+
+  it('a fast attempt cut off by its timeout is reported at the fast rate', async () => {
+    const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' })
+    const client = { ...fakeClient([]), beta: { messages: { stream: vi.fn(() => ({ finalMessage: async () => { throw timeout } })) } } }
+    const r = await createAnthropicModel(undefined, undefined, client).step(stepInput({ speed: 'fast' }))
+    expect(r).toMatchObject({ timedOut: true, modelId: 'claude-opus-5-5' + ANTHROPIC_FAST_MODEL_SUFFIX })
+  })
+
+  it('a turn that names its own effort gets it; the rest keep the configured one', async () => {
+    const client = fakeClient([message([{ type: 'tool_use', id: 'toolu_1', name: 'run_checks', input: {} }]), message([{ type: 'tool_use', id: 'toolu_2', name: 'run_checks', input: {} }])])
+    const model = createAnthropicModel(undefined, undefined, client)
+    await model.step(stepInput({ effort: 'low' }))
+    await model.step(stepInput())
+    expect(client.requests.map((r) => (r as { output_config?: { effort?: string } }).output_config?.effort)).toEqual(['low', STUDIO_BUILDER_ANTHROPIC_EFFORT])
+  })
+
   it('marks arguments that are not an object invalid, and maps a cut-off reply to length', async () => {
     const client = fakeClient([
       message([{ type: 'tool_use', id: 'toolu_1', name: 'finish', input: 'not an object' }, { type: 'tool_use', id: 'toolu_2', name: 'finish', input: [1] }]),
@@ -98,8 +143,14 @@ describe('the Anthropic adapter', () => {
     expect(u).toEqual({ input: 1250, cachedInput: 200, output: 500, reasoning: 0 })
     const cost = computeCostUsd('claude-opus-5-5', { inputTokens: u.input, cachedInputTokens: u.cachedInput, outputTokens: u.output, reasoningTokens: u.reasoning })
     expect(cost).toBeCloseTo((1050 * 4 + 200 * 0.2 + 500 * 20) / 1e6, 10)
-    // The run's cost cap reserves a full prompt and a full reply at the live model's rates.
-    expect(WORST_CASE_CALL_USD).toBeCloseTo((STUDIO_BUILDER_CONTEXT_MAX_TOKENS * 4 + STUDIO_BUILDER_MAX_OUTPUT_TOKENS * 20) / 1e6, 10)
+    // The run's cost cap reserves a full prompt and a full reply at the live model's rates, at its own
+    // reply cap, in fast mode when it's on (twice the standard rates).
+    const [inRate, outRate] = STUDIO_BUILDER_ANTHROPIC_FAST ? [8, 40] : [4, 20]
+    const reply = STUDIO_BUILDER_ANTHROPIC_FAST ? STUDIO_BUILDER_ANTHROPIC_FAST_MAX_OUTPUT_TOKENS : STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS
+    expect(WORST_CASE_CALL_USD).toBeCloseTo((STUDIO_BUILDER_CONTEXT_MAX_TOKENS * inRate + reply * outRate) / 1e6, 10)
+    expect(computeCostUsd(STUDIO_BUILDER_ANTHROPIC_MODEL + ANTHROPIC_FAST_MODEL_SUFFIX, { inputTokens: 1000, outputTokens: 500 })).toBeCloseTo(2 * computeCostUsd(STUDIO_BUILDER_ANTHROPIC_MODEL, { inputTokens: 1000, outputTokens: 500 }), 10)
+    expect(createAnthropicModel().maxOutputTokens).toBe(STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS)
+    expect(STUDIO_BUILDER_ANTHROPIC_MAX_OUTPUT_TOKENS).toBeGreaterThan(STUDIO_BUILDER_MAX_OUTPUT_TOKENS)
   })
 
   it('without ANTHROPIC_API_KEY the call fails clearly, and nothing falls back to Gemini', async () => {
@@ -112,6 +163,10 @@ describe('the Anthropic adapter', () => {
     await expect(createAnthropicModel(undefined, undefined, client).step(stepInput())).rejects.toBeInstanceOf(ModelUnavailable)
     expect(google).not.toHaveBeenCalled()
     expect(realHarnessDeps().model.id).toBe(STUDIO_BUILDER_ANTHROPIC_MODEL)
+    // Product Intelligence is on Anthropic too: without the key it fails, and never tries Gemini.
+    const firstBuild = newRun({ request: 'My students struggle to understand confidence intervals.', baseHash: null })
+    await expect(realHarnessDeps().productIntelligence!(firstBuild, { course: null, skills: null } as never, async () => true)).rejects.toBeInstanceOf(ModelUnavailable)
+    expect(google).not.toHaveBeenCalled()
     error.mockRestore()
     vi.unstubAllEnvs()
   })

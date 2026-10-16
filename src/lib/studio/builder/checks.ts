@@ -184,13 +184,29 @@ function finding(check_id: BuilderCheckId, partial: Omit<BuilderFinding, 'check_
   }
 }
 
+/** Window names the scan treats as reaching out of the frame, wherever they appear. */
+const FRAME_NAMES = new Set(['top', 'parent', 'opener'])
+
+/**
+ * A finding the validator's message doesn't explain to the builder. The scan flags any
+ * identifier named like a browser frame (`const top = ranked[0]` reads as window.top), but its
+ * message talks about undeclared Bridge methods and carries no line: a live build spent two
+ * repair rounds on it and stopped (2026-10-16). The builder is told exactly what to rename.
+ */
+function specificMessage(id: StaticBuilderId, detail: string | undefined): string | null {
+  if (id === 'code.bridge_usage' && detail && FRAME_NAMES.has(detail)) {
+    return `The name "${detail}" is the browser's window.${detail}, which tools can't reach, so any variable, parameter or property called ${detail} is refused. Rename every one of them (for example ${detail}Pick or ${detail}Item).`
+  }
+  return null
+}
+
 /** Stage 1 metadata to findings: lines index the bundle, so the source file and a quote locate them. */
 function staticFindings(id: StaticBuilderId, status: CheckStatus, message: string, metadata: Record<string, unknown> | undefined): BuilderFinding[] {
   const required = status !== 'warning'
   const listedItems = Array.isArray(metadata?.findings) ? (metadata.findings as { view?: string; detail?: string }[]) : null
   if (listedItems && listedItems.length > 0) {
     return listedItems.slice(0, STUDIO_VALIDATOR_FINDINGS_PER_CHECK).map((f) =>
-      finding(id, { required, file: f.view === 'professor' ? 'views/professor.tsx' : 'views/student.tsx', line: null, message, detail: f.detail ? quote(f.detail) : null }),
+      finding(id, { required, file: f.view === 'professor' ? 'views/professor.tsx' : 'views/student.tsx', line: null, message: specificMessage(id, f.detail) ?? message, detail: f.detail ? quote(f.detail) : null }),
     )
   }
   const firstOf = (key: string) => (Array.isArray(metadata?.[key]) ? (metadata[key] as unknown[]).map(String)[0] : undefined)
