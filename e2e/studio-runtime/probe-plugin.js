@@ -138,7 +138,16 @@
   })
 
   // ── Channels the policy may not cover (N10, N11) ──────────────────────
-  await probe('webrtcConstructor', () => (typeof window.RTCPeerConnection === 'function' ? 'available' : 'removed'))
+  // Every name public/studio-runtime/v1/runtime.js and v2/runtime.js remove.
+  const WEBRTC = [
+    'RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection', 'RTCDataChannel',
+    'RTCSessionDescription', 'RTCIceCandidate', 'RTCRtpSender', 'RTCRtpReceiver',
+    'RTCRtpTransceiver', 'RTCDtlsTransport', 'RTCIceTransport', 'RTCSctpTransport', 'RTCCertificate',
+  ]
+  await probe('webrtcConstructor', () => {
+    const left = WEBRTC.filter((name) => typeof window[name] === 'function')
+    return left.length === 0 ? 'removed' : `available (${left.join(', ')})`
+  })
   await probe('webrtcFromChildFrame', () => {
     const f = document.createElement('iframe')
     document.body.appendChild(f)
@@ -148,19 +157,25 @@
     pc.createDataChannel('probe')
     return pc.createOffer().then((o) => pc.setLocalDescription(o)).then(() => 'succeeded (peer connection created)')
   })
-  await probe('dnsPrefetchElement', () => {
+  const addLink = (rel, href) => {
     const l = document.createElement('link')
-    l.rel = 'dns-prefetch'
-    l.href = '//probe-dns.invalid'
+    if (rel) l.rel = rel
+    l.href = href
     document.head.appendChild(l)
-    return new Promise((resolve) => setTimeout(() => resolve(l.isConnected ? 'present' : 'removed by runtime'), 50))
-  })
-  await probe('preconnectElement', () => {
-    const l = document.createElement('link')
+    return l
+  }
+  const stillThere = (l, ms) =>
+    new Promise((resolve) => setTimeout(() => resolve(l.isConnected ? 'present' : 'removed by runtime'), ms))
+  await probe('dnsPrefetchElement', () => stillThere(addLink('dns-prefetch', '//probe-dns.invalid'), 50))
+  await probe('preconnectElement', () => stillThere(addLink('preconnect', A), 300))
+  await probe('prefetchElement', () => stillThere(addLink('prefetch', `${A}/prefetch`), 300))
+  // Inserted as a plain link first, so only the runtime's watch on `rel` changes can catch it.
+  await probe('preconnectSetAfterInsert', async () => {
+    const l = addLink(null, A)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    if (!l.isConnected) return 'removed before its rel was set'
     l.rel = 'preconnect'
-    l.href = A
-    document.head.appendChild(l)
-    return new Promise((resolve) => setTimeout(() => resolve(l.isConnected ? 'present' : 'removed by runtime'), 300))
+    return stillThere(l, 300)
   })
 
   await ScholeraStudio.request('probe.report', { phase: 1, results })

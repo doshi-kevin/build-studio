@@ -58,14 +58,40 @@ test('the CLI refuses input that is not a payload', async () => {
   expect(out).toBe('')
 })
 
+/** What each runtime.states fixture's one finding must name, so it fails for its own reason. */
+const STATE_FINDINGS: Record<string, string> = {
+  'missing loading state': 'no loading state',
+  'missing empty state': 'no empty state',
+  'missing error state': 'no error state',
+  'raw error text': 'raw error text shown',
+}
+
 for (const fixture of RUNTIME_BAD) {
   test(`${fixture.name} fails ${fixture.check}`, async () => {
     const report = runtimeReportSchema.parse(await runRuntimeValidation(toJob(fixture.artifact)))
     const result = summarizeRuntimeReport(report).find((r) => r.checkId === fixture.check)
     expect(result?.views.student).toBe('failed')
     expect(result?.status).toBe('failed')
+    if (fixture.check === 'runtime.states') {
+      expect(result?.findings).toEqual([{ view: 'student', detail: STATE_FINDINGS[fixture.name] }])
+    }
   })
 }
+
+test('a crash only in the professor view fails runtime.boot for that view alone', async () => {
+  const report = runtimeReportSchema.parse(await runRuntimeValidation({ ...toJob(GOOD), professorBundle: "throw new Error('boom')" }))
+  expect(summarizeRuntimeReport(report).find((r) => r.checkId === 'runtime.boot')?.views).toEqual({ student: 'passed', professor: 'failed' })
+})
+
+test('the known-good tool on bridge v2 passes every runtime check in both views, on the v2 kit', async () => {
+  // The host accepts either runtime, so each view stops itself unless the v2 kit loaded.
+  const onV2 = (bundle: string) => `if (ScholeraKit.version !== 'v2') throw new Error('kit ' + ScholeraKit.version);\n${bundle}`
+  const job = { manifest: { ...GOOD.manifest, bridgeVersion: 'v2' }, studentBundle: onV2(GOOD.studentBundle), professorBundle: onV2(GOOD.professorBundle) }
+  const results = summarizeRuntimeReport(runtimeReportSchema.parse(await runRuntimeValidation(job)))
+  expect(results.map((r) => [r.checkId, r.status, r.views])).toEqual(
+    results.map((r) => [r.checkId, 'passed', { student: 'passed', professor: 'passed' }]),
+  )
+})
 
 test('self-navigation is caught twice over: the host stops the frame, and the network block records the request', async () => {
   const fixture = RUNTIME_BAD.find((f) => f.name === 'self-navigation')!

@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountPluginFrame, type FrameSnapshot, type PluginFrameOptions, type StopReason } from '@/lib/studio/runtime/host'
 import { STUDIO_FRAME_MAX_HEIGHT_PX, STUDIO_FRAME_MIN_HEIGHT_PX } from '@/lib/studio/limits'
+import { ROSTER_MAX_SLOTS } from '@/lib/studio/runtime/roster-overlay'
 
 /** The session, which only a running (ready or stale) frame has. */
 const sessionOf = (s: FrameSnapshot) => (s.status === 'ready' || s.status === 'stale' ? s.session : undefined)
@@ -577,6 +578,38 @@ describe('runtime v2', () => {
     for (const height of [300, 400, 500]) m.send({ scholera: 'bridge', v: 1, type: 'size', session, height })
     expect(m.iframe.style.height).toBe('400px')
     expect(m.frame.snapshot().strikes).toBe(0)
+  })
+
+  it('stops a frame that keeps flooding size or roster messages past their bound', () => {
+    // One frozen second, so every message lands in the same window.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const sizes = mount({ limits: { startTimeoutMs: 1000, helloTimeoutMs: 500, malformedMax: 3, sizePerSecond: 1, rateAbuseMax: 2 } })
+    const s1 = readyV2(sizes)
+    for (let i = 0; i < 3; i++) sizes.send({ scholera: 'bridge', v: 1, type: 'size', session: s1, height: 300 + i })
+    expect(sizes.frame.snapshot().status).toBe('ready')
+    sizes.send({ scholera: 'bridge', v: 1, type: 'size', session: s1, height: 400 })
+    expect(sizes.frame.snapshot()).toMatchObject({ status: 'stopped', reason: 'throttled', strikes: 0 })
+
+    const rosters = mount({ ...ROSTER_OPTIONS, limits: { startTimeoutMs: 1000, helloTimeoutMs: 500, malformedMax: 3, rosterPerSecond: 1, rateAbuseMax: 2 } })
+    const s2 = readyV2(rosters)
+    for (let i = 0; i < 4; i++) rosters.send(roster(s2, 'render', { payload: payload() }))
+    expect(rosters.frame.snapshot()).toMatchObject({ status: 'stopped', reason: 'throttled', strikes: 0 })
+  })
+
+  it('lets the most tables a frame can hold move as often as the kit moves them, without starving a redraw', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const m = mount({ ...ROSTER_OPTIONS, limits: { startTimeoutMs: 1000, helloTimeoutMs: 500, malformedMax: 3, rateAbuseMax: 0 } })
+    const session = readyV2(m)
+    // The kit moves each table at most 10 times a second while the frame scrolls.
+    for (let i = 0; i < 10; i++) {
+      for (let s = 0; s < ROSTER_MAX_SLOTS; s++) m.send(roster(session, 'place', { slot: `t${s}`, rect: { x: 0, y: i, width: 300, height: 200 } }))
+    }
+    m.send(roster(session, 'render', { payload: payload() }))
+    await namesDrawn(m)
+    expect(m.frame.snapshot()).toMatchObject({ status: 'ready', strikes: 0 })
+    // One more move in the same second is over the bound, and this frame tolerates none.
+    m.send(roster(session, 'place', { slot: 't0', rect: { x: 0, y: 99, width: 300, height: 200 } }))
+    expect(m.frame.snapshot()).toMatchObject({ status: 'stopped', reason: 'throttled' })
   })
 
   it('treats v2 messages from a v1 runtime as junk', () => {

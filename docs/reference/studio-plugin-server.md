@@ -4,7 +4,7 @@ The only code allowed to read or write Studio plugin storage, and the rules it a
 
 | | |
 |---|---|
-| **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)). Its first caller is the Scholera Bridge (`POST /api/studio/bridge`, Step 4C), through `dispatch()`; see [studio-plugin-runtime.md](./studio-plugin-runtime.md#the-bridge). Lifecycle operations still have no endpoint |
+| **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)). Its first caller is the Scholera Bridge (`POST /api/studio/bridge`, Step 4C), through `dispatch()`; see [studio-plugin-runtime.md](./studio-plugin-runtime.md#the-bridge). Lifecycle operations are reached through the builder's and the tool page's server actions: Save as version (`publishDraft`), Add to this course, Use this version, Roll back, and Remove from course |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
 | **Code** | `src/lib/studio/` (`context.ts`, `policy.ts`, `record-schema.ts`, `db.ts`, `records.ts`, `handles.ts`, `lifecycle.ts`, `publication.ts`, `access.ts`, `student-visibility.ts`). Student visibility and access are documented in [studio-plugin-publication.md](./studio-plugin-publication.md) |
@@ -18,7 +18,7 @@ The database refuses structural mistakes on its own: a cross-institution referen
 
 | Layer | Does | Never does |
 |---|---|---|
-| Server action (none yet) | Calls one service function and returns `{ error }` or `{ success }` | Reads the database. Decides access. Passes a user, role, institution, section, owner or version |
+| Server action (the builder's and the tool page's `actions.ts`) | Calls one service function and returns `{ error }` or `{ success }` | Reads the database. Decides access. Passes a user, role, institution, section, owner or version |
 | `context.ts` | Builds the viewer or professor context from the session and the database | Accepts identity from its caller |
 | `policy.ts` | Decides role, access rule, operation and state. Pure | Touches the database |
 | `record-schema.ts` | Validates data against the manifest collection. Pure | Touches the database |
@@ -52,7 +52,7 @@ Records returned to a caller carry `id`, `data`, `createdAt`, `updatedAt` and `m
 
 ### Batches
 
-`batchRecords` (the Bridge's `records.batch`) takes one collection and 1 to 50 items (`STUDIO_RECORD_BATCH_MAX`), each a create, update or delete. The viewer is resolved once. Each item then runs exactly as its single function would: the same policy, validation, quota and audit. Items run in order and each gets its own result, so one refused item doesn't stop the rest; a batch is not a transaction. The Bridge counts a batch as one write for its rate limits.
+`batchRecords` (the Bridge's `records.batch`) takes one collection and 1 to 50 items (`STUDIO_RECORD_BATCH_MAX`), each a create, update or delete. The viewer is resolved once. Each item then runs exactly as its single function would: the same policy, validation, quota and audit. Items run in order and each gets its own result, so one refused item doesn't stop the rest; a batch is not a transaction. The Bridge charges a batch one write per five items, rounded up, against each of its rate limits, so 50 items cost 10 writes.
 
 ## Student handles
 
@@ -133,9 +133,8 @@ The admin client bypasses row-level security, so these rules are what stop new c
 
 | Not yet | Arrives with |
 |---|---|
-| Server actions or any endpoint | The Studio UI (lifecycle) and the Scholera Bridge (records) |
 | Attempt-pinned versions | Grading. In V1 every write uses, and is stamped with, the current version |
-| Per-viewer rate limits | The bridge (rule 10.1) |
+| Per-viewer rate limits | Built in the Bridge route, not here (rule 10.1, [studio-plugin-runtime.md](./studio-plugin-runtime.md#rate-limits)) |
 | Optional fields, other field types | A later manifest version |
 
 ## Verification
@@ -147,7 +146,7 @@ The admin client bypasses row-level security, so these rules are what stop new c
 | What | How |
 |---|---|
 | Manifest validation | `studio-manifest.test.ts` |
-| Policy table, all 120 cells | `studio-policy.test.ts` |
+| Policy table, all 160 cells | `studio-policy.test.ts` |
 | Manifest to Zod compiler, `__proto__`, size limit | `studio-record-schema.test.ts` |
 | Trusted context construction | `studio-context.test.ts` |
 | Record service authorization, stamping, audit | `studio-records.test.ts` |

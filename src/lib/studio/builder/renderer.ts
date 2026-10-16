@@ -5,7 +5,7 @@
  *
  * Rendering runs plugin code, so it never happens in this process.
  *
- *   unavailable (the default, and always in production)
+ *   unavailable (the default, and always on a deployed server)
  *       No renderer. The review runs on the code alone.
  *   local (STUDIO_BUILDER_RENDERER=local; refused in production unless the database is on this machine)
  *       Spawns validator-runtime/render.mjs with the same minimal environment as the

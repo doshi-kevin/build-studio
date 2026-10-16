@@ -203,6 +203,11 @@ describe('app headers skip the frame document', () => {
 describe('bridge envelope', () => {
   const SESSION = crypto.randomUUID()
   const MAX = 64 * 1024
+  const cyclic: Record<string, unknown> = {}
+  cyclic.self = cyclic
+  // Deeper than JSON.stringify can recurse, so measuring it throws.
+  let deep: unknown = {}
+  for (let i = 0; i < 100_000; i++) deep = { deep }
 
   it.each([
     [{ scholera: 'bridge', v: 1, type: 'hello', runtime: 'v1' }, { type: 'hello', runtime: 'v1' }],
@@ -226,8 +231,18 @@ describe('bridge envelope', () => {
     ['a bad request id', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r 1', method: 'a.b', args: null }],
     ['a method with no namespace', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'eval', args: null }],
     ['oversized args', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'a.b', args: 'x'.repeat(MAX + 1) }],
+    ['cyclic args', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'a.b', args: cyclic }],
+    ['args nested too deep to measure', { scholera: 'bridge', v: 1, type: 'request', session: SESSION, id: 'r1', method: 'a.b', args: deep }],
+    ['an envelope whose fields sit only behind an own __proto__ key', JSON.parse('{"__proto__":{"scholera":"bridge","v":1,"type":"hello","runtime":"v1"}}')],
   ])('rejects %s', (_label, raw) => {
     expect(parseFrameMessage(raw, MAX)).toBeNull()
+  })
+
+  it('copies only the known fields, so an own __proto__ key in the envelope goes nowhere', () => {
+    const raw = JSON.parse(`{"__proto__":{"admin":true},"scholera":"bridge","v":1,"type":"request","session":"${SESSION}","id":"r1","method":"records.list","args":null}`)
+    const parsed = parseFrameMessage(raw, MAX)!
+    expect(Object.keys(parsed).sort()).toEqual(['args', 'id', 'method', 'session', 'type'])
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype)
   })
 })
 
@@ -281,6 +296,9 @@ describe('v2 roster and size messages', () => {
     ['an unknown tone', withRow({ status: { kind: 'badge', text: 'x', tone: 'red' } })],
     ['an unknown cell kind', withRow({ status: { kind: 'html', text: 'x' } })],
     ['an unknown sort', { ...PAYLOAD, sort: 'id' }],
+    ['an own __proto__ field', { ...PAYLOAD, ...JSON.parse('{"__proto__":{"html":"<b>x</b>"}}') }],
+    ['a cell under an own __proto__ key', withRow(JSON.parse('{"__proto__":{"kind":"text","text":"x"}}'))],
+    ['a column keyed __proto__', { ...PAYLOAD, columns: [{ key: '__proto__', header: 'x' }], rows: [] }],
   ])('refuses a payload with %s', (_label, payload) => {
     expect(parseRosterPayload(payload)).toBeNull()
     expect(parseFrameMessage(msg({ type: 'roster', op: 'render', slot: 'r1', payload }), MAX)).toBeNull()
@@ -290,6 +308,11 @@ describe('v2 roster and size messages', () => {
     ['a slot that isn’t a short token', msg({ type: 'roster', op: 'remove', slot: 'R-1' })],
     ['an unknown op', msg({ type: 'roster', op: 'names', slot: 'r1' })],
     ['a rect with a missing side', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 0, y: 0, width: 10 } })],
+    ['a rect past the coordinate bound', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 100_001, y: 0, width: 10, height: 10 } })],
+    ['a rect far above the frame', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 0, y: -1e9, width: 10, height: 10 } })],
+    ['an infinite width', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 0, y: 0, width: Infinity, height: 10 } })],
+    ['a NaN coordinate', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: NaN, y: 0, width: 10, height: 10 } })],
+    ['a negative width', msg({ type: 'roster', op: 'place', slot: 'r1', rect: { x: 0, y: 0, width: -1, height: 10 } })],
     ['a negative height', msg({ type: 'size', height: -1 })],
     ['a height that isn’t a number', msg({ type: 'size', height: '900px' })],
   ])('refuses %s', (_label, raw) => {

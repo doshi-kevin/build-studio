@@ -9,8 +9,8 @@ export const STUDIO_MANIFEST_MAX_FIELDS = 30
 // record service enforces its own cap rather than relying on the transport.
 export const STUDIO_RECORD_MAX_BYTES = 16 * 1024
 export const STUDIO_RECORD_PAGE_MAX = 100
-/** records.batch: items in one call. Each runs as its own write; the call counts once
- * toward the bridge's rate limits. */
+/** records.batch: items in one call. Each runs as its own write. The bridge route charges
+ * the call one write per five items against every rate limit, so 50 items cost 10 writes. */
 export const STUDIO_RECORD_BATCH_MAX = 50
 
 // The runtime frame and the Scholera Bridge (docs/reference/studio-plugin-runtime.md).
@@ -138,10 +138,24 @@ export const STUDIO_BUILDER_MAX_TOOL_CALLS_PER_TURN = 8
 /** Applied file writes and edits, plus manifest proposals that apply or pause. */
 export const STUDIO_BUILDER_MAX_WRITES = 30
 export const STUDIO_BUILDER_MAX_BYTES_WRITTEN = 256 * 1024
-/** Model time inside slices only; queue and approval waits don't count. */
-export const STUDIO_BUILDER_RUN_MAX_ACTIVE_MS = 20 * 60_000
-/** Checked before every model call against the run's spend plus a worst-case next call. */
-export const STUDIO_BUILDER_RUN_MAX_COST_USD = 2.5
+/** Model time inside slices only; queue and approval waits don't count. A full Opus build
+ * (plan, both views, checks, repair, review) measured about 2.3 minutes a turn (2026-10-16). */
+export const STUDIO_BUILDER_RUN_MAX_ACTIVE_MS = 45 * 60_000
+/**
+ * The builder's implementation budget, checked before every model call against the run's
+ * builder spend plus a worst-case next call. Product Intelligence spend is not part of it
+ * (STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD). Two live Opus builds of rich products
+ * (2026-10-16) cost $0.32 to $0.39 a turn and stopped at $2.50 after 4 or 5 turns; a full build
+ * needs 12 to 16, plus the design review. Fast mode (config.ts) doubles the per-token price and the
+ * worst-case reservation (WORST_CASE_CALL_USD, $2.11 at its 40k reply cap), so the cap leaves the
+ * same room. A fast-mode finance build reached Preview ready on $5.30 of builder spend, $1.41 of it
+ * a cut-off turn and $0.89 two refused finishes.
+ */
+export const STUDIO_BUILDER_RUN_MAX_COST_USD = 9
+/** Product Intelligence (ideation and specification, repairs included), checked before each of
+ * its calls against its own spend plus a worst-case next call. Measured $0.32 to $0.44 a build at
+ * standard speed; fast mode doubles it and the worst case (PI_WORST_CALL_USD, about $1.09). */
+export const STUDIO_PRODUCT_INTELLIGENCE_MAX_COST_USD = 3
 /** Questions one run may ask the professor. */
 export const STUDIO_BUILDER_MAX_QUESTIONS = 2
 

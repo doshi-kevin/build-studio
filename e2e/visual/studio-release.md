@@ -16,13 +16,13 @@ What is real and what is seeded:
 | Save, Add to this course, Use this version, Roll back, Show, Hide, Remove | Real, in the browser |
 | Stage 1 | Real, at Save. With no classifier key the purpose check goes to review |
 | The review | Real, in the super admin's queue (for 1.0.0). For 1.1.0 the approval row is written in SQL, as the queue writes it |
-| Stage 2 | **Seeded.** A production build refuses the local runner, and the cloud runner needs GCP, so a passed runtime result for the exact artifact is inserted in SQL |
+| Stage 2 | **Seeded** in the 2026-10-02 run. A production build refused the local runner then, and the cloud runner needs GCP, so a passed runtime result for the exact artifact was inserted in SQL. Since 2026-10-03 the guarded build runs the local runner when it is given `E2E_STUDIO_VALIDATOR_RUNNER=local` and `E2E_STUDIO_VALIDATOR_RUNNER_ROOT`, so the next run can use real Stage 2 instead of the seed |
 
 ## Setup
 
 1. A section for the fixture professor with two enrolled students, Studio granted, and two weeks of course material: week 5 open, week 6 opening in 7 days.
 2. One build through the harness that searches "respiration glycolysis", so its provenance includes week 6.
-3. The guarded server on `:8080` with `STUDIO_STUDENT_ACCESS=on`, `STUDIO_RUNTIME_ORIGIN=https://127.0.0.1:8443` and local-only secrets, and an https proxy on `:8443`.
+3. The guarded server on `:8080` with `STUDIO_STUDENT_ACCESS=on`, `STUDIO_RUNTIME_ORIGIN=https://127.0.0.1:8443` and local-only secrets, and an https proxy on `:8443`. The proxy is no longer needed: since 2026-10-03 a production build accepts a plain-http runtime origin when the app and runtime origins are both on loopback.
 
 ## A. Save and Add to this course
 
@@ -63,4 +63,4 @@ What is real and what is seeded:
 
 ## Not covered here
 
-Real Stage 2 (needs the runner job on GCP), a live model build (needs a Google key passed explicitly), revalidation after raising the accepted checks (covered by unit and database tests), keyboard order and focus return (not scripted), and a real screen reader.
+Real Stage 2 (the cloud runner needs the job on GCP, and the local runner the guarded build now accepts hasn't been used in this walkthrough yet), a live model build (needs a Google key passed explicitly), revalidation after raising the accepted checks (covered by unit and database tests), keyboard order and focus return (not scripted), and a real screen reader.

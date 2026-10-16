@@ -5,6 +5,8 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { buildEnvelope, PAYLOAD_MAX_BYTES, parsePayload, RUNTIME_VERSION } from '../../validator-runtime/binding.mjs'
+import { RUNTIMES } from '../../validator-runtime/runner.mjs'
+import { BRIDGE_VERSIONS } from '@/lib/studio/runtime/protocol'
 
 const VALID = {
   format: 'studio-validator-payload-v1',
@@ -66,5 +68,11 @@ describe('buildEnvelope', () => {
       report,
     })
     expect(RUNTIME_VERSION).toBe('v1')
+  })
+})
+
+describe('the runner’s bridge versions', () => {
+  it('are exactly the bridge versions a manifest may name, so no version goes unserved', () => {
+    expect(RUNTIMES).toEqual([...BRIDGE_VERSIONS])
   })
 })

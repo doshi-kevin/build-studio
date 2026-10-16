@@ -51,7 +51,42 @@ import { deltaHash, proposeManifest, type DeltaItem } from './manifest-delta'
 import type { ModelToolDecl } from './model'
 import { characterProblem, PLUGIN_PATHS, stripBom, utf8Bytes, viewContentProblem, VIEW_OF, type PluginPath } from './paths'
 import { contentHash, sha16, workHash } from './snapshot'
+import { planSpecificationIssues } from './specification'
 import { planSchema, type Plan, type ValidationCode, type Work } from './work'
+
+/** The longest finish summary accepted before it is fitted: a bound on the input, not the saved length. */
+const SUMMARY_INPUT_MAX_CHARS = 4 * STUDIO_BUILDER_SUMMARY_MAX_CHARS
+
+/** A line saying what the tool leaves out: kept when the summary is cut, since it is what the professor can't see. */
+const LEFT_OUT = /^\W*(?:not included|left out|what's not|what is not|tools can'?t|not built|missing)/i
+
+/**
+ * A finish summary at most `max` characters long. Models overshoot a length they can't count, and a
+ * refusal costs a whole turn to fix prose, so a long summary is cut here instead: whole lines from
+ * the start, plus its closing left-out line when that still fits. A single line longer than `max`
+ * is cut at its last sentence end, else its last space. Professor-facing prose only.
+ */
+export function fitSummary(text: string, max: number): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= max) return trimmed
+  const lines = trimmed.split('\n')
+  const last = lines.length > 1 && LEFT_OUT.test(lines[lines.length - 1]) ? lines[lines.length - 1].trim() : null
+  const budget = last && last.length + 1 < max ? max - last.length - 1 : max
+  const kept: string[] = []
+  for (const line of last ? lines.slice(0, -1) : lines) {
+    if ([...kept, line].join('\n').length > budget) break
+    kept.push(line)
+  }
+  if (kept.length === 0) {
+    const head = lines[0].slice(0, budget)
+    const sentence = head.lastIndexOf('. ')
+    kept.push(sentence > budget / 2 ? head.slice(0, sentence + 1) : head.slice(0, Math.max(head.lastIndexOf(' '), 1)).trimEnd())
+  }
+  return [...kept, ...(last && budget < max ? [last] : [])].join('\n').trim()
+}
+
+/** Off-spec plans refused per run before one is accepted anyway. */
+export const PLAN_SPEC_MAX_REFUSALS = 2
 
 export const TOOL_NAMES = [
   'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change',
@@ -65,7 +100,7 @@ export type RefusalCode =
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit' | 'search_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
   | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
-  | 'sample_invalid' | 'note_has_code'
+  | 'sample_invalid' | 'note_has_code' | 'plan_off_spec'
 
 /** The refusals a memory proposal can come back with from the database. */
 export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_replaces', 'memory_duplicate', 'memory_full', 'memory_unavailable'] as const satisfies readonly RefusalCode[]
@@ -104,6 +139,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   memory_unavailable: 'Saved decisions aren’t available right now. Carry on without proposing one.',
   sample_invalid: 'Fix the sample data issues listed and write it again. Each record is { "student"?: number, "data": { ...every field } }; student only for perStudent and staffPerStudent collections.',
   note_has_code: 'Say it in plain words for a professor: what they or a student can now see or do. No code, component, collection, field or access-mode names.',
+  plan_off_spec: 'Keep the plan to the product design: its learning mechanic, both workflows and every acceptance criterion in requirements. Fix the issues listed and call submit_plan again. The calls after it in that turn did not run.',
 }
 
 /** Progress labels, chosen by the harness when it records a step. */
@@ -129,6 +165,8 @@ export interface ToolState {
     proposals: number
   }
   runChecks: (work: Work) => Promise<DraftCheckResult>
+  /** submit_plan refusals for leaving the product specification, so far this run (none when absent). */
+  planSpecRefusals?: number
   /** Searches the run's own course, scoped by the harness from the run row. */
   searchMaterial: (query: string, focus: MaterialFocus | null) => Promise<SearchOutcome>
 }
@@ -434,20 +472,29 @@ const TOOL_LIST: ToolSpec[] = [
     kind: 'control',
     description: 'Record a short engineering plan before structural work. A plan is intent: it grants nothing.',
     schema: planSchema,
-    execute: (_state, args: Plan) => ({
-      kind: 'done',
-      label: 'plan.submitted',
-      args: {
-        files_to_change: args.files_to_change,
-        capabilities: args.capabilities_needed.length,
-        manifest_changes: args.manifest_changes.length,
-        requirements: args.requirements.length,
-      },
-      result: { recorded: true },
-      plan: args,
-      phase: 'planning',
-      delta: {},
-    }),
+    execute: (state, args: Plan): ToolOutcome => {
+      // A build with a product specification keeps to it. After PLAN_SPEC_MAX_REFUSALS the plan is
+      // accepted anyway, so a check the model can't satisfy never ends the build on its own.
+      // Only a first build: a follow-up changes the tool it already has.
+      const spec = state.firstBuild ? state.work.product_intelligence?.specification : null
+      const offSpec = spec ? planSpecificationIssues(args, spec) : []
+      if (offSpec.length && (state.planSpecRefusals ?? 0) < PLAN_SPEC_MAX_REFUSALS) return refused('plan_off_spec', { issues: offSpec.length }, offSpec)
+      return {
+        kind: 'done',
+        label: 'plan.submitted',
+        args: {
+          files_to_change: args.files_to_change,
+          capabilities: args.capabilities_needed.length,
+          manifest_changes: args.manifest_changes.length,
+          requirements: args.requirements.length,
+          ...(spec ? { off_spec: offSpec.length } : {}),
+        },
+        result: { recorded: true },
+        plan: args,
+        phase: 'planning',
+        delta: {},
+      }
+    },
   },
   {
     name: 'ask_professor',
@@ -589,22 +636,22 @@ const TOOL_LIST: ToolSpec[] = [
   {
     name: 'finish',
     kind: 'control',
-    description:
-      'End the build. "completed" asks the platform to check everything and save the draft for preview; it keeps working with you if a check fails. "blocked" ends it with a plain reason.',
+    description: `End the build. "completed" asks the platform to check everything and save the draft for preview; it keeps working with you if a check fails. "blocked" ends it with a plain reason. Keep summary to ${STUDIO_BUILDER_SUMMARY_MAX_CHARS} characters: one short line per feature, then one line on what is left out. A longer summary is cut to whole lines.`,
     schema: z.strictObject({
       status: z.enum(['completed', 'blocked']),
-      summary: prose(STUDIO_BUILDER_SUMMARY_MAX_CHARS),
+      summary: prose(SUMMARY_INPUT_MAX_CHARS),
       open_questions: z.array(prose(200)).max(STUDIO_BUILDER_OPEN_QUESTIONS_MAX),
     }),
     execute: (_state, args: { status: 'completed' | 'blocked'; summary: string; open_questions: string[] }) => {
-      const summary: Summary = { status: args.status, summary_chars: args.summary.length, questions: args.open_questions.length }
-      for (const text of [args.summary, ...args.open_questions]) {
+      const kept = fitSummary(args.summary, STUDIO_BUILDER_SUMMARY_MAX_CHARS)
+      const summary: Summary = { status: args.status, summary_chars: args.summary.length, ...(kept.length < args.summary.length ? { kept_chars: kept.length } : {}), questions: args.open_questions.length }
+      for (const text of [kept, ...args.open_questions]) {
         const chars = characterProblem(text)
         if (chars) return refused('bad_characters', summary, [chars])
         // The note is read by a professor: no backticks, no access-mode identifiers.
         if (CODE_IN_NOTE.test(text)) return refused('note_has_code', summary)
       }
-      return { kind: 'finish', args: summary, status: args.status, summary: args.summary, openQuestions: args.open_questions }
+      return { kind: 'finish', args: summary, status: args.status, summary: kept, openQuestions: args.open_questions }
     },
   },
 ]

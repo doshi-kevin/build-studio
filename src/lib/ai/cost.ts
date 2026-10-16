@@ -37,6 +37,14 @@ export const MODEL_RATES_USD: Record<string, ModelRate> = {
   // rates; prompts >200k tokens bill at $4/$18 (not modeled — Athena prompts
   // stay well under 200k).
   'gemini-3.1-pro-preview': { inputPerMTok: 2.0, cachedInputPerMTok: 0.2, outputPerMTok: 12.0 },
+  // The Studio builder (Anthropic). $4/$20 per MTok in/out, cache reads $0.20, per
+  // Anthropic's model table 2026-10-06. Output includes thinking. The builder sends no
+  // cache_control, so cache writes (billed above the input rate) don't arise.
+  'claude-opus-5-5': { inputPerMTok: 4.0, cachedInputPerMTok: 0.2, outputPerMTok: 20.0 },
+  // The same model in fast mode (ANTHROPIC_FAST_MODEL_SUFFIX): $8/$40 per MTok, twice the
+  // standard rates, per Anthropic's model table 2026-10-06. Cache reads assumed doubled too; the
+  // builder sends no cache_control.
+  'claude-opus-5-5:fast': { inputPerMTok: 8.0, cachedInputPerMTok: 0.4, outputPerMTok: 40.0 },
   // Roadmap node checks. Verified against Google's live pricing 2026-07-30:
   // $0.25/$1.50 per MTok in/out, cached = 10% of input. Was silently falling
   // back to Flash rates (2× over-report on input, 2× on output).

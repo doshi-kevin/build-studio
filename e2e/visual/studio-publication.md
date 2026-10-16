@@ -8,7 +8,7 @@
 
 1. Grant the dev institution the `studio` entitlement: super admin, Institutions, the institution's Plan card. Without it the Studio tab is gone and plugins are read-only.
 2. Set `STUDIO_STUDENT_ACCESS=on` in `.env.local` and restart the dev server. Production keeps it off.
-3. Install a plugin with at least two published versions into CS101 (through `lifecycle.ts`; there is no builder UI yet). Note its installation ID.
+3. Put a plugin with at least two saved versions into CS101 through the builder: build it, press **Save as version**, then **Add to this course** on the Save card; then build a change and save it as a second version. Note its installation ID.
 4. Have a student account enrolled in CS101 (`student1@scholera.dev`).
 
 ## A. The plugin card can be read but not confirmed
@@ -35,7 +35,7 @@ If the plugin doesn't pass the validator, make it visible directly for this chec
 
 ## D. Preview another version
 
-1. On the runtime page, choose another version in **Preview version**. Expect the URL to gain `?version=`, a "Preview · v…" badge and "Sample data. This version isn't active in this course yet."
+1. On the runtime page, choose another version in **Preview version**. Expect the URL to gain `?version=`, a "Preview · v…" badge and "Sample data. Your course still uses v…." naming the active version.
 2. Switch to the student view and back. Expect the version to stay selected.
 3. Expect nothing about the course to change: the active version in the picker, the visibility badge, and the student's own view are unchanged. In the network panel, expect no request to `/api/studio/bridge` while previewing.
 4. Change `?version=` to a random UUID. Expect not found.

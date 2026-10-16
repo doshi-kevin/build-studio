@@ -283,6 +283,18 @@ describe('staffPerStudent: staff write about one student, who reads only their o
     expect(resolveViewer).not.toHaveBeenCalled()
   })
 
+  it('an update naming a student is refused before anything is resolved, alone or in a batch, so a record never changes whom it is about', async () => {
+    viewAs('professor')
+    const update = { recordId: RECORD, data: PRESENT, student: handleOf(CLASSMATE) }
+    expect(await records.updateRecord({ ...target('attendance'), ...update } as never)).toEqual({ ok: false, error: RECORD_NOT_AVAILABLE })
+    expect(await records.batchRecords({ ...target('attendance'), items: [{ op: 'update', ...update }] } as never)).toEqual({
+      ok: false,
+      error: RECORD_NOT_AVAILABLE,
+    })
+    expect(resolveViewer).not.toHaveBeenCalled()
+    expect(DB_CALLS()).toEqual([0, 0, 0, 0, 0])
+  })
+
   it('a student reads only their own, gets no handle, and can’t write', async () => {
     viewAs('student')
     vi.mocked(db.listRecords).mockResolvedValue([row(USERS.student, USERS.professor, PRESENT)])

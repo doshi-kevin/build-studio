@@ -52,6 +52,12 @@ export interface Work {
     /** The draft the latest review saw: it passed every check and rendered without crashing. */
     good?: { manifest: StudioManifestV2; files: Partial<Record<PluginPath, string>>; sample: SampleData | null } | null
   }
+  /** What educational product this build is for (Step 12B). Null when the run has none, which
+   * is every run until something fills it; nothing reads it yet. */
+  product_intelligence: ProductIntelligence | null
+  /** What Product Intelligence spent seeding this run, inside the run's cost counter but outside
+   * the builder's budget (Step 12B.4). Absent before then: none. */
+  product_intelligence_cost_usd?: number
 }
 
 /** Per collection, the records the preview shows. `student` indexes the synthetic roster
@@ -87,6 +93,7 @@ export function initialWork(
     material: emptyMaterial(),
     sample: base?.sample ?? null,
     review: { rounds: 0, last: null },
+    product_intelligence: null,
   }
 }
 
@@ -127,6 +134,134 @@ export function readPlan(raw: unknown): Plan | null {
 }
 
 export type Plan = z.infer<typeof planSchema>
+
+export const PRODUCT_INTELLIGENCE_FORMAT = 'studio-product-intelligence-v1'
+
+/** Kept small beside the files in the run row's 256 KiB working copy. Here rather than in
+ * limits.ts, which the check worker bundles whole. */
+export const PRODUCT_INTELLIGENCE_MAX_BYTES = 24 * 1024
+
+/** The primary way a concept teaches. Closed on purpose: three concepts that share one are
+ * the same idea in different layouts (ideation.ts refuses them). */
+export const LEARNING_MECHANICS = [
+  'predict_commit_reveal', 'simulation_what_if', 'diagnosis', 'staged_case', 'debugging', 'branching_decision',
+  'reverse_reasoning', 'experiment_design', 'misconception_mapping', 'compare_contrast', 'scenario_stress_test',
+  'mastery_repetition', 'argument_evidence',
+] as const
+
+/** One candidate educational product from divergent ideation (Step 12B.2). */
+export const conceptSchema = z.strictObject({
+  name: prose(80),
+  mechanic: z.enum(LEARNING_MECHANICS),
+  idea: prose(300),
+  learningMechanic: prose(300),
+  studentLoop: prose(300),
+  professorValue: prose(250),
+  dataProduced: prose(250),
+  domainSpecificity: prose(250),
+  whyBetterThanGenericLMS: prose(250),
+  feasibility: z.enum(['feasible', 'adapted', 'infeasible']),
+  /** What the tool leaves out or what the professor must supply; "None." when nothing. */
+  limitations: prose(250),
+})
+
+export type Concept = z.infer<typeof conceptSchema>
+
+/** The provider call(s) behind a stage, with their cost. */
+const modelRecordSchema = z.strictObject({
+  provider: z.literal('anthropic'),
+  id: prose(60),
+  calls: z.number().int().min(1).max(2),
+  inputTokens: z.number().int().min(0),
+  outputTokens: z.number().int().min(0),
+  costUsd: z.number().min(0),
+})
+
+export type ModelRecord = z.infer<typeof modelRecordSchema>
+
+/** What ideation produced and what it cost, kept with the artifact. */
+export const ideationSchema = z.strictObject({
+  candidates: z.array(conceptSchema).length(3),
+  selectedIndex: z.number().int().min(0).max(2),
+  selectionRationale: prose(600),
+  /** Whether the first set failed the divergence or platform checks and was regenerated once. */
+  repaired: z.boolean(),
+  model: modelRecordSchema,
+})
+
+export type Ideation = z.infer<typeof ideationSchema>
+
+/** The Product Specification (Step 12B.3): the selected concept elaborated into how the
+ * product works, for the builder to implement. Behaviour and intent only: no code, no manifest. */
+export const specificationSchema = z.strictObject({
+  productGoal: prose(300),
+  /** Must equal the selected concept's mechanic. */
+  mechanic: z.enum(LEARNING_MECHANICS),
+  /** Ordered steps, each naming what the student does: "Predict: ...", "Reveal: ...". */
+  learningLoop: z.array(prose(200)).min(3).max(8),
+  professorWorkflow: z.strictObject({ setup: prose(260), contentCreation: prose(260), running: prose(260), interpreting: prose(260) }),
+  studentWorkflow: z.array(prose(180)).min(3).max(8),
+  states: z.array(z.strictObject({ name: prose(30), meaning: prose(140) })).min(1).max(7),
+  contentStrategy: z.strictObject({
+    /** Fixed scenarios, cases, questions, benchmarks: records the professor writes. */
+    professorAuthored: z.array(prose(180)).max(5),
+    /** Items or outcomes computed in code from formulas and random parameters. */
+    generated: z.array(prose(180)).max(5),
+  }),
+  computation: z.array(prose(300)).max(6),
+  professorInsight: z.array(prose(180)).min(1).max(5),
+  dataModel: z.array(z.strictObject({
+    name: z.string().regex(/^[a-z][A-Za-z0-9]{1,39}$/, 'a camelCase collection name'),
+    access: z.enum(['perStudent', 'staffPerStudent', 'shared', 'staffOnly']),
+    purpose: prose(160),
+    /** Who creates its records. */
+    writtenBy: z.enum(['professor', 'student', 'both']),
+  })).max(6),
+  relationships: z.array(prose(160)).max(4),
+  primaryInteractions: z.array(prose(150)).min(2).max(6),
+  edgeStates: z.array(prose(200)).max(6),
+  limitations: z.array(prose(180)).max(5),
+  model: modelRecordSchema,
+})
+
+export type Specification = z.infer<typeof specificationSchema>
+
+/**
+ * The Product Intelligence artifact (Step 12B): what educational product a build is for,
+ * decided before any code. `direct_build` is a request that already names the tool;
+ * `teaching_problem` describes a problem and leaves the product to Studio. A field nobody
+ * knows yet is null or an empty list. Separate from submit_plan, which stays the builder's
+ * engineering intent.
+ */
+export const productIntelligenceSchema = z
+  .strictObject({
+    format: z.literal(PRODUCT_INTELLIGENCE_FORMAT),
+    requestType: z.enum(['direct_build', 'teaching_problem']),
+    teachingProblem: prose(600).nullable(),
+    domainContext: prose(600).nullable(),
+    studentDifficulty: prose(600).nullable(),
+    professorGoal: prose(400).nullable(),
+    studentGoal: prose(400).nullable(),
+    platformConstraints: items(8, 240),
+    selectedConcept: z.strictObject({ title: prose(120), summary: prose(600) }).nullable(),
+    learningLoop: items(8, 240),
+    professorWorkflow: items(10, 240),
+    studentWorkflow: items(10, 240),
+    /** Absent on a direct build and on an artifact saved before 12B.2. */
+    ideation: ideationSchema.nullable().optional(),
+    /** Absent until 12B.3 fills it, and when the specification failed its checks twice. */
+    specification: specificationSchema.nullable().optional(),
+  })
+  .refine((p) => utf8Bytes(JSON.stringify(p)) <= PRODUCT_INTELLIGENCE_MAX_BYTES, 'The product intelligence is too long')
+
+export type ProductIntelligence = z.infer<typeof productIntelligenceSchema>
+
+/** A stored artifact, or null: absent (a run from before Step 12B, or one without it) or no longer valid. */
+export function readProductIntelligence(raw: unknown): ProductIntelligence | null {
+  if (raw === null || raw === undefined) return null
+  const parsed = productIntelligenceSchema.safeParse(raw)
+  return parsed.success ? parsed.data : null
+}
 
 export type TerminalStatus = 'preview_ready' | 'completed' | 'blocked' | 'cancelled' | 'budget_exhausted' | 'failed'
 

@@ -7,7 +7,7 @@ How Studio stores plugins and their data. Rule numbers cite [studio-plugin-rules
 | **Status** | Complete locally, pending Supabase acceptance (see [Verification](#verification)) |
 | **Owner** | Kevin Dohsi |
 | **Date** | 2026-09-30 |
-| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql`, `20261001181829_studio_publication.sql` (student visibility, storage quota, kill switch; Step 5B), `20261001192059_studio_student_quota.sql` (per-student quota, limits as settings; Step 5C) and `20261002160000_studio_builder.sql` (draft snapshots, builder runs and steps; Step 7B) |
+| **Migration** | `supabase/migrations/20260930175948_studio_plugin_storage.sql`, `20261001181829_studio_publication.sql` (student visibility, storage quota, kill switch; Step 5B), `20261001192059_studio_student_quota.sql` (per-student quota, limits as settings; Step 5C), `20261002160000_studio_builder.sql` (draft snapshots, builder runs and steps; Step 7B) and `20261003120000_studio_builder_quality.sql` (the `staffPerStudent` access mode, a per-installation `handle_salt`, the student quota counting only records a student wrote, and sample data on snapshots; Step 11) |
 | **Tests** | `src/__tests__/db/studio-storage.test.ts` and `src/__tests__/db/studio-publication.test.ts` (`npm run test:db`) |
 
 ## The model
@@ -22,7 +22,7 @@ Project, then version, then installation, then approval, then record.
 | Approval | `studio_plugin_approvals` | Permission for one installation to activate one version. Kept forever as history |
 | Record | `studio_plugin_records` | Plugin data. Belongs to one installation, never to a version |
 | Usage | `studio_plugin_usage` | One row per installation: how many records and bytes it stores, kept exact by a trigger (Step 5B) |
-| Student usage | `studio_plugin_student_usage` | One row per student per installation: their own `perStudent` records and bytes (Step 5C) |
+| Student usage | `studio_plugin_student_usage` | One row per student per installation: the records and bytes the student wrote themselves (Step 5C). Records staff write about a student don't count here |
 | Limits | `studio_plugin_limits` | One settings row: the installation and per-student storage limits the trigger enforces (Step 5C) |
 
 An installation also carries `student_visibility` (`hidden` or `visible`), which says whether the section's students may open it. That, and the storage quota, are described in [studio-plugin-publication.md](./studio-plugin-publication.md).
@@ -47,7 +47,7 @@ Collections are not tables. A record's `collection` column names a collection it
 | Activating a version this installation never approved | Foreign key from the installation's current version to its approvals, checked at commit |
 | A record under a version this installation never approved | Foreign key from `(installation, version)` to approvals |
 | A record stamped with a different section or institution than its installation | Records guard trigger |
-| A record in a collection its version doesn't declare, or a `perStudent` record whose owner isn't enrolled in that section | Records guard trigger |
+| A record in a collection its version doesn't declare, a `perStudent` or `staffPerStudent` record whose owner isn't enrolled in that section, or a new `staffPerStudent` record whose author isn't the section's professor or an active TA | Records guard trigger |
 | Any write to an archived installation | Records guard trigger, and `studio_activate_version` |
 | A new installation that starts visible to students, or an archived one becoming visible | Installation guard trigger, and `studio_set_student_visibility` |
 | A visibility change by someone outside the institution, or naming another section | Installation guard trigger, and `studio_set_student_visibility` |

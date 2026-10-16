@@ -244,7 +244,7 @@ async function runView(browser, servers, artifact, view) {
           const f = s.frame()
           return f ? has(f, selector) : false
         }, remaining(scenario === 'slow' ? 2000 : 6000))
-        if (!seen) states.push(`no ${selector.slice(16, -2)} state`)
+        if (!seen) states.push(`no ${selector.slice(17, -2)} state`)
         if (scenario === 'failing' && seen) {
           const leaked = await s.frame().evaluate((sentinel) => document.body.innerText.includes(sentinel), await s.page.evaluate(() => window.validator.sentinel))
           if (leaked) states.push('raw error text shown')

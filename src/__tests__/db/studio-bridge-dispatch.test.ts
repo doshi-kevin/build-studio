@@ -300,8 +300,11 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
   const slug = `ba-${run}`
   let project = ''
   let install = ''
-  const attendance = () => ({
-    ...manifest('1.0.0', ['context.get', 'course.assignments'], slug),
+  // A second attendance tool in the same section: its handles must name no one in the first.
+  let otherProject = ''
+  let otherInstall = ''
+  const attendance = (s = slug) => ({
+    ...manifest('1.0.0', ['context.get', 'course.assignments'], s),
     views: {
       student: { entry: 'views/student.tsx', capabilities: ['context.get', 'course.assignments'] },
       professor: { entry: 'views/professor.tsx', capabilities: ['context.get', 'course.roster', 'course.assignments'] },
@@ -309,9 +312,9 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
     collections: { ...exitTicket.collections, attendance: { access: 'staffPerStudent', fields: { status: 'text' } } },
   })
 
-  async function as(userId: string, method: string, args: unknown) {
+  async function as(userId: string, method: string, args: unknown, on = install) {
     session.userId = userId
-    const viewer = await resolveViewer(install)
+    const viewer = await resolveViewer(on)
     if (!viewer) return { ok: false as const, code: 'not_available' as const }
     return dispatch(viewer, { method, args, host: HOST })
   }
@@ -331,6 +334,9 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
     project = ok(await lifecycle.createProject({ sectionId: section, slug, name: 'Attendance' }))
     const v1 = ok(await lifecycle.publishVersion({ sectionId: section, projectId: project, manifest: attendance(), source: {}, studentBundle: 's()', professorBundle: 'p()' }))
     install = ok(await lifecycle.installPlugin({ sectionId: section, versionId: v1 }))
+    otherProject = ok(await lifecycle.createProject({ sectionId: section, slug: `${slug}-2`, name: 'Attendance 2' }))
+    const otherV1 = ok(await lifecycle.publishVersion({ sectionId: section, projectId: otherProject, manifest: attendance(`${slug}-2`), source: {}, studentBundle: 's()', professorBundle: 'p()' }))
+    otherInstall = ok(await lifecycle.installPlugin({ sectionId: section, versionId: otherV1 }))
     const add = (title: string, status: string, due: string | null, graded = true) =>
       sql(
         `insert into public.assignments (section_id, institution_id, created_by, title, status, due_at, points, is_graded)
@@ -346,10 +352,12 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
   afterAll(async () => {
     if (!project) return
     await sql('delete from public.assignments where section_id = $1', [section])
-    await sql('delete from public.studio_plugin_records where installation_id in (select id from public.studio_plugin_installations where project_id = $1)', [project])
-    await sql('delete from public.studio_plugin_installations where project_id = $1', [project])
-    await sql('delete from public.studio_plugin_versions where project_id = $1', [project])
-    await sql('delete from public.studio_plugin_projects where id = $1', [project])
+    for (const p of [project, otherProject].filter(Boolean)) {
+      await sql('delete from public.studio_plugin_records where installation_id in (select id from public.studio_plugin_installations where project_id = $1)', [p])
+      await sql('delete from public.studio_plugin_installations where project_id = $1', [p])
+      await sql('delete from public.studio_plugin_versions where project_id = $1', [p])
+      await sql('delete from public.studio_plugin_projects where id = $1', [p])
+    }
   })
 
   it('course.roster gives staff one handle per enrolled student, sorted, with no IDs or names', async () => {
@@ -382,6 +390,17 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
       code: 'invalid',
     })
     expect(await as(STUDENT_A, 'records.create', { collection: 'attendance', data: { status: 'present' } })).toMatchObject({ ok: false, code: 'not_available' })
+  })
+
+  it('a handle from another tool’s installation in the same section names no one there', async () => {
+    const theirs = dataOf<{ students: { handle: string }[] }>(await as(TA, 'course.roster', null, otherInstall)).students.map((s) => s.handle)
+    expect(theirs).toHaveLength(2)
+    expect(theirs.filter((h) => handles.includes(h))).toEqual([])
+    expect(await as(PROFESSOR, 'records.create', { collection: 'attendance', data: { status: 'present' }, student: handles[0] }, otherInstall)).toMatchObject({
+      ok: false,
+      code: 'not_available',
+    })
+    expect(await sql('select id from public.studio_plugin_records where installation_id = $1', [otherInstall])).toEqual([])
   })
 
   it('records.batch marks the class in one call, item by item', async () => {
@@ -428,5 +447,24 @@ describe('course.roster, staffPerStudent, records.batch and course.assignments',
       },
     })
     expect(JSON.stringify(result)).not.toMatch(UUID)
+  })
+
+  it('a student who drops leaves the roster, and a cached handle for them writes nothing', async () => {
+    const stale = await handleOf(STUDENT_B)
+    expect(handles).toContain(stale)
+    const marks = async () => (await sql('select id from public.studio_plugin_records where installation_id = $1', [install])).length
+    await sql(`update public.enrollments set status = 'dropped' where section_id = $1 and student_id = $2`, [section, STUDENT_B])
+    try {
+      const roster = dataOf<{ students: { handle: string }[] }>(await as(TA, 'course.roster', null)).students.map((s) => s.handle)
+      expect(roster).toEqual(handles.filter((h) => h !== stale))
+      const before = await marks()
+      expect(await as(PROFESSOR, 'records.create', { collection: 'attendance', data: { status: 'absent' }, student: stale })).toMatchObject({
+        ok: false,
+        code: 'not_available',
+      })
+      expect(await marks()).toBe(before)
+    } finally {
+      await sql(`update public.enrollments set status = 'enrolled' where section_id = $1 and student_id = $2`, [section, STUDENT_B])
+    }
   })
 })

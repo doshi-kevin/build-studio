@@ -314,6 +314,46 @@ describe('save as version (a professor action, never the builder’s)', () => {
     vi.mocked(db.loadBuilderProject).mockResolvedValueOnce({ ...project, draftHeadHash: hash, ownerId: crypto.randomUUID() } as never)
     expect((await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).ok).toBe(false)
   })
+  it.each([
+    ['off', /^Studio is paused/],
+    ['read_only', /not part of your institution's plan/],
+  ] as const)('refuses while Studio is %s, before reading the snapshot or saving anything', async (mode, error) => {
+    vi.mocked(studioAccess).mockResolvedValue(mode)
+    expect(await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).toEqual({ ok: false, error: expect.stringMatching(error) })
+    expect(studioAccess).toHaveBeenCalledWith(PROFESSOR.institutionId)
+    expect(db.loadSnapshot).not.toHaveBeenCalled()
+    expect(db.insertVersion).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['1.0.0', '1.1.0'],
+    ['1.9.3', '1.10.0'],
+    ['1.10.4', '1.11.0'],
+    ['10.2.0', '10.3.0'],
+  ])('a draft saved after version %s becomes %s, in the row and in its manifest', async (latest, next) => {
+    vi.mocked(db.loadLatestProjectManifest).mockResolvedValueOnce({ version: latest, manifest: { ...m.manifest, version: latest } })
+    expect(await publishDraft({ sectionId: SECTION, projectId: PROJECT, snapshotHash: hash })).toEqual({ ok: true, value: { versionId: 'version-1', version: next } })
+    const row = vi.mocked(db.insertVersion).mock.calls[0][0]
+    expect(row.version).toBe(next)
+    expect((row.manifest as { version: string }).version).toBe(next)
+    expect(JSON.parse((row.source as Record<string, string>)['plugin.manifest.json']).version).toBe(next)
+  })
+})
+
+describe('the conversation', () => {
+  it.each([
+    ['another professor’s project', { ownerId: crypto.randomUUID() }],
+    ['a project in another school under the same owner id', { institutionId: crypto.randomUUID() }],
+  ])('is refused for %s, like a missing one, and no run is read', async (_label, over) => {
+    vi.mocked(db.loadBuilderProject).mockResolvedValue({ ...project, ...over } as never)
+    expect(await service.loadConversation({ sectionId: SECTION, pluginProjectId: PROJECT })).toBeNull()
+    expect(db.listProjectRuns).not.toHaveBeenCalled()
+  })
+  it('is refused for anyone who isn’t the section’s professor, before the project is read', async () => {
+    vi.mocked(requireProfessor).mockResolvedValue(null)
+    expect(await service.loadConversation({ sectionId: SECTION, pluginProjectId: PROJECT })).toBeNull()
+    expect(db.loadBuilderProject).not.toHaveBeenCalled()
+    expect(db.listProjectRuns).not.toHaveBeenCalled()
+  })
 })
 
 // Step 9: the copy guard reads the project's provenance, not just the current run's searches.

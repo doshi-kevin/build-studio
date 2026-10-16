@@ -120,7 +120,10 @@ interface IterableIterator<T> extends Iterator<T> { [Symbol.iterator](): Iterabl
 interface TemplateStringsArray extends ReadonlyArray<string> { readonly raw: readonly string[] }
 
 interface Number { toFixed(digits?: number): string; toString(): string }
-interface NumberConstructor { (value?: unknown): number; isFinite(n: unknown): boolean; isInteger(n: unknown): boolean; readonly MAX_SAFE_INTEGER: number }
+interface NumberConstructor {
+  (value?: unknown): number; isFinite(n: unknown): boolean; isInteger(n: unknown): boolean; isNaN(n: unknown): boolean
+  readonly MAX_SAFE_INTEGER: number; readonly EPSILON: number; readonly MAX_VALUE: number; readonly MIN_VALUE: number; readonly POSITIVE_INFINITY: number; readonly NEGATIVE_INFINITY: number
+}
 declare var Number: NumberConstructor
 interface String {
   readonly length: number
@@ -189,7 +192,17 @@ interface ObjectConstructor {
 }
 declare var Object: ObjectConstructor
 
-interface Math { round(x: number): number; floor(x: number): number; ceil(x: number): number; min(...v: number[]): number; max(...v: number[]): number; abs(x: number): number; random(): number }
+interface Math {
+  round(x: number): number; floor(x: number): number; ceil(x: number): number; trunc(x: number): number; sign(x: number): number
+  min(...v: number[]): number; max(...v: number[]): number; abs(x: number): number; random(): number
+  // The rest of the standard Math object, which views already have at run time: models and
+  // simulations (compound growth, van 't Hoff, kinematics) need them.
+  pow(x: number, y: number): number; sqrt(x: number): number; cbrt(x: number): number; hypot(...v: number[]): number
+  exp(x: number): number; expm1(x: number): number; log(x: number): number; log10(x: number): number; log2(x: number): number; log1p(x: number): number
+  sin(x: number): number; cos(x: number): number; tan(x: number): number; asin(x: number): number; acos(x: number): number; atan(x: number): number; atan2(y: number, x: number): number
+  sinh(x: number): number; cosh(x: number): number; tanh(x: number): number
+  readonly PI: number; readonly E: number; readonly LN2: number; readonly LN10: number; readonly LOG2E: number; readonly LOG10E: number; readonly SQRT2: number
+}
 declare var Math: Math
 interface JSON { stringify(value: unknown): string; parse(text: string): unknown }
 declare var JSON: JSON
@@ -227,6 +240,9 @@ type Awaited<T> = T extends PromiseLike<infer U> ? Awaited<U> : T
 declare function parseInt(s: string, radix?: number): number
 declare function parseFloat(s: string): number
 declare function isNaN(n: number): boolean
+declare function isFinite(n: number): boolean
+declare var Infinity: number
+declare var NaN: number
 declare function setTimeout(callback: () => void, ms?: number): number
 declare function clearTimeout(id?: number): void
 declare function setInterval(callback: () => void, ms?: number): number

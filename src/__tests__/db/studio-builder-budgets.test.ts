@@ -326,6 +326,29 @@ describe('recovering a stalled slice', () => {
     })
   })
 
+  it('a hand-off queues the next slice as a new job and fences out the old token; the slice at the cap ends the run instead', async () => {
+    await rolledBack(async () => {
+      const maxSlices = 2
+      const runId = String((await start()).run_id)
+      const old = (await claim(runId))!
+      await seedWork(runId, old)
+      const first = await runRow(runId)
+      const handed = await rpc('studio_builder_handoff', [runId, old, maxSlices, 0])
+      expect(handed).toEqual({ outcome: 'queued', job_id: expect.any(String) })
+      expect(handed.job_id).not.toBe(first.job_id)
+      expect(await runRow(runId)).toMatchObject({ status: 'queued', slice_no: 2, job_id: handed.job_id, claim_token: null })
+      const job = await one<{ params: Json }>('select params from public.background_jobs where id = $1', [handed.job_id])
+      expect(job.params).toEqual({ runId, sliceNo: 2 })
+      expect(await applyOn(db, runId, old, toolStep('1.0'))).toEqual({ ok: false, reason: 'fence' })
+
+      const current = (await claim(runId))!
+      expect(current).toBeTruthy()
+      expect(await rpc('studio_builder_handoff', [runId, current, maxSlices, 0])).toEqual({ outcome: 'ended' })
+      expect(await runRow(runId)).toMatchObject({ status: 'budget_exhausted', error_code: 'limit_slices', claim_token: null, slice_no: 2 })
+      expect(await claim(runId)).toBeNull()
+    })
+  })
+
   it('after a re-claim the old token’s turn, step, pause, hand-off and end are all refused, while its spend still lands', async () => {
     await rolledBack(async () => {
       const runId = String((await start()).run_id)

@@ -48,7 +48,7 @@ function manifestFor(slug: string, version: string, extraCollections: Collection
   return { ...exitTicket, id: slug, version, collections: { ...exitTicket.collections, ...extraCollections } }
 }
 
-async function publish(projectId: string, slug: string, version: string, extraCollections: Collections = {}) {
+async function publish(projectId: string, slug: string, version: string, extraCollections: Collections = {}, t = A) {
   const manifest = manifestFor(slug, version, extraCollections)
   const bundle = `/* ${slug} ${version} */`
   const [row] = await sql<{ id: string }>(
@@ -56,30 +56,30 @@ async function publish(projectId: string, slug: string, version: string, extraCo
        (project_id, institution_id, version, manifest, bridge_version, source, student_bundle, professor_bundle,
         bundle_sha256, published_by)
      values ($1, $2, $3, $4, 'v1', '{}'::jsonb, $5, $5, $6, $7) returning id`,
-    [projectId, A.institution, version, manifest, bundle, createHash('sha256').update(bundle).digest('hex'), A.users.professor.id],
+    [projectId, t.institution, version, manifest, bundle, createHash('sha256').update(bundle).digest('hex'), t.users.professor.id],
   )
   return row.id
 }
 
-/** A fresh project in tenant A with 1.0.0 and 1.1.0 published. 1.1.0 adds a `hints` collection. */
-async function newPlugin(extraCollections: Collections = {}) {
+/** A fresh project (in tenant A unless `t` says otherwise) with 1.0.0 and 1.1.0 published. 1.1.0 adds a `hints` collection. */
+async function newPlugin(extraCollections: Collections = {}, t = A) {
   const slug = `p-${run}-${slugs++}`
   const [{ id }] = await sql<{ id: string }>(
     `insert into public.studio_plugin_projects (institution_id, owner_id, slug, name)
      values ($1, $2, $3, 'Exit ticket') returning id`,
-    [A.institution, A.users.professor.id, slug],
+    [t.institution, t.users.professor.id, slug],
   )
   projects.push(id)
-  const v1 = await publish(id, slug, '1.0.0', extraCollections)
-  const v2 = await publish(id, slug, '1.1.0', { ...extraCollections, hints: { access: 'shared', fields: { text: 'text' } } })
+  const v1 = await publish(id, slug, '1.0.0', extraCollections, t)
+  const v2 = await publish(id, slug, '1.1.0', { ...extraCollections, hints: { access: 'shared', fields: { text: 'text' } } }, t)
   return { id, slug, v1, v2 }
 }
 
-async function install(sectionId: string, versionId: string) {
+async function install(sectionId: string, versionId: string, t = A) {
   const [{ id }] = await sql<{ id: string }>('select public.studio_install_plugin($1, $2, $3) as id', [
     sectionId,
     versionId,
-    A.users.professor.id,
+    t.users.professor.id,
   ])
   return id
 }
@@ -92,6 +92,7 @@ function activate(installationId: string, versionId: string, approve: boolean, a
 interface RecordInput {
   installation: string
   version: string
+  institution?: string
   section?: string
   collection?: string
   owner?: string | null
@@ -105,7 +106,7 @@ async function write(r: RecordInput) {
        (institution_id, section_id, installation_id, version_id, collection, owner_id, author_id, data)
      values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
     [
-      A.institution,
+      r.institution ?? A.institution,
       r.section ?? A.section,
       r.installation,
       r.version,
@@ -186,6 +187,29 @@ describe('one version in two sections (rule 2.4)', () => {
       /enrolled/,
     )
   })
+
+  it('a section installs a project once while it’s active, and an installation never moves', async () => {
+    const p = await newPlugin()
+    const other = await newPlugin()
+    const inA = await install(A.section, p.v1)
+    await refused(install(A.section, p.v1), '23505', /uq_studio_installation_active/)
+    for (const [column, value] of [['section_id', sectionA2], ['project_id', other.id], ['institution_id', B.institution]]) {
+      await refused(
+        sql(`update public.studio_plugin_installations set ${column} = $2 where id = $1`, [inA, value]),
+        CHECK_VIOLATION,
+        /can't move to another section, project or institution/,
+      )
+    }
+    const [row] = await sql('select section_id, project_id, institution_id from public.studio_plugin_installations where id = $1', [inA])
+    expect(row).toEqual({ section_id: A.section, project_id: p.id, institution_id: A.institution })
+
+    // An archived install doesn't count: the section can install the project again.
+    await sql(
+      `update public.studio_plugin_installations set status = 'archived', archived_at = now(), archived_by = $2 where id = $1`,
+      [inA, A.users.professor.id],
+    )
+    expect(await install(A.section, p.v1)).not.toBe(inA)
+  })
 })
 
 // ── Step 11 (supabase/migrations/20261003120000_studio_builder_quality.sql) ──
@@ -232,6 +256,22 @@ describe('staffPerStudent records', () => {
     const [row] = await sql<{ data: unknown }>('select data from public.studio_plugin_records where id = $1', [id])
     expect(row.data).toEqual({ status: 'late' })
   })
+
+  it('never changes a record’s owner, author or installation once written', async () => {
+    const p = await newPlugin(ATTENDANCE)
+    const inA = await install(A.section, p.v1)
+    const inA2 = await install(sectionA2, p.v1)
+    const id = await write({ installation: inA, version: p.v1, collection: 'attendance', owner: A.users.student.id, data: PRESENT })
+    for (const [column, value] of [['owner_id', A.users.ta.id], ['author_id', A.users.ta.id], ['installation_id', inA2]]) {
+      await refused(
+        sql(`update public.studio_plugin_records set ${column} = $2 where id = $1`, [id, value]),
+        CHECK_VIOLATION,
+        /stamps can't change/,
+      )
+    }
+    const [row] = await sql('select owner_id, author_id, installation_id from public.studio_plugin_records where id = $1', [id])
+    expect(row).toEqual({ owner_id: A.users.student.id, author_id: A.users.professor.id, installation_id: inA })
+  })
 })
 
 describe('a student’s storage counts only what they wrote', () => {
@@ -277,6 +317,15 @@ describe('handle salts', () => {
       CHECK_VIOLATION,
       /salt can't change/,
     )
+  })
+
+  it('differ between two projects in one section, and between institutions', async () => {
+    const p = await newPlugin()
+    const q = await newPlugin()
+    const b = await newPlugin({}, B)
+    const ids = [await install(A.section, p.v1), await install(A.section, q.v1), await install(B.section, b.v1, B)]
+    const rows = await sql<{ handle_salt: string }>('select handle_salt from public.studio_plugin_installations where id = any($1)', [ids])
+    expect(new Set(rows.map((r) => r.handle_salt)).size).toBe(3)
   })
 })
 
@@ -357,6 +406,18 @@ describe('institution boundaries', () => {
       CHECK_VIOLATION,
       /archives/,
     )
+  })
+
+  it('refuses a record stamped with another institution, or written by someone from one', async () => {
+    const p = await newPlugin()
+    const inA = await install(A.section, p.v1)
+    await refused(
+      write({ installation: inA, version: p.v1, institution: B.institution }),
+      CHECK_VIOLATION,
+      /a record must be in its installation's section and institution/,
+    )
+    await refused(write({ installation: inA, version: p.v1, author: B.users.professor.id }), CHECK_VIOLATION, /author must be in its institution/)
+    expect(await sql('select 1 from public.studio_plugin_records where installation_id = $1', [inA])).toHaveLength(0)
   })
 })
 
@@ -450,6 +511,16 @@ describe('publishing', () => {
       responses: { access: 'perStudent', fields: { questionId: 'text', answers: 'text' } },
     }
     await refused(publish(p.id, p.slug, '2.0.0', changed), CHECK_VIOLATION, /Collection responses changed/)
+  })
+
+  it('refuses an access change to an existing collection, or its removal', async () => {
+    const p = await newPlugin()
+    const hints = { access: 'shared', fields: { text: 'text' } }
+    // perStudent to shared would show every student's answers to the whole class.
+    const shared = { access: 'shared', fields: { questionId: 'text', answer: 'text', confidence: 'number' } }
+    await refused(publish(p.id, p.slug, '2.0.0', { hints, responses: shared }), CHECK_VIOLATION, /Collection responses changed/)
+    // An undefined collection is left out when the manifest is sent as JSON.
+    await refused(publish(p.id, p.slug, '2.0.0', { hints, responses: undefined }), CHECK_VIOLATION, /Collection responses changed/)
   })
 
   it('refuses a manifest whose id is not the project’s slug', async () => {

@@ -61,9 +61,9 @@ const rpc = async (fn: string, args: unknown[]) => {
   return (await one<{ r: Record<string, unknown> }>(`select public.${fn}(${placeholders}) as r`, params)).r
 }
 
-async function start(project: string | null, opts: { replace?: string | null; crid?: string; maxDaily?: number; maxLive?: number; maxCost?: number } = {}) {
+async function start(project: string | null, opts: { owner?: string; replace?: string | null; crid?: string; maxDaily?: number; maxLive?: number; maxCost?: number } = {}) {
   const r = await rpc('studio_builder_start', [
-    PROFESSOR, A.institution, section, project, `tool-${randomBytes(4).toString('hex')}`, 'Untitled tool', 'Build flashcards',
+    opts.owner ?? PROFESSOR, A.institution, section, project, `tool-${randomBytes(4).toString('hex')}`, 'Untitled tool', 'Build flashcards',
     opts.crid ?? randomUUID(), opts.replace ?? null, opts.maxDaily ?? 100, opts.maxLive ?? 100, opts.maxCost ?? 1000,
   ])
   if (typeof r.project_id === 'string' && !projects.includes(r.project_id)) projects.push(r.project_id)
@@ -140,6 +140,14 @@ describe('starting builds', () => {
     const s = await start(null)
     expect((await start(String(s.project_id))).outcome).toBe('busy')
   })
+  it('refuses a project someone else in the school owns, and creates nothing', async () => {
+    const s = await start(null)
+    await rpc('studio_builder_stop', [s.run_id, PROFESSOR, 60000])
+    const runs = async () => (await sql('select id from public.studio_plugin_builder_runs where project_id = $1', [s.project_id])).length
+    expect(await runs()).toBe(1)
+    expect(await start(String(s.project_id), { owner: A.users.admin.id })).toEqual({ outcome: 'not_found' })
+    expect(await runs()).toBe(1)
+  })
   it('the same client request id returns the same run', async () => {
     const crid = randomUUID()
     const a = await start(null, { crid })
@@ -208,6 +216,7 @@ describe('the fence', () => {
     expect(await rpc('studio_builder_apply', [runId, token, step('1.0'), 1, work(2), null, null, { tool_calls: 1, writes: 1 }, CAPS, 0])).toMatchObject({ ok: true, duplicate: true })
     expect(await rpc('studio_builder_apply', [runId, token, step('1.1'), 0, work(2), null, null, {}, CAPS, 0])).toEqual({ ok: false, reason: 'stale_work' })
     expect(await rpc('studio_builder_apply', [runId, token, step('1.2'), 1, null, null, null, { writes: 30 }, CAPS, 0])).toEqual({ ok: false, reason: 'limit_writes' })
+    expect(await rpc('studio_builder_apply', [runId, token, step('1.3'), 1, null, null, null, { bytes_written: CAPS.bytes_written }, CAPS, 0])).toEqual({ ok: false, reason: 'limit_bytes' })
     const r = await runRow(runId)
     expect(r).toMatchObject({ writes: 1, tool_calls: 1, bytes_written: 10 })
   })
@@ -528,6 +537,13 @@ describe('the run state machine', () => {
 })
 
 describe('one whole build, through the real harness', () => {
+  const slice = async (runId: string, model: ReturnType<typeof scriptedModel>) => {
+    const r = await runRow(runId)
+    return runBuilderSlice({ runId, sliceNo: Number(r.slice_no) }, { id: String(r.job_id), deadline: Date.now() + 10 * 60_000 }, realHarnessDeps(model))
+  }
+  // The first build's project and the draft it committed, for the follow-up.
+  const built = { projectId: '', head: '' }
+
   it('first build: plan, approval, both views, checks, commit, preview, then a human Save', async () => {
     session.userId = PROFESSOR
     // The cases above used up this professor's daily builds; the cap itself is tested above.
@@ -542,18 +558,14 @@ describe('one whole build, through the real harness', () => {
       { calls: [write('views/student.tsx', STUDENT_VIEW), write('views/professor.tsx', PROFESSOR_VIEW), call('run_checks')] },
       { calls: [finish()] },
     ])
-    const slice = async () => {
-      const r = await runRow(runId)
-      return runBuilderSlice({ runId, sliceNo: Number(r.slice_no) }, { id: String(r.job_id), deadline: Date.now() + 10 * 60_000 }, realHarnessDeps(model))
-    }
-    await slice()
+    await slice(runId, model)
     const progress = await service.readProgress(runId, 0)
     expect(progress?.status).toBe('waiting_for_approval')
     expect(progress?.approval?.items.length).toBeGreaterThan(0)
 
     const decided = await service.decideApproval({ sectionId: section, runId, proposalId: progress!.approval!.proposalId, deltaHash: progress!.approval!.deltaHash, approve: true })
     expect(decided.ok).toBe(true)
-    await slice()
+    await slice(runId, model)
 
     const done = await service.readProgress(runId, 0)
     expect(done?.status).toBe('preview_ready')
@@ -578,6 +590,32 @@ describe('one whole build, through the real harness', () => {
     )
     expect(version.source_snapshot_hash).toBe(head.h)
     expect(Number(version.n)).toBe(0)
+    Object.assign(built, { projectId: pluginProjectId, head: head.h })
+  }, 60_000)
+
+  it('a follow-up build loads the saved draft and changes only the view it edits', async () => {
+    expect(built.head).not.toBe('')
+    session.userId = PROFESSOR
+    const started = await service.startBuild({ sectionId: section, pluginProjectId: built.projectId, request: 'Rename the I know this button to Got it', clientRequestId: randomUUID() })
+    if (!started.ok) throw new Error(started.error)
+    const { runId } = started.value
+    expect(await runRow(runId)).toMatchObject({ base_hash: built.head })
+    const model = scriptedModel([
+      { calls: [call('read_file', { path: 'views/student.tsx' })] },
+      { calls: [call('edit_file', { path: 'views/student.tsx', old_text: '>I know this<', new_text: '>Got it<' }), call('run_checks')] },
+      { calls: [finish()] },
+    ])
+    await slice(runId, model)
+
+    expect((await service.readProgress(runId, 0))?.status).toBe('preview_ready')
+    const project = await one<{ head: string; undo: string; rev: string }>(
+      'select draft_head_hash as head, draft_undo_hash as undo, draft_rev as rev from public.studio_plugin_projects where id = $1',
+      [built.projectId],
+    )
+    expect({ undo: project.undo, rev: Number(project.rev) }).toEqual({ undo: built.head, rev: 2 })
+    const snap = await one<{ files: Record<string, string> }>('select files from public.studio_plugin_snapshots where project_id = $1 and hash = $2', [built.projectId, project.head])
+    expect(snap.files['views/student.tsx']).toBe(STUDENT_VIEW.replace('>I know this<', '>Got it<'))
+    expect(snap.files['views/professor.tsx']).toBe(PROFESSOR_VIEW)
   }, 60_000)
 
   it('a TA of the section can’t read the build or start one', async () => {
