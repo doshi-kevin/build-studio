@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.83",
-    "@ai-sdk/groq": "^3.0.42",
+    "@ai-sdk/groq": "^4.0.60",
     "@ai-sdk/openai": "^3.0.74",
     "@ai-sdk/react": "^3.0.210",
     "@anthropic-ai/sdk": "^0.135.0",
