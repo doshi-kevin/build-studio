@@ -97,7 +97,19 @@ import {
   type ToolOutcome,
   type ToolState,
 } from './tools'
-import { initialWork, readPlan, type BuildResult, type Plan, type ReviewRecord, type RunErrorCode, type SampleData, type TerminalStatus, type Work } from './work'
+import {
+  initialWork,
+  readPlan,
+  readProductIntelligence,
+  type BuildResult,
+  type Plan,
+  type ProductIntelligence,
+  type ReviewRecord,
+  type RunErrorCode,
+  type SampleData,
+  type TerminalStatus,
+  type Work,
+} from './work'
 
 export const BUILDER_JOB_TYPE = 'studio_builder_slice'
 export const BUILDER_LEDGER_FEATURE = 'studio_builder'
@@ -155,6 +167,13 @@ export interface HarnessDeps {
   loadSliceData(run: db.BuilderRunRow): Promise<SliceData | null>
   /** The project's active saved decisions. A failure (a throw or null) means none: a build never depends on memory. */
   loadMemories(run: db.BuilderRunRow): Promise<ProjectMemory[] | null>
+  /**
+   * What educational product the build is for (Step 12B), asked once when the first slice
+   * seeds the working copy, which then keeps it through every later slice and a crash.
+   * Absent (as in production today), a throw or an invalid value means none: the build
+   * runs exactly as it would without it. Nothing reads the artifact yet.
+   */
+  productIntelligence?(run: db.BuilderRunRow, data: SliceData): Promise<ProductIntelligence | null>
   /** Everything outside the run that can stop it before a model call. */
   gate(run: db.BuilderRunRow): Promise<GateRefusal | null>
   runChecks(run: db.BuilderRunRow, data: SliceData, work: Work): Promise<DraftCheckResult>
@@ -237,6 +256,8 @@ function parseWork(raw: Record<string, unknown> | null): Work | null {
     ...initialWork(null),
     ...(raw as unknown as Work),
     manifest: manifest?.ok && manifest.manifest.manifestVersion === 2 ? manifest.manifest : null,
+    // Runs from before Step 12B have none; one that no longer parses reads as none.
+    product_intelligence: readProductIntelligence(raw.product_intelligence),
     // Runs from before Step 11 have no sample or review.
     sample: (raw.sample as SampleData | null | undefined) ?? null,
     review: (raw.review as Work['review'] | undefined) ?? { rounds: 0, last: null },
@@ -387,6 +408,19 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
   let memoryProposals = 0
   // The latest re-read of this run's course searches, for the prompt and the ending card.
   let lastMaterial: RenderedSearch[] = []
+  /** The build's Product Intelligence, never fatal: no provider, a throw or an invalid value is none. */
+  const productIntelligenceFor = async (run: db.BuilderRunRow, slice: SliceData): Promise<ProductIntelligence | null> => {
+    if (!deps.productIntelligence) return null
+    try {
+      const raw = await deps.productIntelligence(run, slice)
+      const artifact = readProductIntelligence(raw)
+      if (raw !== null && !artifact) logger.warn('studio.builder.productIntelligence: invalid, building without it', { runId })
+      return artifact
+    } catch (error) {
+      logger.warn('studio.builder.productIntelligence: unavailable, building without it', { runId, name: error instanceof Error ? error.name : 'unknown' })
+      return null
+    }
+  }
   let activeSince = deps.now()
   // Time spent since the last write that carried it, for active-time accounting.
   const takeActive = () => {
@@ -451,11 +485,13 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
       logger.warn('studio.builder.memory: unreadable, building without saved decisions', { runId, name: error instanceof Error ? error.name : 'unknown' })
     }
 
-    // The first slice persists the working copy, seeded from the draft it started on.
+    // The first slice persists the working copy, seeded from the draft it started on, with
+    // the build's Product Intelligence when there is one. Later slices re-read it from the row.
     if (!run.work) {
+      const seed: Work = { ...initialWork(data.base), product_intelligence: await productIntelligenceFor(run, data) }
       const seeded = await deps.store.apply({
         runId, token, step: step('system', 'sys:work', 'done', 'run.slice', { args: { event: 'work_initialised' } }),
-        expectedWorkRev: -1, work: initialWork(data.base) as unknown as Record<string, unknown>, plan: null, phase: null,
+        expectedWorkRev: -1, work: seed as unknown as Record<string, unknown>, plan: null, phase: null,
         delta: {}, caps: CAPS, activeMs: 0,
       })
       if (!seeded?.ok) return seeded?.reason === 'cancelled' ? await end(run, null, null, 'cancelled', null) : 'fence lost'

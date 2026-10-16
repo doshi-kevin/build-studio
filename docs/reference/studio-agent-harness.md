@@ -235,6 +235,13 @@ The whole plan is at most 8 KiB. A plan stored before plan v2 still reads, with 
 - It counts as one write against the run's budgets. A refusal (`sample_invalid`) names collections and positions, never values.
 - It lives in the working copy, is saved on the snapshot and is part of the snapshot's hash. The draft gate checks it again (`builder.sample`) and runs the student-name and copy-guard checks over its text. It never reaches a published version: the validator and students use their own data.
 
+**Product Intelligence** (Step 12B.1, a skeleton). A build can carry a structured answer to what educational product it is for: the request type (`direct_build` or `teaching_problem`), the teaching problem, domain, student difficulty, each role's goal, platform constraints, the selected concept, the learning loop, and the professor's and student's workflows (`productIntelligenceSchema` in `work.ts`, at most 6 KiB).
+
+- It lives in the working copy as `product_intelligence`, so it is saved with every step and kept through every pause, slice and crash. The run row clears the working copy when the run ends, so it doesn't outlive the run yet.
+- It is filled once, when the first slice seeds the working copy, by the optional `productIntelligence` harness dependency. Production doesn't wire one, so every real build seeds `null`.
+- A throw, an invalid value, or a run saved before 12B reads as `null`, and the build runs as it would without it.
+- Nothing reads it yet: it reaches no prompt, tool, result or screen. It is separate from `submit_plan`, which stays the builder's engineering intent.
+
 ## Design review
 
 Step 11 (`review.ts`, `renderer.ts`, `validator-runtime/render.mjs`). After the gate passes and before anything is committed, the harness renders the draft and asks the model to review it. The review grants nothing. It can only send the builder back to improve its own draft.

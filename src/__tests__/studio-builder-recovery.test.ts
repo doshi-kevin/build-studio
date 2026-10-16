@@ -640,3 +640,132 @@ describe('a follow-up build and the builds before it', () => {
     expect(prompt.endsWith('REQUEST-NOW: make the cards bigger')).toBe(true)
   })
 })
+
+const { initialWork, PRODUCT_INTELLIGENCE_FORMAT } = await import('@/lib/studio/builder/work')
+const { logger } = await import('@/lib/logger')
+type ProductIntelligence = import('@/lib/studio/builder/work').ProductIntelligence
+
+describe('Product Intelligence across slices and crashes (Step 12B.1)', () => {
+  const PI: ProductIntelligence = {
+    format: PRODUCT_INTELLIGENCE_FORMAT,
+    requestType: 'teaching_problem',
+    teachingProblem: 'Students memorise equilibrium shifts without reasoning about Q against K.',
+    domainContext: 'General chemistry, second semester.',
+    studentDifficulty: 'Predicting the direction of a shift after a stress.',
+    professorGoal: 'See which stresses the class still gets wrong.',
+    studentGoal: 'Predict, commit, then check against the outcome.',
+    platformConstraints: ['No AI inside the plugin.'],
+    selectedConcept: { title: 'Equilibrium shift predictor', summary: 'Students predict how a system responds to a stress before seeing it.' },
+    learningLoop: ['Predict', 'Commit', 'Reveal', 'Reflect'],
+    professorWorkflow: ['Choose the stresses'],
+    studentWorkflow: ['Predict a shift'],
+  }
+  /** The live run row's artifact. A run's working copy is cleared when it ends, as in SQL. */
+  const live = (h: ReturnType<typeof harness>) => (h.mem.state.run.work as { product_intelligence?: unknown } | null)?.product_intelligence
+  /** Every working copy the harness writes, in order: what each slice saved. */
+  function recording(h: ReturnType<typeof harness>, deps: HarnessDeps = h.deps) {
+    const writes: unknown[] = []
+    const store: RunStore = {
+      ...deps.store,
+      apply: async (a) => {
+        if (a.work) writes.push(structuredClone((a.work as { product_intelligence?: unknown }).product_intelligence))
+        return deps.store.apply(a)
+      },
+    }
+    return { deps: { ...deps, store }, writes }
+  }
+
+  it('production wires no provider, so a real build seeds none, as before', () => {
+    expect(realHarnessDeps(scriptedModel([])).productIntelligence).toBeUndefined()
+  })
+
+  it('is seeded once, kept by every write through a pause and the next slice, and changes nothing else the run does', async () => {
+    const twoSlices = async (withArtifact: boolean) => {
+      const h = harness([{ calls: [call('ask_professor', { question: 'Which unit should this cover?' })] }, { calls: [kit('Button')] }, { calls: [finish('blocked', 'Nothing to change.')] }])
+      const provider = vi.fn(async () => structuredClone(PI))
+      const r = recording(h, withArtifact ? { ...h.deps, productIntelligence: provider } : h.deps)
+      expect(await h.slice(r.deps)).toBe('stopped')
+      expect(h.mem.state.run.status).toBe('waiting_for_professor')
+      const whilePaused = structuredClone(live(h) ?? null)
+      const firstSlice = r.writes.length
+      expect(h.mem.professor.answer(h.mem.state.run.questions[0].id, 'Unit 4.')).toBe('answered')
+      expect(await h.slice(r.deps)).toBe('stopped')
+      return { h, provider, whilePaused, writes: r.writes, firstSlice }
+    }
+    const withIt = await twoSlices(true)
+    const without = await twoSlices(false)
+
+    expect(withIt.provider).toHaveBeenCalledTimes(1)
+    expect(withIt.whilePaused).toEqual(PI)
+    // The seed, and every later write in both slices (the kit lookup in the second), carry it.
+    expect(withIt.writes.length).toBeGreaterThan(withIt.firstSlice)
+    expect(withIt.writes.every((w) => JSON.stringify(w) === JSON.stringify(PI))).toBe(true)
+    expect(without.writes.every((w) => w === null)).toBe(true)
+
+    // The same run, step for step and to the same ending; the artifact reaches no prompt.
+    // Question ids are random per run, so they're masked.
+    const trace = (h: ReturnType<typeof harness>) => h.mem.state.steps.map((s) => [s.kind, s.tool, s.status, s.toolCallId.replace(/[0-9a-f-]{36}/, 'id'), s.resultSummary.reason ?? null])
+    expect(trace(withIt.h)).toEqual(trace(without.h))
+    expect(withIt.h.mem.state.run).toMatchObject({ status: without.h.mem.state.run.status, errorCode: without.h.mem.state.run.errorCode })
+    expect(withIt.h.model.prompts).toHaveLength(without.h.model.prompts.length)
+    expect(withIt.h.model.prompts.map((p) => `${p.system}\n${p.prompt}`).join('\n')).not.toContain('equilibrium')
+  })
+
+  it('survives a slice that dies mid-turn: the resumed slice keeps it and never asks again', async () => {
+    const h = harness([{ calls: [kit('Button'), kit('Text'), kit('Card')] }, { calls: [kit('Card')] }, { calls: [finish('blocked', 'Nothing to change.')] }])
+    const provider = vi.fn(async () => structuredClone(PI))
+    const dying = { ...h.deps, productIntelligence: provider, store: mortal(h.mem.store, (m, a) => m === 'apply' && stepId(a).endsWith('.1')) }
+    expect(await h.slice(dying)).toBe('faulted')
+    expect(live(h)).toEqual(PI)
+
+    h.mem.state.heartbeatAt = Date.now() - limits.STUDIO_BUILDER_HEARTBEAT_STALE_MS - 1
+    const r = recording(h, { ...h.deps, productIntelligence: provider })
+    expect(await h.slice(r.deps)).toBe('stopped')
+    expect(h.mem.state.run.resumeCount).toBe(1)
+    expect(h.mem.state.run.status).toBe('blocked')
+    expect(provider).toHaveBeenCalledTimes(1)
+    // The resumed slice re-read it from the row and wrote it back unchanged.
+    expect(r.writes.length).toBeGreaterThan(0)
+    expect(r.writes.every((w) => JSON.stringify(w) === JSON.stringify(PI))).toBe(true)
+  })
+
+  it('a run saved before Step 12B, or one whose value no longer parses, reads as none and runs as before', async () => {
+    for (const value of [undefined, { format: 'studio-product-intelligence-v0', idea: 'x' }]) {
+      const h = harness([{ calls: [kit('Button')] }, { calls: [finish('blocked', 'Nothing to change.')] }])
+      const legacy: Record<string, unknown> = { ...initialWork(base()) }
+      delete legacy.product_intelligence
+      if (value !== undefined) legacy.product_intelligence = value
+      h.mem.state.run.work = legacy
+      const provider = vi.fn(async () => structuredClone(PI))
+      const r = recording(h, { ...h.deps, productIntelligence: provider })
+      expect(await h.slice(r.deps)).toBe('stopped')
+      // Its working copy already existed: nothing is seeded, and nothing invents one.
+      expect(provider).not.toHaveBeenCalled()
+      expect(h.mem.state.run.status).toBe('blocked')
+      expect(r.writes.length).toBeGreaterThan(0)
+      // Written back as null, not the stale value carried along.
+      expect(r.writes.every((w) => w === null)).toBe(true)
+    }
+  })
+
+  it('a provider that throws, returns something invalid, or returns null means none and the build goes on', async () => {
+    const warn = vi.spyOn(logger, 'warn')
+    const providers = [
+      async () => { throw new Error('ideation down') },
+      async () => ({ ...PI, requestType: 'guess' }) as unknown as ProductIntelligence,
+      async () => null,
+    ]
+    for (const productIntelligence of providers) {
+      const h = harness([{ calls: [kit('Button')] }, { calls: [finish('blocked', 'Nothing to change.')] }])
+      const r = recording(h, { ...h.deps, productIntelligence })
+      expect(await h.slice(r.deps)).toBe('stopped')
+      expect(h.mem.state.run.status).toBe('blocked')
+      expect(r.writes.length).toBeGreaterThan(0)
+      expect(r.writes.every((w) => w === null)).toBe(true)
+    }
+    // One warning each for the throw and the invalid value; a provider with nothing to say is not a fault.
+    const ours = warn.mock.calls.map((c) => c[0]).filter((m) => typeof m === 'string' && m.startsWith('studio.builder.productIntelligence'))
+    warn.mockRestore()
+    expect(ours).toEqual(['studio.builder.productIntelligence: unavailable, building without it', 'studio.builder.productIntelligence: invalid, building without it'])
+  })
+})

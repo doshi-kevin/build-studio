@@ -52,6 +52,9 @@ export interface Work {
     /** The draft the latest review saw: it passed every check and rendered without crashing. */
     good?: { manifest: StudioManifestV2; files: Partial<Record<PluginPath, string>>; sample: SampleData | null } | null
   }
+  /** What educational product this build is for (Step 12B). Null when the run has none, which
+   * is every run until something fills it; nothing reads it yet. */
+  product_intelligence: ProductIntelligence | null
 }
 
 /** Per collection, the records the preview shows. `student` indexes the synthetic roster
@@ -87,6 +90,7 @@ export function initialWork(
     material: emptyMaterial(),
     sample: base?.sample ?? null,
     review: { rounds: 0, last: null },
+    product_intelligence: null,
   }
 }
 
@@ -127,6 +131,45 @@ export function readPlan(raw: unknown): Plan | null {
 }
 
 export type Plan = z.infer<typeof planSchema>
+
+export const PRODUCT_INTELLIGENCE_FORMAT = 'studio-product-intelligence-v1'
+
+/** Kept small beside the files in the run row's 256 KiB working copy. Here rather than in
+ * limits.ts, which the check worker bundles whole. */
+export const PRODUCT_INTELLIGENCE_MAX_BYTES = 6 * 1024
+
+/**
+ * The Product Intelligence artifact (Step 12B): what educational product a build is for,
+ * decided before any code. `direct_build` is a request that already names the tool;
+ * `teaching_problem` describes a problem and leaves the product to Studio. A field nobody
+ * knows yet is null or an empty list. Separate from submit_plan, which stays the builder's
+ * engineering intent.
+ */
+export const productIntelligenceSchema = z
+  .strictObject({
+    format: z.literal(PRODUCT_INTELLIGENCE_FORMAT),
+    requestType: z.enum(['direct_build', 'teaching_problem']),
+    teachingProblem: prose(600).nullable(),
+    domainContext: prose(600).nullable(),
+    studentDifficulty: prose(600).nullable(),
+    professorGoal: prose(400).nullable(),
+    studentGoal: prose(400).nullable(),
+    platformConstraints: items(8, 240),
+    selectedConcept: z.strictObject({ title: prose(120), summary: prose(600) }).nullable(),
+    learningLoop: items(8, 240),
+    professorWorkflow: items(10, 240),
+    studentWorkflow: items(10, 240),
+  })
+  .refine((p) => utf8Bytes(JSON.stringify(p)) <= PRODUCT_INTELLIGENCE_MAX_BYTES, 'The product intelligence is too long')
+
+export type ProductIntelligence = z.infer<typeof productIntelligenceSchema>
+
+/** A stored artifact, or null: absent (a run from before Step 12B, or one without it) or no longer valid. */
+export function readProductIntelligence(raw: unknown): ProductIntelligence | null {
+  if (raw === null || raw === undefined) return null
+  const parsed = productIntelligenceSchema.safeParse(raw)
+  return parsed.success ? parsed.data : null
+}
 
 export type TerminalStatus = 'preview_ready' | 'completed' | 'blocked' | 'cancelled' | 'budget_exhausted' | 'failed'
 
