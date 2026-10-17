@@ -5,8 +5,8 @@ import { basename, join } from 'node:path'
 
 /** Variables the server must receive, each read only from E2E_<NAME> in the caller's env. */
 export const SERVER_VARS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SITE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
-/** Variables it may receive when the caller sets them, checked the same way. The Gemini key is the one
- * outside credential a walkthrough may pass on purpose, so Studio's builder can call a model.
+/** Variables it may receive when the caller sets them, checked the same way. The Gemini and Anthropic keys are the
+ * outside credentials a walkthrough may pass on purpose, so Studio's builder can call a model.
  * STUDIO_BUILDER_RENDERER=local lets the builder's design review screenshot drafts on this machine. */
 export const OPTIONAL_SERVER_VARS = [
   'BACKGROUND_JOBS_SECRET',
@@ -14,6 +14,8 @@ export const OPTIONAL_SERVER_VARS = [
   'STUDIO_RUNTIME_ORIGIN',
   'STUDIO_STUDENT_ACCESS',
   'GOOGLE_GENERATIVE_AI_API_KEY',
+  // Studio's builder and Product Intelligence call Anthropic. Read only from E2E_ANTHROPIC_API_KEY, never from a .env.
+  'ANTHROPIC_API_KEY',
   'STUDIO_BUILDER_RENDERER',
   // Where the local renderer finds validator-runtime and Playwright: the standalone build ships neither.
   'STUDIO_BUILDER_RENDERER_ROOT',
