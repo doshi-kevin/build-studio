@@ -11,6 +11,7 @@ import type { StudioViewer } from '../context'
 import { loadReleasedAssignments, loadSectionSkills } from '../db'
 import { rosterHandles } from '../handles'
 import * as records from '../records'
+import { executeServerAction } from '../server-runtime/execute'
 import type { BridgeErrorCode } from '../runtime/protocol'
 import type { MethodArgs, ServerMethodName } from './catalog'
 import { contextFor } from './context-get'
@@ -71,6 +72,7 @@ export const SERVER_HANDLERS: Handlers = {
     const result = await records.batchRecords({ ...args, installationId: viewer.installationId })
     return result.ok ? { ok: true, data: { results: result.value.map(batchItem) } } : fromRecords(result)
   },
+  'server.call': (viewer, args) => executeServerAction(viewer, args.action, args.args),
 }
 
 export function serverHandler(name: string): Handlers[ServerMethodName] | null {

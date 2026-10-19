@@ -20,7 +20,7 @@ import { resolveViewer, type StudioViewer } from './context'
 import * as db from './db'
 import { loadHandleKey, loadHandleRoster, type HandleKey } from './handles'
 import { STUDIO_RECORD_BATCH_MAX, STUDIO_RECORD_PAGE_MAX } from './limits'
-import { decide, type RecordOperation } from './policy'
+import { decideForFrame, decideForServer, type RecordOperation } from './policy'
 import { validateRecordData, type CollectionDef } from './record-schema'
 
 export const RECORD_NOT_AVAILABLE = 'This isn’t available.'
@@ -97,13 +97,17 @@ interface Authorized {
 }
 
 /** Steps 4 to 8: collection and policy, for a viewer resolveViewer already built. Null
- * for every refusal. */
-function authorizeFor(viewer: StudioViewer, name: string, operation: RecordOperation): Authorized | null {
+ * for every refusal. `server` is set for the plugin's server code: the staffOnly
+ * collections its action declares. Without it the request came from a frame. */
+function authorizeFor(viewer: StudioViewer, name: string, operation: RecordOperation, server?: { reads: readonly string[] }): Authorized | null {
   // hasOwn, so a name like "constructor" can't resolve through the prototype.
   if (!Object.hasOwn(viewer.manifest.collections, name)) return null
   const collection = viewer.manifest.collections[name]
 
-  const decision = decide(viewer.role, collection.access, operation, viewer.writable ? 'writable' : 'readOnly')
+  const mode = viewer.writable ? 'writable' : 'readOnly'
+  const decision = server
+    ? decideForServer(viewer.role, collection, operation, mode, server.reads.includes(name))
+    : decideForFrame(viewer.role, collection, operation, mode)
   if (!decision.allow) return null
 
   return {
@@ -329,4 +333,54 @@ export async function batchRecords(input: BatchRecordsInput): Promise<RecordResu
     else results.push(await remove(auth, item.recordId))
   }
   return { ok: true, value: results }
+}
+
+/**
+ * The record service for a plugin's server code (server-runtime/capabilities.ts), bound to
+ * the viewer resolveViewer built for the action call and to the staffOnly collections the
+ * action declares. Each operation runs exactly as its frame method would (validation,
+ * quota, audit, handles) under decideForServer instead of the frame rule. Inputs come
+ * from untrusted plugin code, so each is parsed here like a frame request.
+ */
+export function serverRecords(viewer: StudioViewer, reads: readonly string[]) {
+  const handles = callHandles(viewer)
+  const grant = { reads }
+  const auth = (name: string, op: RecordOperation) => authorizeFor(viewer, name, op, grant)
+  const target = { installationId: viewer.installationId }
+  return {
+    async list(input: Omit<ListRecordsInput, 'installationId'>): Promise<RecordResult<PluginRecord[]>> {
+      const parsed = listInput.safeParse({ ...input, ...target })
+      const a = parsed.success ? auth(parsed.data.collection, 'list') : null
+      if (!parsed.success || !a) return denied()
+      const [rows, key] = await Promise.all([
+        db.listRecords(a.scope, { limit: parsed.data.limit ?? STUDIO_RECORD_PAGE_MAX, offset: parsed.data.offset ?? 0 }),
+        handles.forRecords(a),
+      ])
+      if (!rows || key === null) return failed()
+      return { ok: true, value: rows.map((r) => toPlugin(r, viewer, key)) }
+    },
+    async get(input: Omit<GetRecordInput, 'installationId'>): Promise<RecordResult<PluginRecord>> {
+      const parsed = getInput.safeParse({ ...input, ...target })
+      const a = parsed.success ? auth(parsed.data.collection, 'get') : null
+      if (!parsed.success || !a) return denied()
+      const [row, key] = await Promise.all([db.getRecord(a.scope, parsed.data.recordId), handles.forRecords(a)])
+      if (!row) return denied()
+      return key === null ? failed() : { ok: true, value: toPlugin(row, viewer, key) }
+    },
+    async create(input: Omit<CreateRecordInput, 'installationId'>): Promise<RecordResult<PluginRecord>> {
+      const parsed = createInput.safeParse({ ...input, ...target })
+      const a = parsed.success ? auth(parsed.data.collection, 'create') : null
+      return parsed.success && a ? create(a, handles, parsed.data) : denied()
+    },
+    async update(input: Omit<UpdateRecordInput, 'installationId'>): Promise<RecordResult<PluginRecord>> {
+      const parsed = updateInput.safeParse({ ...input, ...target })
+      const a = parsed.success ? auth(parsed.data.collection, 'update') : null
+      return parsed.success && a ? update(a, handles, parsed.data) : denied()
+    },
+    async remove(input: Omit<DeleteRecordInput, 'installationId'>): Promise<RecordResult<null>> {
+      const parsed = deleteInput.safeParse({ ...input, ...target })
+      const a = parsed.success ? auth(parsed.data.collection, 'delete') : null
+      return parsed.success && a ? remove(a, parsed.data.recordId) : denied()
+    },
+  }
 }

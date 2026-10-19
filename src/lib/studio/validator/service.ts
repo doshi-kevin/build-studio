@@ -201,6 +201,7 @@ export async function runStaticValidation(
     source: version.source,
     studentBundle: version.studentBundle,
     professorBundle: version.professorBundle,
+    serverBundle: version.serverBundle,
   }
   const hash = artifactHash(artifact)
 
@@ -276,6 +277,7 @@ export async function currentVerdict(versionId: string): Promise<VersionVerdict>
     source: version.source,
     studentBundle: version.studentBundle,
     professorBundle: version.professorBundle,
+    serverBundle: version.serverBundle,
   })
   const reviewRunIds = runs.filter((r) => r.status === 'needs_review').map((r) => r.id)
   const [checks, reviews] = await Promise.all([db.listValidationChecks(reviewRunIds), db.listValidationReviews(reviewRunIds)])

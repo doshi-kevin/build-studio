@@ -24,7 +24,7 @@ import { STUDIO_BUILDER_MANIFEST_MAX_BYTES } from '../limits'
 import { parseManifest, type StudioManifest, type StudioManifestV2 } from '../manifest'
 import { deterministicPurpose } from '../validator/purpose'
 import { canonicalJson } from '../validator/artifact'
-import { characterProblem, PLUGIN_PATHS, stringsIn, utf8Bytes } from './paths'
+import { characterProblem, PLUGIN_PATHS, SERVER_ENTRY, stringsIn, utf8Bytes } from './paths'
 import { contentHash } from './snapshot'
 
 /** The version a draft carries. The real one is chosen when the professor saves it. */
@@ -37,10 +37,11 @@ export const AVAILABLE_CAPABILITIES: CapabilityName[] = [
 
 export type ApprovalKind =
   | 'capability_added' | 'signal_added' | 'collection_added' | 'collection_access_changed'
-  | 'skill_slot_added' | 'purpose_changed' | 'audience_changed'
+  | 'skill_slot_added' | 'purpose_changed' | 'audience_changed' | 'server_action_added' | 'server_action_changed'
 export type DirectKind =
   | 'renamed' | 'description_changed' | 'summary_changed' | 'capability_removed' | 'signal_removed'
   | 'collection_removed' | 'collection_fields_changed' | 'skill_slot_removed' | 'skill_slot_relabelled' | 'ai_fallback_changed'
+  | 'server_action_removed' | 'server_action_args_changed'
 
 export interface DeltaItem<K extends string = ApprovalKind | DirectKind> {
   kind: K
@@ -84,6 +85,7 @@ const FIELD_CLASS: Record<keyof StudioManifestV2, 'owned' | 'diffed'> = {
   signals: 'diffed',
   skillSlots: 'diffed',
   aiFallback: 'diffed',
+  server: 'diffed',
 }
 void FIELD_CLASS
 
@@ -101,6 +103,14 @@ const AUDIENCE_LABEL: Record<StudioManifestV2['purpose']['audience'], string> = 
   both: 'for students and staff',
 }
 const VIEW_LABEL: Record<PluginView, string> = { student: 'Student view', professor: 'Your view' }
+const CALLER_LABEL: Record<PluginView, string> = { student: 'students', professor: 'you and your TAs' }
+const SERVER_ACCESS_LABEL: Record<Access, string> = {
+  perStudent: 'recorded by the tool’s own code, each student sees only theirs, staff see all',
+  staffPerStudent: 'recorded by the tool’s own code for each student, each student sees only their own',
+  shared: 'recorded by the tool’s own code, everyone in the section reads',
+  staffOnly: 'recorded by the tool’s own code, staff only, never sent to a student’s screen',
+}
+const accessLine = (c: { access: Access; writes?: 'server' }) => (c.writes === 'server' ? SERVER_ACCESS_LABEL[c.access] : ACCESS_LABEL[c.access])
 
 /** "peerReviews" -> "peer reviews". Keys are regex-limited identifiers, never free text. */
 const humanize = (key: string) => key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()
@@ -141,7 +151,10 @@ export function proposeManifest(manifestJson: string, ctx: ProposalContext): Pro
     if (Object.hasOwn(given, 'entry') && given.entry !== path) stamped.push(`views.${view}.entry`)
     stampedViews[view] = { capabilities: [], ...given, entry: path }
   }
-  const candidate = { ...input, ...owned, views: stampedViews }
+  // The server entry is fixed like the view entries.
+  const server = input.server && typeof input.server === 'object' && !Array.isArray(input.server) ? (input.server as Record<string, unknown>) : null
+  if (server && Object.hasOwn(server, 'entry') && server.entry !== SERVER_ENTRY) stamped.push('server.entry')
+  const candidate = { ...input, ...owned, views: stampedViews, ...(server ? { server: { ...server, entry: SERVER_ENTRY } } : {}) }
 
   // 4. The contract.
   const parsed = parseManifest(candidate)
@@ -207,13 +220,13 @@ export function classify(
     const old = Object.hasOwn(beforeCollections, name) ? beforeCollections[name] : null
     const fields = Object.entries(c.fields).map(([f, t]) => `${humanize(f)} (${t})`).join(', ')
     if (!old) {
-      approval.push({ kind: 'collection_added', line: `Store "${humanize(name)}": ${ACCESS_LABEL[c.access]}. Fields: ${fields}` })
+      approval.push({ kind: 'collection_added', line: `Store "${humanize(name)}": ${accessLine(c)}. Fields: ${fields}` })
       continue
     }
-    if (old.access !== c.access) {
+    if (old.access !== c.access || old.writes !== c.writes) {
       approval.push({
         kind: 'collection_access_changed',
-        line: `Change who sees "${humanize(name)}": from ${ACCESS_LABEL[old.access]} to ${ACCESS_LABEL[c.access]}`,
+        line: `Change who can see or record "${humanize(name)}": from ${accessLine(old)} to ${accessLine(c)}`,
       })
     }
     if (!sameJson(old.fields, c.fields)) direct.push({ kind: 'collection_fields_changed', line: `"${humanize(name)}" now stores: ${fields}` })
@@ -229,6 +242,26 @@ export function classify(
   }
   for (const key of beforeSlots.keys()) {
     if (!after.skillSlots.some((s) => s.key === key)) direct.push({ kind: 'skill_slot_removed', line: `No longer counts toward "${humanize(key)}"` })
+  }
+
+  // Server actions: who may run the tool's server code, and which hidden collections it reads for a student.
+  const beforeActions = before?.server?.actions ?? {}
+  for (const [name, a] of Object.entries(after.server?.actions ?? {})) {
+    const callers = a.roles.map((r) => CALLER_LABEL[r]).join(', ')
+    const reads = (a.reads ?? []).map((c) => `"${humanize(c)}"`).join(', ')
+    const readsLine = reads && a.roles.includes('student') ? `; for a student, it can look at ${reads}, which students never see` : ''
+    const old = Object.hasOwn(beforeActions, name) ? beforeActions[name] : null
+    if (!old) {
+      approval.push({ kind: 'server_action_added', line: `"${humanize(name)}" runs on Scholera’s servers when ${callers} use it${readsLine}` })
+      continue
+    }
+    const newRole = a.roles.some((r) => !old.roles.includes(r))
+    const newRead = (a.reads ?? []).some((c) => !(old.reads ?? []).includes(c))
+    if (newRole || newRead) approval.push({ kind: 'server_action_changed', line: `"${humanize(name)}" now runs when ${callers} use it${readsLine}` })
+    if (!sameJson(old.args, a.args)) direct.push({ kind: 'server_action_args_changed', line: `Server code "${humanize(name)}" takes different input` })
+  }
+  for (const name of Object.keys(beforeActions)) {
+    if (!Object.hasOwn(after.server?.actions ?? {}, name)) direct.push({ kind: 'server_action_removed', line: `No longer has server code "${humanize(name)}"` })
   }
 
   if (before?.purpose.category !== after.purpose.category) {
@@ -272,5 +305,19 @@ export function approvalSummary(before: StudioManifest | null, after: StudioMani
   if (newAccess.has('staffOnly')) lines.push('Save notes that only you and your TAs can see.')
   if (added.includes('course.assignments')) lines.push('Read your published assignments and their due dates.')
   if (added.includes('course.skills')) lines.push('Read your course’s skill list.')
+  const actions = (m: StudioManifest | null) => (m?.manifestVersion === 2 ? (m.server?.actions ?? {}) : {})
+  const beforeActions = actions(before)
+  // The same test classify uses: a new action, or one that gains a role or a read.
+  const grown = Object.entries(actions(after)).filter(([name, a]) => {
+    const old = Object.hasOwn(beforeActions, name) ? beforeActions[name] : null
+    return !old || a.roles.some((r) => !old.roles.includes(r)) || (a.reads ?? []).some((c) => !(old.reads ?? []).includes(c))
+  })
+  if (grown.length > 0) lines.push('Run its own code on Scholera’s servers when it’s used. That code can reach only this tool’s own records and your course’s name and code.')
+  if (grown.some(([, a]) => a.roles.includes('student') && (a.reads ?? []).length > 0)) {
+    lines.push('When a student uses it, it can read answers or settings students never see, to check their work. The tool’s code decides what the student gets back, so try it in Student view to make sure it doesn’t give answers away.')
+  }
+  if (Object.entries(after.collections).some(([name, c]) => c.writes === 'server' && before?.collections[name]?.writes !== 'server')) {
+    lines.push('Keep results that only the tool’s server code writes, so students can’t change them.')
+  }
   return lines
 }

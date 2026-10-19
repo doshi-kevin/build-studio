@@ -36,6 +36,10 @@ What Step 11 added:
 
 Local testing uses the guarded server (`e2e/serve-guarded.mjs`): values only from `E2E_<NAME>`, loopback Supabase stand-in, locally generated secrets, `STUDIO_RUNTIME_ORIGIN=http://127.0.0.1:3000`, never the root `.env`. Live model runs need a dedicated non-production Gemini key.
 
+## Studio plugin packages and server code (2026-10-17)
+
+A plugin is a multi-file source package (`views/`, `shared/`, `server/`), versioned file by file, and may contain its own server code. The compiler links each entry into one bundle and refuses a view that imports server code. Views call server actions with `server.call`; `server-runtime/` runs them in an isolated executor whose every request comes back to trusted code (`records.ts` `serverRecords`, `policy.ts` `decideForServer`). The local executor runs only on a developer machine; production has none until the container executor exists. Product Intelligence and the specification are build metadata, not the product. Details: `docs/reference/studio-plugin-package.md`.
+
 ## Logger (`logger.ts`)
 
 **Always use this instead of `console.log/error/warn`.**

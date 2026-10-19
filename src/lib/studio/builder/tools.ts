@@ -1,9 +1,9 @@
 /**
  * The builder's tool registry: the twelve tools, and nothing else, that the model may call
  * (approved decision 1.6, plus propose_memory in Step 8B and search_course_material in
- * Step 9). Each entry defines its name,
+ * Step 9, and delete_file with plugin packages). Each entry defines its name,
  * schema, what it may change and what is recorded about it. No tool takes an id, a path
- * outside the two views, or any scope: every tool is a closure over the run. The one
+ * outside the package's three folders, or any scope: every tool is a closure over the run. The one
  * thing that looks like a reference, propose_memory's `replaces`, is a short label the
  * prompt showed (m1, m2); the harness maps it to a row of this project, or refuses it.
  *
@@ -39,6 +39,9 @@ import {
   STUDIO_MEMORY_PROPOSALS_PER_RUN,
   STUDIO_MEMORY_STATEMENT_MAX_CHARS,
   STUDIO_BUILDER_SAMPLE_MAX_BYTES,
+  STUDIO_PACKAGE_MAX_BYTES,
+  STUDIO_PACKAGE_MAX_FILES,
+  STUDIO_PACKAGE_PATH_MAX_CHARS,
 } from '../limits'
 import type { StudioManifest } from '../manifest'
 import { blockingKeys, type DraftCheckResult } from './checks'
@@ -49,7 +52,7 @@ import type { SearchOutcome } from './course-retriever'
 import { evidenceProblem, isSlotOf, MEMORY_KINDS, MEMORY_SLOT_KEYS, MEMORY_SLOTS, MEMORY_TOPICS, statementProblem, supports, type MemoryKind, type MemorySlot, type MemoryTopic } from './memory'
 import { deltaHash, proposeManifest, type DeltaItem } from './manifest-delta'
 import type { ModelToolDecl } from './model'
-import { characterProblem, PLUGIN_PATHS, stripBom, utf8Bytes, viewContentProblem, VIEW_OF, type PluginPath } from './paths'
+import { characterProblem, packagePathProblem, packageSizeProblem, PLUGIN_PATHS, stripBom, utf8Bytes, viewContentProblem, VIEW_OF, type PluginPath } from './paths'
 import { contentHash, sha16, workHash } from './snapshot'
 import { planSpecificationIssues } from './specification'
 import { planSchema, type Plan, type ValidationCode, type Work } from './work'
@@ -89,14 +92,14 @@ export function fitSummary(text: string, max: number): string {
 export const PLAN_SPEC_MAX_REFUSALS = 2
 
 export const TOOL_NAMES = [
-  'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change',
+  'read_file', 'get_kit_reference', 'write_file', 'edit_file', 'delete_file', 'propose_manifest_change',
   'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'write_sample_data', 'finish',
 ] as const
 export type ToolName = (typeof TOOL_NAMES)[number]
 
 export type RefusalCode =
   | 'unknown_tool' | 'invalid_args' | 'sdk_invalid' | 'no_tool_call' | 'turn_timeout' | 'turn_truncated' | 'turn_call_limit'
-  | 'plan_required' | 'file_missing' | 'not_in_working_set' | 'match_count' | 'file_too_large' | 'bad_characters'
+  | 'plan_required' | 'file_missing' | 'not_in_working_set' | 'match_count' | 'file_too_large' | 'bad_characters' | 'package_limit' | 'entry_required'
   | 'write_limit' | 'bytes_limit' | 'check_limit' | 'question_limit' | 'search_limit'
   | 'manifest_invalid' | 'capability_unavailable' | 'collection_frozen' | 'purpose_flagged'
   | 'memory_slot' | 'memory_statement' | 'memory_evidence' | 'memory_limit' | 'memory_replaces' | 'memory_duplicate' | 'memory_full' | 'memory_unavailable'
@@ -108,17 +111,19 @@ export const MEMORY_REFUSALS = ['memory_evidence', 'memory_limit', 'memory_repla
 /** The only refusal vocabulary, each with its fixed hint for the next turn. */
 export const REFUSAL_HINTS: Record<RefusalCode, string> = {
   unknown_tool: 'Use one of the listed tools.',
-  invalid_args: 'The arguments don’t match the tool’s schema. Paths are exactly views/student.tsx or views/professor.tsx.',
+  invalid_args: 'The arguments don’t match the tool’s schema. Paths look like views/student.tsx, views/components/QuestionCard.tsx, shared/grading.ts or server/index.ts.',
   sdk_invalid: 'The arguments could not be parsed. Send arguments that match the tool’s schema.',
   no_tool_call: 'Reply with a tool call.',
   turn_timeout: 'The last turn timed out. Make fewer or smaller calls.',
   turn_truncated: 'Your last reply was cut off. Make the change in smaller edit_file calls.',
   turn_call_limit: 'At most 8 calls per turn. The extra calls were not run.',
-  plan_required: 'This change needs a plan first. Call submit_plan, then retry.',
-  file_missing: 'That view doesn’t exist yet. Create it with write_file.',
+  plan_required: 'This change needs a plan first (a manifest change, or a second file). Call submit_plan, then retry.',
+  file_missing: 'That file doesn’t exist yet. Create it with write_file.',
   not_in_working_set: 'Call read_file on this path first.',
   match_count: 'old_text must match exactly once. Copy it from the file without line-number prefixes, with enough context to be unique.',
-  file_too_large: `A view is at most ${STUDIO_BUILDER_FILE_MAX_BYTES} bytes. Remove unused code.`,
+  file_too_large: `A file is at most ${STUDIO_BUILDER_FILE_MAX_BYTES} bytes. Move components or logic into their own files under views/, shared/ or server/.`,
+  package_limit: `A tool has at most ${STUDIO_PACKAGE_MAX_FILES} files and ${STUDIO_PACKAGE_MAX_BYTES} bytes in all. Merge small files or remove unused code.`,
+  entry_required: 'views/student.tsx and views/professor.tsx are the tool’s entries and can’t be deleted.',
   bad_characters: 'Remove control and bidirectional characters.',
   write_limit: `This build has used its ${STUDIO_BUILDER_MAX_WRITES} writes.`,
   bytes_limit: `This build has written its ${STUDIO_BUILDER_MAX_BYTES_WRITTEN} bytes.`,
@@ -144,7 +149,7 @@ export const REFUSAL_HINTS: Record<RefusalCode, string> = {
 
 /** Progress labels, chosen by the harness when it records a step. */
 export type LabelCode =
-  | 'plan.submitted' | 'file.read' | 'kit.read' | 'file.written' | 'file.edited' | 'manifest.applied'
+  | 'plan.submitted' | 'file.read' | 'kit.read' | 'file.written' | 'file.edited' | 'file.deleted' | 'manifest.applied'
   | 'approval.waiting' | 'check.passed' | 'check.failed' | 'check.cached' | 'question.asked' | 'memory.proposed' | 'run.finishing'
   | 'material.searched' | 'material.unavailable' | 'sample.written'
   | 'step.refused' | 'step.interrupted'
@@ -233,7 +238,12 @@ export interface ToolSpec {
   execute: (state: ToolState, args: never) => Promise<ToolOutcome> | ToolOutcome
 }
 
-const path = z.enum(PLUGIN_PATHS)
+const path = z
+  .string()
+  .min(1)
+  .max(STUDIO_PACKAGE_PATH_MAX_CHARS)
+  .refine((p) => packagePathProblem(p) === null, 'Not a package path')
+  .describe('A file of the tool: views/student.tsx, views/professor.tsx, views/<folder>/<Name>.tsx, shared/<name>.ts or server/<name>.ts')
 const prose = (max: number) => z.string().min(1).max(max)
 // Building words a professor shouldn't have to read: code, access modes, the platform's own nouns,
 // and the kit's component and hook names. Word-bounded, so ordinary words that merely contain one pass.
@@ -250,6 +260,12 @@ function budgetRefusal(state: ToolState, bytes: number, args: Summary): ToolOutc
   if (state.counters.writes + 1 > STUDIO_BUILDER_MAX_WRITES) return refused('write_limit', args)
   if (state.counters.bytesWritten + bytes > STUDIO_BUILDER_MAX_BYTES_WRITTEN) return refused('bytes_limit', args)
   return null
+}
+
+/** A write that would take the package past its file count or total size. */
+function packageRefusal(work: Work, p: PluginPath, text: string | undefined, args: Summary): ToolOutcome | null {
+  const problem = packageSizeProblem({ ...work.files, [p]: text })
+  return problem ? refused('package_limit', args, [problem]) : null
 }
 
 function withFile(work: Work, p: PluginPath, text: string): Work {
@@ -317,7 +333,7 @@ export async function checkStep(state: ToolState, args: Summary): Promise<ToolOu
 
 /** Whether this call needs a plan the run doesn't have yet. A workflow rule: plans grant nothing. */
 export function planGate(state: ToolState, tool: ToolName, args: Record<string, unknown>): string | null {
-  const writesView = tool === 'write_file' || tool === 'edit_file'
+  const writesView = tool === 'write_file' || tool === 'edit_file' || tool === 'delete_file'
   if (tool === 'propose_manifest_change' && !state.plan) return REFUSAL_HINTS.plan_required
   if (writesView && state.firstBuild && !state.plan) return REFUSAL_HINTS.plan_required
   if (writesView && state.firstBuild && !state.work.manifest) return 'Propose the manifest with propose_manifest_change first, then write the views.'
@@ -333,7 +349,7 @@ const TOOL_LIST: ToolSpec[] = [
   {
     name: 'read_file',
     kind: 'read',
-    description: 'Show one view file. Its full text appears in the next turn, with line numbers, and you may then edit it.',
+    description: 'Show one file of the tool. Its full text appears in the next turn, with line numbers, and you may then edit it.',
     schema: z.strictObject({ path }),
     execute: (state, args: { path: PluginPath }) => {
       const text = state.work.files[args.path]
@@ -356,7 +372,7 @@ const TOOL_LIST: ToolSpec[] = [
   {
     name: 'write_file',
     kind: 'write',
-    description: 'Create or replace a whole view file in this build’s working copy.',
+    description: 'Create or replace a whole file of the tool in this build’s working copy: a view entry, a component under views/, a shared/ module or a server/ module.',
     schema: z.strictObject({ path, content: z.string().max(STUDIO_BUILDER_FILE_MAX_BYTES) }),
     execute: (state, args: { path: PluginPath; content: string }) => {
       const text = stripBom(args.content)
@@ -364,6 +380,8 @@ const TOOL_LIST: ToolSpec[] = [
       const summary: Summary = { path: args.path, bytes: utf8Bytes(text), sha16: sha16(text) }
       const problem = viewContentProblem(text)
       if (problem) return refused(problem.code, summary, [problem.detail])
+      const full = packageRefusal(state.work, args.path, text, summary)
+      if (full) return full
       const over = budgetRefusal(state, utf8Bytes(text), summary)
       if (over) return over
       return {
@@ -380,7 +398,7 @@ const TOOL_LIST: ToolSpec[] = [
   {
     name: 'edit_file',
     kind: 'write',
-    description: 'Replace exactly one occurrence of old_text with new_text in a view you have read.',
+    description: 'Replace exactly one occurrence of old_text with new_text in a file you have read.',
     schema: z.strictObject({
       path,
       old_text: z.string().min(1).max(STUDIO_BUILDER_EDIT_OLD_TEXT_MAX_BYTES),
@@ -398,6 +416,8 @@ const TOOL_LIST: ToolSpec[] = [
       const next = text.slice(0, index) + args.new_text + text.slice(index + args.old_text.length)
       const problem = viewContentProblem(next)
       if (problem) return refused(problem.code, summary, [problem.detail])
+      const full = packageRefusal(state.work, args.path, next, summary)
+      if (full) return full
       const over = budgetRefusal(state, utf8Bytes(args.new_text), summary)
       if (over) return over
       return {
@@ -408,6 +428,37 @@ const TOOL_LIST: ToolSpec[] = [
         work: withFile(state.work, args.path, next),
         phase: 'editing',
         delta: { writes: 1, bytes_written: utf8Bytes(args.new_text) },
+      }
+    },
+  },
+  {
+    name: 'delete_file',
+    kind: 'write',
+    description: 'Remove a file the tool no longer needs (not one of the two view entries). Remove its imports in the same turn.',
+    schema: z.strictObject({ path }),
+    execute: (state, args: { path: PluginPath }) => {
+      const summary: Summary = { path: args.path }
+      if ((PLUGIN_PATHS as readonly string[]).includes(args.path)) return refused('entry_required', summary)
+      const before = state.work.files[args.path]
+      if (typeof before !== 'string') return refused('file_missing', summary)
+      const over = budgetRefusal(state, 0, summary)
+      if (over) return over
+      const files = { ...state.work.files }
+      delete files[args.path]
+      return {
+        kind: 'done',
+        label: 'file.deleted',
+        args: summary,
+        result: { bytes_before: utf8Bytes(before), bytes_after: null },
+        work: {
+          ...state.work,
+          work_rev: state.work.work_rev + 1,
+          files,
+          working_set: state.work.working_set.filter((p) => p !== args.path),
+          changed: state.work.changed.includes(args.path) ? state.work.changed : [...state.work.changed, args.path],
+        },
+        phase: 'editing',
+        delta: { writes: 1 },
       }
     },
   },
@@ -463,7 +514,7 @@ const TOOL_LIST: ToolSpec[] = [
     name: 'run_checks',
     kind: 'check',
     description:
-      'Compile, typecheck and check both views and the manifest, in a fixed order. Returns findings with hints. Unchanged work returns the last result and costs nothing.',
+      'Compile, typecheck and check every file of the tool and the manifest, in a fixed order. Returns findings with hints. Unchanged work returns the last result and costs nothing.',
     schema: z.strictObject({}),
     execute: (state) => checkStep(state, {}),
   },
@@ -483,7 +534,7 @@ const TOOL_LIST: ToolSpec[] = [
         kind: 'done',
         label: 'plan.submitted',
         args: {
-          files_to_change: args.files_to_change,
+          files_to_change: args.files_to_change.length,
           capabilities: args.capabilities_needed.length,
           manifest_changes: args.manifest_changes.length,
           requirements: args.requirements.length,
@@ -663,7 +714,7 @@ export function isToolName(name: string): name is ToolName {
   return (TOOL_NAMES as readonly string[]).includes(name)
 }
 
-/** What the model is told exists: the same twelve tools on every turn. */
+/** What the model is told exists: the same tools on every turn. */
 export function toolDeclarations(): ModelToolDecl[] {
   return TOOL_NAMES.map((name) => ({ name, description: TOOLS[name].description, inputSchema: TOOLS[name].schema }))
 }

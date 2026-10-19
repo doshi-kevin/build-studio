@@ -141,7 +141,7 @@ export async function publishVersion(input: z.input<typeof publishInput>): Promi
   const manifest = parseManifest(parsed.data.manifest)
   if (!manifest.ok) return { ok: false, error: 'This plugin’s manifest isn’t valid.', issues: manifest.issues }
 
-  return insertAndValidate(professor, project, manifest.manifest, parsed.data.source, parsed.data.studentBundle, parsed.data.professorBundle, null)
+  return insertAndValidate(professor, project, manifest.manifest, parsed.data.source, { student: parsed.data.studentBundle, professor: parsed.data.professorBundle, server: null }, null)
 }
 
 /** The one publish path: insert the immutable version (the database runs its publish
@@ -151,23 +151,27 @@ async function insertAndValidate(
   project: { id: string; institutionId: string },
   manifest: StudioManifest,
   source: Record<string, string>,
-  studentBundle: string,
-  professorBundle: string,
+  bundles: { student: string; professor: string; server: string | null },
   sourceSnapshotHash: string | null,
   material: { sources: MaterialSourceEntry[]; incomplete: boolean } = { sources: [], incomplete: false },
 ): Promise<LifecycleResult<string>> {
   const published = await db.insertVersion({
     // The verdict binds to exactly this content (validator/artifact.ts).
-    artifactSha256: artifactHash({ manifest, source, studentBundle, professorBundle }),
+    artifactSha256: artifactHash({ manifest, source, studentBundle: bundles.student, professorBundle: bundles.professor, serverBundle: bundles.server }),
     projectId: project.id,
     institutionId: project.institutionId,
     version: manifest.version,
     manifest,
     bridgeVersion: manifest.bridgeVersion,
     source,
-    studentBundle,
-    professorBundle,
-    bundleSha256: createHash('sha256').update(studentBundle).update('\0').update(professorBundle).digest('hex'),
+    studentBundle: bundles.student,
+    professorBundle: bundles.professor,
+    serverBundle: bundles.server,
+    // The server bundle joins only when there is one, so earlier versions keep their hash.
+    bundleSha256: (bundles.server
+      ? createHash('sha256').update(bundles.student).update('\0').update(bundles.professor).update('\0').update(bundles.server)
+      : createHash('sha256').update(bundles.student).update('\0').update(bundles.professor)
+    ).digest('hex'),
     publishedBy: professor.userId,
     sourceSnapshotHash,
     materialSources: material.sources,
@@ -196,7 +200,8 @@ const publishDraftInput = z.strictObject({
  * Save the builder's current draft as a new immutable version (the professor's "Save as
  * version"). Human-only: no builder code calls this. The exact snapshot must still be
  * the project's draft, and it is checked again here, under the rules in force now: the
- * trusted compiler rebuilds both bundles and the whole draft gate re-runs. The version
+ * trusted compiler rebuilds every bundle (both views and any server code) and the whole
+ * draft gate re-runs. The version
  * is not installed, activated or shown to anyone.
  */
 export async function publishDraft(input: z.input<typeof publishDraftInput>): Promise<LifecycleResult<{ versionId: string; version: string }>> {
@@ -240,7 +245,7 @@ export async function publishDraft(input: z.input<typeof publishDraftInput>): Pr
   const version = nextVersion(latest?.version ?? null)
   const manifest = { ...stamped.manifest, version }
   const source = { ...files, 'plugin.manifest.json': canonicalJson(manifest) }
-  const saved = await insertAndValidate(professor, project, manifest, source, gate.bundles.student, gate.bundles.professor, snapshot.hash, { sources: project.materialSources, incomplete: project.materialIncomplete })
+  const saved = await insertAndValidate(professor, project, manifest, source, gate.bundles, snapshot.hash,{ sources: project.materialSources, incomplete: project.materialIncomplete })
   if (!saved.ok) return saved
   audit(professor, 'studio.draft.saved', { projectId: project.id, versionId: saved.value })
   return { ok: true, value: { versionId: saved.value, version } }

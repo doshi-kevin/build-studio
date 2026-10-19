@@ -2,12 +2,13 @@
  * The draft gate: everything `run_checks`, the completion gate and Save run on a working
  * copy, in a fixed order the model can't change.
  *
- *   1. compile both views          (check worker)
- *   2. typecheck both views        (check worker, same call)
+ *   1. compile the package         (check worker: both views and the server code)
+ *   2. typecheck the package       (check worker, same call)
  *   3. Stage 1 static checks       (the validator's pure engine, on the assembled artifact)
  *   4. builder checks              manifest correctness, purpose wording, sample data that
- *                                  matches the collections, student names, and no copy of
- *                                  course material students can't see yet
+ *                                  matches the collections, server actions that match the
+ *                                  manifest, student names, and no copy of course material
+ *                                  students can't see yet
  *
  * Stage 1 runs exactly as it does at publish except for two checks: `artifact.hash`
  * (the harness supplies the hash, so it always matches) and `edtech.purpose` (the AI
@@ -26,11 +27,11 @@ import { checkDefinition, requiredCheckIds, STUDIO_VALIDATOR_RULESET, type Check
 import { quote } from '../validator/scan'
 import { runStaticChecks, type CheckStatus } from '../validator/static-checks'
 import { findRosterFullName } from '@/lib/validations/memory'
-import type { SourceDiagnostic } from './compile'
+import type { PackageCompileResult } from './compile'
 import { findCopies, type GuardSource } from './disclosure'
 import { checkSample, sampleTexts } from './sample-data'
 import { AVAILABLE_CAPABILITIES } from './manifest-delta'
-import { PLUGIN_PATHS, type PluginPath } from './paths'
+import { packagePathProblem, packagePaths, packageSizeProblem, PLUGIN_PATHS, type PluginPath } from './paths'
 import { workHash } from './snapshot'
 import type { SampleData } from './work'
 
@@ -43,6 +44,7 @@ export type BuilderCheckId =
   | 'builder.roster'
   | 'builder.disclosure'
   | 'builder.sample'
+  | 'builder.server'
 
 export type RepairCategory =
   | 'syntax' | 'types' | 'module_shape' | 'kit_usage' | 'styling' | 'required_states' | 'bridge_declaration'
@@ -68,7 +70,7 @@ type StaticBuilderId = Exclude<BuilderCheckId, `builder.${string}`>
 /** Every check id the model can see, with its repair category and fixed hint. Exhaustive. */
 const GUIDE: Record<BuilderCheckId, { category: RepairCategory; hint: string }> = {
   'builder.manifest': { category: 'manifest', hint: 'Fix the manifest with propose_manifest_change.' },
-  'builder.compile': { category: 'syntax', hint: 'Fix the syntax or the imports at that line. Import only named kit members.' },
+  'builder.compile': { category: 'syntax', hint: 'Fix the syntax or the imports at that line. Views import the kit, other views/ files and shared/ files; server/ files import server/ and shared/ files; shared/ files import shared/ files.' },
   'builder.typecheck': { category: 'types', hint: 'Use only names and props the kit declares; call get_kit_reference to check a component.' },
   'builder.purpose_text': { category: 'purpose_wording', hint: 'Reword the manifest name, description or purpose summary plainly, as a description for a professor.' },
   'builder.roster': { category: 'student_data', hint: 'Remove the student’s name. Tools never contain student names; data comes from records at run time.' },
@@ -77,11 +79,12 @@ const GUIDE: Record<BuilderCheckId, { category: RepairCategory; hint: string }> 
     hint: 'Students can’t see this course material yet. Use it for the tool’s structure and topics, not its wording, or ask the professor to make it visible first.',
   },
   'builder.sample': { category: 'manifest', hint: 'Rewrite the sample data with write_sample_data so every record matches its collection as the manifest declares it now.' },
+  'builder.server': { category: 'manifest', hint: 'Make server/index.ts export exactly the actions the manifest declares (export const actions = { name, ... }), or change the manifest’s server.actions with propose_manifest_change.' },
   'artifact.size': { category: 'size', hint: 'Make the view smaller.' },
   'artifact.entries': { category: 'module_shape', hint: 'Both views must exist and export a default function.' },
   'artifact.vendor_free': { category: 'module_shape', hint: 'Import React hooks and kit components; never include their code.' },
   'artifact.syntax': { category: 'module_shape', hint: 'The view compiled to something the runtime can’t run. Simplify the code at the reported place.' },
-  'source.imports': { category: 'module_shape', hint: 'Import only from "react" and "@scholera/plugin-kit".' },
+  'source.imports': { category: 'module_shape', hint: 'Import only from "react", "@scholera/plugin-kit" and the tool’s own files, inside the boundary: views never import server/ files.' },
   'manifest.valid': { category: 'manifest', hint: 'Call propose_manifest_change, or finish blocked if the professor declined it.' },
   'code.navigation': { category: 'forbidden_api', hint: 'Remove the navigation. A tool never leaves its frame or opens pages.' },
   'code.global_indirection': { category: 'forbidden_api', hint: 'Don’t reach browser globals (window, document, parent, top). Use the kit.' },
@@ -110,6 +113,7 @@ const BUILDER_SEVERITY: Record<`builder.${string}` & BuilderCheckId, CheckSeveri
   'builder.roster': 'security',
   'builder.disclosure': 'security',
   'builder.sample': 'reliability',
+  'builder.server': 'reliability',
 }
 
 /** Stage 1 checks the draft gate requires: all required static checks but the two above. */
@@ -128,6 +132,8 @@ export interface CheckSummary {
   roster: GateStatus | 'unavailable'
   /** Copies of course material students can't see yet. */
   disclosure: GateStatus | 'unavailable'
+  /** Server actions match the manifest; absent before packages, not_run without server code or a manifest. */
+  server?: GateStatus
   static: Partial<Record<StaticBuilderId, CheckStatus | 'not_run'>>
   /** Blocking findings by check and file, at most 10. */
   unresolved: { check_id: BuilderCheckId; file: string | null; count: number }[]
@@ -141,20 +147,20 @@ export interface DraftCheckResult {
   /** How many findings existed before the cap. */
   totalFindings: number
   summary: CheckSummary
-  /** Present when both views compiled. */
-  bundles: { student: string; professor: string } | null
+  /** Present when the package compiled. `server` is null without server code. */
+  bundles: { student: string; professor: string; server: string | null } | null
   compiler: string | null
 }
 
 export interface WorkerCheckLike {
   compiler: string
-  compile: Record<PluginPath, { ok: true; bundle: string } | { ok: false; diagnostics: SourceDiagnostic[] }>
-  typecheck: { diagnostics: SourceDiagnostic[]; total: number }
+  compile: PackageCompileResult
+  typecheck: { diagnostics: PackageCompileResult['diagnostics']; total: number }
 }
 
 export interface DraftCheckDeps {
   /** Compile and typecheck in the check worker. Throws on time, memory or a compiler fault. */
-  workerCheck: (files: Record<PluginPath, string>) => Promise<WorkerCheckLike>
+  workerCheck: (files: Record<string, string>) => Promise<WorkerCheckLike>
   /** Students' full names across the owner's sections. Null: the roster couldn't be read, so the check fails closed. */
   rosterFullNames: readonly string[] | null
   /** The latest published version's manifest; its collections are frozen. */
@@ -277,7 +283,7 @@ export async function runDraftChecks(
 
   // Builder: no student's full name anywhere in the tool. Fails closed.
   const texts = [
-    ...PLUGIN_PATHS.map((p) => ({ file: p as PluginPath | 'manifest' | 'sample', text: work.files[p] ?? '' })),
+    ...packagePaths(work.files).map((p) => ({ file: p as PluginPath | 'manifest' | 'sample', text: work.files[p] ?? '' })),
     { file: 'manifest' as const, text: manifest ? JSON.stringify(manifest) : '' },
     { file: 'sample' as const, text: sampleTexts(work.sample ?? null).join(' · ') },
   ]
@@ -304,35 +310,54 @@ export async function runDraftChecks(
     }
   }
 
-  // Compile and typecheck.
+  // Compile and typecheck: the package must be well-formed first.
   const missing = PLUGIN_PATHS.filter((p) => typeof work.files[p] !== 'string')
-  if (missing.length > 0) {
+  const badPaths = Object.keys(work.files).filter((p) => typeof work.files[p] === 'string' && packagePathProblem(p) !== null)
+  const tooBig = packageSizeProblem(work.files)
+  if (missing.length > 0 || badPaths.length > 0 || tooBig) {
     summary.compile = 'failed'
     for (const p of missing) findings.push(finding('builder.compile', { file: p, line: null, message: 'This view doesn’t exist yet. Create it with write_file.', detail: null }))
+    for (const p of badPaths.slice(0, 5)) findings.push(finding('builder.compile', { file: null, line: null, message: 'A file has a path tools can’t use.', detail: quote(p) }))
+    if (tooBig) findings.push(finding('builder.compile', { file: null, line: null, message: 'The tool’s files are over the package limit.', detail: tooBig }))
   } else {
-    const files = work.files as Record<PluginPath, string>
+    const files = Object.fromEntries(packagePaths(work.files).map((p) => [p, work.files[p] as string]))
     const checked = await deps.workerCheck(files)
     summary.compiler = checked.compiler
-    const failedCompile = PLUGIN_PATHS.flatMap((p) => {
-      const r = checked.compile[p]
-      return r.ok ? [] : r.diagnostics
-    })
-    summary.compile = failedCompile.length === 0 ? 'passed' : 'failed'
-    for (const d of failedCompile) findings.push(finding('builder.compile', { file: d.file, line: d.line, message: `${d.code}: ${d.message}`, detail: null }))
+    summary.compile = checked.compile.ok ? 'passed' : 'failed'
+    for (const d of checked.compile.diagnostics) findings.push(finding('builder.compile', { file: d.file, line: d.line, message: `${d.code}: ${d.message}`, detail: null }))
     summary.typecheck = checked.typecheck.diagnostics.length === 0 ? 'passed' : 'failed'
     for (const d of checked.typecheck.diagnostics) findings.push(finding('builder.typecheck', { file: d.file, line: d.line, message: `${d.code}: ${d.message}`, detail: null }))
 
-    const student = checked.compile['views/student.tsx']
-    const professor = checked.compile['views/professor.tsx']
-    if (student.ok && professor.ok) {
-      bundles = { student: student.bundle, professor: professor.bundle }
+    // Server actions: what the manifest declares is exactly what server/index.ts exports.
+    if (manifest) {
+      const declared = Object.keys(manifest.server?.actions ?? {})
+      const hasServerCode = Object.keys(files).some((p) => p.startsWith('server/'))
+      const problems: string[] = []
+      if (declared.length > 0 && !hasServerCode) problems.push('the manifest declares server actions but the tool has no server/index.ts')
+      if (hasServerCode && declared.length === 0) problems.push('the tool has server code but the manifest declares no server actions')
+      const exported = checked.compile.serverActions
+      if (checked.compile.ok && hasServerCode && exported === null) problems.push('server/index.ts must export the actions as one object literal: export const actions = { name, ... }')
+      if (exported && declared.length > 0) {
+        for (const a of declared) if (!exported.includes(a)) problems.push(`${a} is declared in the manifest but not exported in actions`)
+        for (const a of exported) if (!declared.includes(a)) problems.push(`${a} is exported in actions but not declared in the manifest`)
+      }
+      if (hasServerCode || declared.length > 0) {
+        summary.server = problems.length === 0 ? 'passed' : 'failed'
+        for (const issue of problems.slice(0, 5)) findings.push(finding('builder.server', { file: 'server/index.ts', line: null, message: 'The server actions don’t match the manifest.', detail: quote(issue) }))
+      }
+    }
+
+    const compiled = checked.compile.bundles
+    if (compiled) {
+      bundles = compiled
       // Stage 1, on the artifact a Save would publish.
       if (manifest) {
         const artifact: PluginArtifact = {
           manifest,
           source: { ...files, 'plugin.manifest.json': canonicalJson(manifest) },
-          studentBundle: bundles.student,
-          professorBundle: bundles.professor,
+          studentBundle: compiled.student,
+          professorBundle: compiled.professor,
+          serverBundle: compiled.server,
         }
         const report = await runStaticChecks({
           artifact,
@@ -360,7 +385,8 @@ export async function runDraftChecks(
     summary.manifest === 'passed' &&
     summary.purpose_text === 'passed' &&
     summary.roster === 'passed' &&
-    summary.disclosure === 'passed'
+    summary.disclosure === 'passed' &&
+    summary.server !== 'failed'
   summary.passed = passed
 
   const group = (list: BuilderFinding[]) => {

@@ -62,3 +62,36 @@ export function decide(
   if (!writesAsStaff(role)) return DENY
   return access === 'staffPerStudent' ? ABOUT_STUDENT : READ_ALL
 }
+
+/** What a collection's rules depend on: its access mode, and whether only server code writes it. */
+export interface CollectionRule {
+  access: CollectionAccess
+  writes?: 'server'
+}
+
+/** A request from a plugin frame: the table above, and no frame writes a collection that
+ * only the plugin's server code writes, whatever the role. */
+export function decideForFrame(role: ViewerRole, collection: CollectionRule, operation: RecordOperation, mode: WriteMode): Decision {
+  if (collection.writes === 'server' && !isRead(operation)) return DENY
+  return decide(role, collection.access, operation, mode)
+}
+
+/**
+ * A request from the plugin's server code, run for the viewer who called the action
+ * (server-runtime/). Staff get exactly the table above. A student gets the table above,
+ * plus reading a staffOnly collection the action declares in its manifest `reads`
+ * (`declaredRead`), so their answer can be checked against a key they never receive.
+ * Their own perStudent records stay theirs to write, here even in a collection frames
+ * can't write. Nothing here ever reaches another student's records: owned collections
+ * stay filtered to the caller.
+ */
+export function decideForServer(
+  role: ViewerRole,
+  collection: CollectionRule,
+  operation: RecordOperation,
+  mode: WriteMode,
+  declaredRead: boolean,
+): Decision {
+  if (role === 'student' && collection.access === 'staffOnly' && isRead(operation)) return declaredRead ? READ_ALL : DENY
+  return decide(role, collection.access, operation, mode)
+}

@@ -17,6 +17,8 @@ export interface PluginArtifact {
   source: Record<string, unknown>
   studentBundle: string
   professorBundle: string
+  /** The plugin's server code, compiled; absent or null for a plugin without any. */
+  serverBundle?: string | null
 }
 
 /** JSON with object keys sorted at every level, so equal content always hashes equal. */
@@ -34,7 +36,8 @@ export function artifactHash(artifact: PluginArtifact): string {
     format: ARTIFACT_FORMAT,
     manifest: artifact.manifest,
     source: artifact.source,
-    bundles: { student: artifact.studentBundle, professor: artifact.professorBundle },
+    // The server bundle joins only when there is one, so every earlier artifact keeps its hash.
+    bundles: { student: artifact.studentBundle, professor: artifact.professorBundle, ...(artifact.serverBundle ? { server: artifact.serverBundle } : {}) },
   })
   return createHash('sha256').update(canonical).digest('hex')
 }

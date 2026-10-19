@@ -21,6 +21,7 @@ import {
   answerQuestion,
   decideApproval,
   decideMemoryProposal,
+  draftServerCall,
   issueDraftPreview,
   listDraftHistory,
   listProjectMemories,
@@ -39,7 +40,8 @@ import {
 } from '@/lib/studio/builder/service'
 import type { BlockerCode, Issue, WarningCode } from '@/lib/studio/student-visibility'
 import type { MemoryKind, MemorySlot, MemoryTopic } from '@/lib/studio/builder/memory'
-import type { PreviewSample } from '@/lib/studio/runtime/preview-bridge'
+import type { PreviewSample, PreviewStore } from '@/lib/studio/runtime/preview-bridge'
+import type { RequestResult } from '@/lib/studio/runtime/host'
 import type { StudioManifest } from '@/lib/studio/manifest'
 
 const NOT_AVAILABLE = 'This isn’t available.'
@@ -120,6 +122,23 @@ export async function draftPreviewAction(input: {
 }): Promise<{ success: true; frameUrl: string; allowedMethods: string[]; manifest: StudioManifest; title: string; sample: PreviewSample | null } | { error: string }> {
   if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
   const r = await issueDraftPreview(input)
+  return r.ok ? { success: true, ...r.value } : { error: r.error }
+}
+
+/** One server action of a draft, in its preview, on the preview's own sample records. Writes
+ * nothing real: draftServerCall checks the professor owns the draft and runs the code on the
+ * records the page sent, returning them as the action left them. */
+export async function draftServerCallAction(input: {
+  sectionId: string
+  pluginProjectId: string
+  snapshotHash: string
+  view: 'student' | 'professor'
+  action: string
+  args: unknown
+  store: PreviewStore
+}): Promise<{ success: true; result: RequestResult; store: PreviewStore | null } | { error: string }> {
+  if (!(await professorOf(input?.sectionId))) return { error: NOT_AVAILABLE }
+  const r = await draftServerCall(input)
   return r.ok ? { success: true, ...r.value } : { error: r.error }
 }
 

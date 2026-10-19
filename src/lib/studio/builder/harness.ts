@@ -81,7 +81,7 @@ import { createAnthropicModel, BuilderAbort, ModelUnavailable, type AgentModel, 
 import { productIntelligence } from './specification'
 import { renderPreview, type RenderInput, type RenderOutcome } from './renderer'
 import { buildReviewPrompt, crashFindings, parseReview, REVIEW_INSTRUCTIONS, REVIEW_INSTRUCTIONS_VERSION, REVIEW_TOOL } from './review'
-import { PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
+import { packagePaths, PLUGIN_PATHS, utf8Bytes, type PluginPath } from './paths'
 import { snapshotHash, workHash } from './snapshot'
 import {
   checkStep,
@@ -307,14 +307,14 @@ function buildResult(
   reason: RunErrorCode | null,
   extra: { summary?: string; openQuestions?: string[]; snapshotHash?: string | null; passed?: boolean; memoryApplied?: number; material?: RenderedSearch[]; polishStopped?: boolean },
 ): BuildResult {
-  const files = PLUGIN_PATHS.map((path) => {
+  const files = [...new Set([...packagePaths(data?.base?.files ?? {}), ...packagePaths(work?.files ?? {})])].map((path) => {
     const before = data?.base?.files[path]
     const after = work?.files[path]
     return {
       path,
       bytes_before: typeof before === 'string' ? utf8Bytes(before) : null,
       bytes_after: typeof after === 'string' ? utf8Bytes(after) : null,
-      changed: before !== after && after !== undefined,
+      changed: before !== after,
     }
   })
   const result: BuildResult = {
@@ -351,6 +351,9 @@ function buildResult(
     if (d.direct.length > 0) d.direct.pop()
     else if (d.approved.length > 0) d.approved.pop()
     else if (d.declined.length > 0) d.declined.pop()
+    // Unchanged files first, then the rest from the end: the entries come first.
+    else if (result.files.some((f) => !f.changed)) result.files.splice(result.files.findLastIndex((f) => !f.changed), 1)
+    else if (result.files.length > 2) result.files.pop()
     else if (result.checks && result.checks.unresolved.length > 0) result.checks.unresolved.pop()
     else if (result.checks && result.checks.warnings.length > 0) result.checks.warnings.pop()
     else if (result.open_questions.length > 0) result.open_questions.pop()
@@ -1067,6 +1070,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
         files,
         student_bundle: fresh.bundles.student,
         professor_bundle: fresh.bundles.professor,
+        ...(fresh.bundles.server ? { server_bundle: fresh.bundles.server } : {}),
         check_summary: fresh.summary,
         ...(gateWork.sample ? { sample_data: gateWork.sample } : {}),
       },
@@ -1124,6 +1128,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
           files,
           student_bundle: fresh.bundles.student,
           professor_bundle: fresh.bundles.professor,
+          ...(fresh.bundles.server ? { server_bundle: fresh.bundles.server } : {}),
           check_summary: fresh.summary,
           ...(c.sample ? { sample_data: c.sample } : {}),
         },
@@ -1144,7 +1149,7 @@ export async function runBuilderSlice(rawParams: Record<string, unknown>, job: {
     work: Work,
     plan: Plan | null,
     run: db.BuilderRunRow,
-    bundles: { student: string; professor: string },
+    bundles: { student: string; professor: string; server?: string | null },
     summary: string,
   ): Promise<Work | 'improve' | 'stop'> {
     const files = work.files as Record<PluginPath, string>

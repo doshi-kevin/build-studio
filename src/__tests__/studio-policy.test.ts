@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   decide,
+  decideForFrame,
+  decideForServer,
   type CollectionAccess,
   type WriteMode,
   type RecordOperation,
@@ -97,6 +99,19 @@ const cases = (Object.entries({ writable: WRITABLE, readOnly: READ_ONLY }) as [W
       ),
     ),
 )
+
+describe('server and frame rules', () => {
+  it('a declared read never grants a write, and server-written collections refuse every frame', () => {
+    const key = { access: 'staffOnly' } as const
+    const attempts = { access: 'perStudent', writes: 'server' } as const
+    expect(decideForServer('student', key, 'list', 'writable', true).allow).toBe(true)
+    expect(decideForServer('student', key, 'list', 'writable', false).allow).toBe(false)
+    for (const op of ['create', 'update', 'delete'] as const) expect(decideForServer('student', key, op, 'writable', true).allow).toBe(false)
+    expect(decideForServer('student', attempts, 'create', 'writable', false).allow).toBe(true)
+    for (const role of ['student', 'professor', 'ta'] as const) expect(decideForFrame(role, attempts, 'create', 'writable').allow).toBe(false)
+    expect(decideForFrame('student', attempts, 'list', 'writable')).toEqual(decide('student', 'perStudent', 'list', 'writable'))
+  })
+})
 
 describe('decide', () => {
   it('covers every role, access rule, operation and write mode', () => {

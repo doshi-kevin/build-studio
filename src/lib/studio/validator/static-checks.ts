@@ -64,16 +64,26 @@ function importsOf(text: string): string[] {
   return ts.preProcessFile(text, true, true).importedFiles.map((f) => f.fileName)
 }
 
-/** Whether a relative import stays inside the plugin's own source. */
-function staysInside(from: string, spec: string): boolean {
+/** Where a relative import lands inside the plugin's own source, or null when it leaves it. */
+function resolveInside(from: string, spec: string): string | null {
   const parts = from.split('/').slice(0, -1)
   for (const segment of spec.split('/')) {
     if (segment === '..') {
-      if (parts.length === 0) return false
+      if (parts.length === 0) return null
       parts.pop()
     } else if (segment !== '.' && segment !== '') parts.push(segment)
   }
-  return true
+  return parts.join('/')
+}
+
+/** The package's import boundary (builder/compile.ts): which folders a file's folder may
+ * import, and which modules. A view never imports server code; server code never imports
+ * the kit. Files outside the three folders (versions from before packages) keep the old rule. */
+const TOP = (path: string) => path.split('/')[0]
+const MAY_IMPORT: Record<string, { folders: string[]; modules: Set<string> }> = {
+  views: { folders: ['views', 'shared'], modules: ALLOWED_IMPORTS },
+  shared: { folders: ['shared'], modules: new Set() },
+  server: { folders: ['server', 'shared'], modules: new Set(['@scholera/plugin-server']) },
 }
 
 export async function runStaticChecks(input: StaticInput): Promise<StaticReport> {
@@ -99,6 +109,7 @@ export async function runStaticChecks(input: StaticInput): Promise<StaticReport>
     files.length > STUDIO_SOURCE_MAX_FILES && `${files.length} source files (limit ${STUDIO_SOURCE_MAX_FILES})`,
     ...fileBytes.filter((f) => f.size > STUDIO_SOURCE_FILE_MAX_BYTES).slice(0, 5).map((f) => `${quote(f.path)} is ${f.size} bytes`),
     ...VIEWS.filter((v) => bundleBytes[v] > STUDIO_BUNDLE_MAX_BYTES).map((v) => `${v} bundle is ${bundleBytes[v]} bytes (limit ${STUDIO_BUNDLE_MAX_BYTES})`),
+    artifact.serverBundle && bytes(artifact.serverBundle) > STUDIO_BUNDLE_MAX_BYTES && `server bundle is ${bytes(artifact.serverBundle)} bytes (limit ${STUDIO_BUNDLE_MAX_BYTES})`,
   ].filter((x): x is string => typeof x === 'string')
   const sizeOk = tooBig.length === 0
   outcomes['artifact.size'] = sizeOk
@@ -135,9 +146,14 @@ export async function runStaticChecks(input: StaticInput): Promise<StaticReport>
         bad.push(`${quote(path)} isn’t text`)
         continue
       }
+      const rule = Object.hasOwn(MAY_IMPORT, TOP(path)) ? MAY_IMPORT[TOP(path)] : null
       for (const spec of importsOf(content)) {
         const relative = spec.startsWith('./') || spec.startsWith('../')
-        if (relative ? !staysInside(path, spec) : !ALLOWED_IMPORTS.has(spec)) bad.push(`${quote(path)} imports ${quote(spec)}`)
+        const target = relative ? resolveInside(path, spec) : null
+        const ok = relative
+          ? target !== null && (!rule || rule.folders.includes(TOP(target)))
+          : (rule?.modules ?? ALLOWED_IMPORTS).has(spec)
+        if (!ok) bad.push(`${quote(path)} imports ${quote(spec)}`)
       }
     }
     outcomes['source.imports'] = bad.length === 0 ? pass('Imports only React, the kit and its own files.') : fail('The source imports something Studio doesn’t provide.', { imports: bad.slice(0, STUDIO_VALIDATOR_FINDINGS_PER_CHECK) })

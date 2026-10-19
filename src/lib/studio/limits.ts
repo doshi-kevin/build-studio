@@ -172,8 +172,26 @@ export const STUDIO_BUILDER_MAX_CHECK_RUNS = 9
 export const STUDIO_BUILDER_SAME_FINDING_LIMIT = 2
 export const STUDIO_BUILDER_MAX_CONSECUTIVE_ERRORS = 3
 
-/** The draft. A full rewrite of a 32 KiB view fits the output cap. */
+/** The draft. A full rewrite of a 32 KiB file fits the output cap. */
 export const STUDIO_BUILDER_FILE_MAX_BYTES = 32 * 1024
+/** The plugin package (builder/paths.ts): every source file of one draft. Sized so the
+ * whole package, escaped as JSON, still fits the run row's working copy with room for the
+ * manifest, sample data and the last reviewed copy. */
+export const STUDIO_PACKAGE_MAX_FILES = 24
+export const STUDIO_PACKAGE_MAX_BYTES = 192 * 1024
+export const STUDIO_PACKAGE_PATH_MAX_CHARS = 80
+
+/** One server action call (server-runtime/). The executor kills the call past the time or
+ * heap limit; the rest are refused by the trusted side. */
+export const STUDIO_SERVER_ACTION_TIMEOUT_MS = 10_000
+export const STUDIO_SERVER_ACTION_HEAP_MB = 96
+export const STUDIO_SERVER_ACTION_MAX_CAPABILITY_CALLS = 64
+export const STUDIO_SERVER_ACTION_RESULT_MAX_BYTES = 256 * 1024
+export const STUDIO_SERVER_ACTION_LOG_EVENTS_MAX = 5
+/** Child processes one server process runs at once; past it a call is refused as busy. */
+export const STUDIO_SERVER_ACTION_MAX_CONCURRENT = 8
+export const STUDIO_MANIFEST_MAX_SERVER_ACTIONS = 16
+export const STUDIO_MANIFEST_MAX_ACTION_ARGS = 12
 export const STUDIO_BUILDER_EDIT_OLD_TEXT_MAX_BYTES = 8 * 1024
 export const STUDIO_BUILDER_MANIFEST_MAX_BYTES = 32 * 1024
 export const STUDIO_BUILDER_PLAN_MAX_BYTES = 8 * 1024

@@ -161,6 +161,21 @@ export async function loadVersion(id: string): Promise<VersionRow | null> {
   }
 }
 
+/** A version's compiled server code: null when it has none, or when it can't be read
+ * (callers can't tell, and fail closed either way). Versions never change, so callers may cache it by id. */
+export async function loadVersionServerBundle(id: string): Promise<string | null> {
+  const { data, error } = await createAdminClient().from(VERSIONS).select('server_bundle').eq('id', id).maybeSingle()
+  if (error) logger.error('studio/db.loadVersionServerBundle', error, { id })
+  return typeof data?.server_bundle === 'string' ? data.server_bundle : null
+}
+
+/** A draft snapshot's compiled server code and manifest, pinned to its project, for the professor's preview. */
+export async function loadSnapshotServer(projectId: string, hash: string): Promise<{ serverBundle: string | null; manifest: unknown } | null> {
+  const { data, error } = await createAdminClient().from(SNAPSHOTS).select('server_bundle, manifest').eq('project_id', projectId).eq('hash', hash).maybeSingle()
+  if (error) logger.error('studio/db.loadSnapshotServer', safeError(error), { projectId })
+  return data ? { serverBundle: typeof data.server_bundle === 'string' ? data.server_bundle : null, manifest: data.manifest } : null
+}
+
 /** A project's published versions, newest first, for the professor's preview picker. */
 export async function listProjectVersions(projectId: string): Promise<{ id: string; version: string; publishedAt: string }[]> {
   const { data, error } = await createAdminClient()
@@ -429,6 +444,8 @@ export async function insertVersion(row: {
   source: unknown
   studentBundle: string
   professorBundle: string
+  /** The compiled server code; null for a plugin without any. */
+  serverBundle?: string | null
   bundleSha256: string
   artifactSha256: string
   publishedBy: string
@@ -450,6 +467,7 @@ export async function insertVersion(row: {
       source: row.source,
       student_bundle: row.studentBundle,
       professor_bundle: row.professorBundle,
+      server_bundle: row.serverBundle ?? null,
       bundle_sha256: row.bundleSha256,
       artifact_sha256: row.artifactSha256,
       published_by: row.publishedBy,
@@ -735,13 +753,14 @@ export interface VersionArtifactRow {
   source: Record<string, unknown>
   studentBundle: string
   professorBundle: string
+  serverBundle: string | null
   artifactSha256: string | null
 }
 
 export async function loadVersionArtifact(id: string): Promise<VersionArtifactRow | null> {
   const { data, error } = await createAdminClient()
     .from(VERSIONS)
-    .select('id, project_id, institution_id, published_by, manifest, source, student_bundle, professor_bundle, artifact_sha256')
+    .select('id, project_id, institution_id, published_by, manifest, source, student_bundle, professor_bundle, server_bundle, artifact_sha256')
     .eq('id', id)
     .maybeSingle()
   if (error) logger.error('studio/db.loadVersionArtifact', error, { id })
@@ -755,6 +774,7 @@ export async function loadVersionArtifact(id: string): Promise<VersionArtifactRo
     source: data.source && typeof data.source === 'object' && !Array.isArray(data.source) ? data.source : {},
     studentBundle: data.student_bundle,
     professorBundle: data.professor_bundle,
+    serverBundle: data.server_bundle ?? null,
     artifactSha256: data.artifact_sha256,
   }
 }
@@ -1322,12 +1342,14 @@ export interface SnapshotRow {
   checkSummary: Record<string, unknown>
   /** The builder's synthetic preview records; null for snapshots built without them. */
   sampleData?: Record<string, unknown> | null
+  /** The compiled server code; null for a draft without any. */
+  serverBundle?: string | null
 }
 
 export async function loadSnapshot(projectId: string, hash: string): Promise<SnapshotRow | null> {
   const { data, error } = await createAdminClient()
     .from(SNAPSHOTS)
-    .select('project_id, hash, compiler, manifest, files, student_bundle, professor_bundle, check_summary, sample_data')
+    .select('project_id, hash, compiler, manifest, files, student_bundle, professor_bundle, check_summary, sample_data, server_bundle')
     .eq('project_id', projectId)
     .eq('hash', hash)
     .maybeSingle()
@@ -1343,6 +1365,7 @@ export async function loadSnapshot(projectId: string, hash: string): Promise<Sna
     professorBundle: data.professor_bundle,
     checkSummary: data.check_summary ?? {},
     sampleData: data.sample_data ?? null,
+    serverBundle: data.server_bundle ?? null,
   }
 }
 

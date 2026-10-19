@@ -127,7 +127,7 @@ beforeEach(() => {
     id: VERSION, projectId: 'p', institutionId: INSTITUTION, version: '1.0.0', bridgeVersion: 'v1', manifest: artifact.manifest, artifactSha256: storedHash,
   }))
   vi.mocked(db.loadVersionArtifact).mockImplementation(async () => ({
-    id: VERSION, projectId: 'p', institutionId: INSTITUTION, publishedBy: PROFESSOR.userId, artifactSha256: storedHash, ...artifact,
+    id: VERSION, projectId: 'p', institutionId: INSTITUTION, publishedBy: PROFESSOR.userId, artifactSha256: storedHash, serverBundle: null, ...artifact,
   }))
   vi.mocked(db.loadInstallation).mockResolvedValue({
     id: INSTALLATION, institutionId: INSTITUTION, sectionId: SECTION, projectId: 'p', status: 'active', currentVersionId: VERSION, studentVisibility: 'hidden',

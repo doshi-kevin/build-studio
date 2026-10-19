@@ -13,7 +13,7 @@ import type { StudioManifest } from '@/lib/studio/manifest'
 import { createBridgeClient } from '@/lib/studio/runtime/bridge-client'
 import { mountPluginFrame, type FrameSnapshot, type StopReason } from '@/lib/studio/runtime/host'
 import type { ToastTone } from '@/lib/studio/runtime/host-methods'
-import { createPreviewBridge, type PreviewSample } from '@/lib/studio/runtime/preview-bridge'
+import { createPreviewBridge, type PreviewSample, type PreviewServerCall } from '@/lib/studio/runtime/preview-bridge'
 import { previewRosterNames } from '@/lib/studio/runtime/preview-roster'
 import type { PluginView } from '@/lib/studio/runtime/protocol'
 
@@ -47,8 +47,15 @@ interface CommonProps {
  * installation or version. */
 type PluginHostProps = CommonProps &
   (
-    | { preview?: undefined; sample?: undefined; installationId: string; versionId: string }
-    | { preview: StudioManifest; sample?: PreviewSample | null; installationId?: string; versionId?: string }
+    | { preview?: undefined; sample?: undefined; previewServer?: undefined; installationId: string; versionId: string }
+    | {
+        preview: StudioManifest
+        sample?: PreviewSample | null
+        /** Runs the preview's server actions (a builder draft's): without it, server.call is refused. */
+        previewServer?: PreviewServerCall
+        installationId?: string
+        versionId?: string
+      }
   )
 
 // Plain language only: a stop reason is never shown as a code (ui-design rules).
@@ -88,6 +95,7 @@ export function PluginHost({
   readOnlyNotice,
   preview,
   sample,
+  previewServer,
   onReload,
   reloading = false,
   exitHref,
@@ -96,11 +104,21 @@ export function PluginHost({
   const container = useRef<HTMLDivElement>(null)
   const stoppedNotice = useRef<HTMLDivElement>(null)
   const [frame, setFrame] = useState<FrameSnapshot>({ status: 'loading', loads: 0, strikes: 0 })
+  // Read at call time, so a new function from the parent never remounts the frame.
+  const serverCall = useRef(previewServer)
+  useEffect(() => {
+    serverCall.current = previewServer
+  }, [previewServer])
 
   useEffect(() => {
     if (!container.current) return
     const live = preview || !installationId || !versionId ? null : createBridgeClient({ installationId, versionId })
-    const bridge = preview ? createPreviewBridge(preview, view, { sample }) : live
+    const bridge = preview
+      ? createPreviewBridge(preview, view, {
+          sample,
+          serverCall: (call) => (serverCall.current ? serverCall.current(call) : Promise.reject(new Error('unavailable'))),
+        })
+      : live
     if (!bridge) return
     // Only a professor view draws the roster; the host refuses it anywhere else.
     const liveId = live && view === 'professor' ? installationId : null

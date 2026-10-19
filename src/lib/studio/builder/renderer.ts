@@ -14,6 +14,10 @@
  *       environment. A production renderer would be a Cloud Run Job, like the validator's.
  *
  * Whatever the child prints is untrusted. Only JPEGs within the size caps come back.
+ *
+ * A draft with server code: the child prints each server.call a view makes as a line, and
+ * this process answers it by running the draft's server code (server-runtime/preview.ts) on
+ * the preview's records, so the screenshots show what the tool really does.
  */
 import 'server-only'
 import { spawn } from 'node:child_process'
@@ -23,6 +27,8 @@ import { STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES, STUDIO_BUILDER_REVIEW_IMAGES_MAX
 import type { StudioManifest } from '../manifest'
 import type { PreviewSample } from '../runtime/preview-bridge'
 import { onThisMachine, runnerEnvironment } from '../validator/runtime-runner'
+import { previewServerCall } from '../server-runtime/preview'
+import type { PreviewStore } from '../runtime/preview-bridge'
 
 export type RendererMode = 'unavailable' | 'local'
 
@@ -47,11 +53,13 @@ export type RenderOutcome = { ok: true; images: RenderedImage[]; failures: Rende
 
 export interface RenderInput {
   manifest: StudioManifest
-  bundles: { student: string; professor: string }
+  bundles: { student: string; professor: string; server?: string | null }
   sample: PreviewSample | null
 }
 
 export const RENDER_TIMEOUT_MS = 60_000
+const RENDER_SERVER_CALLS_MAX = 40
+const RENDER_SERVER_CALL_MAX_CHARS = 512 * 1024
 // Four images at the cap, in base64, plus the JSON around them.
 const STDOUT_MAX_CHARS = Math.ceil((STUDIO_BUILDER_REVIEW_IMAGES_MAX * STUDIO_BUILDER_REVIEW_IMAGE_MAX_BYTES * 4) / 3) + 64 * 1024
 const LABEL = /^[a-z][a-z-]{0,39}$/
@@ -105,6 +113,7 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
     studentBundle: input.bundles.student,
     professorBundle: input.bundles.professor,
     sample: input.sample,
+    server: !!input.bundles.server,
   })
   return new Promise((resolve) => {
     let settled = false
@@ -112,6 +121,7 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
       if (settled) return
       settled = true
       clearTimeout(timer)
+      child.stdin.end()
       resolve(result)
     }
     // The repository root, when the server runs from a build that doesn't ship validator-runtime.
@@ -122,7 +132,38 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
       stdio: 'pipe',
       windowsHide: true,
     })
+    let buffered = ''
     let out = ''
+    let calls = 0
+    let serverTurn: Promise<unknown> = Promise.resolve()
+    // One line from the child: a view's server call to answer, or the result.
+    const onLine = (line: string) => {
+      let message: { type?: unknown; id?: unknown; view?: unknown; call?: { action?: unknown; args?: unknown; store?: unknown } }
+      try {
+        message = JSON.parse(line)
+      } catch {
+        return
+      }
+      if (message?.type === 'result') {
+        out = line
+        return
+      }
+      const call = message?.call
+      if (message?.type !== 'server.call' || !Number.isInteger(message.id) || (message.view !== 'student' && message.view !== 'professor') || typeof call?.action !== 'string') return
+      calls += 1
+      // The child is untrusted: a capped number of calls, each with a bounded store, one after another.
+      if (calls > RENDER_SERVER_CALLS_MAX || line.length > RENDER_SERVER_CALL_MAX_CHARS) {
+        if (child.stdin.writable) child.stdin.write(`${JSON.stringify({ type: 'reply', id: message.id, reply: { result: { ok: false, code: 'failed', message: 'Too many requests.' }, store: null } })}\n`)
+        return
+      }
+      const view = message.view
+      const action = call.action
+      serverTurn = serverTurn.then(() => previewServerCall({ manifest: input.manifest, view, serverBundle: input.bundles.server ?? null, action, args: call.args, store: (call.store ?? null) as PreviewStore | null })
+        .catch(() => ({ result: { ok: false as const, code: 'failed' as const, message: 'This tool’s server code didn’t finish.' }, store: null }))
+        .then((reply) => {
+          if (!settled && child.stdin.writable) child.stdin.write(`${JSON.stringify({ type: 'reply', id: message.id, reply })}\n`)
+        }))
+    }
     const timer = setTimeout(() => {
       logger.warn('studio/builder.renderPreview: timed out')
       child.kill('SIGKILL')
@@ -130,10 +171,17 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
     }, RENDER_TIMEOUT_MS)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
-      out += chunk
-      if (out.length > STDOUT_MAX_CHARS) {
+      buffered += chunk
+      if (buffered.length > STDOUT_MAX_CHARS) {
         child.kill('SIGKILL')
         finish({ ok: false, reason: 'failed' })
+        return
+      }
+      let i: number
+      while ((i = buffered.indexOf('\n')) !== -1) {
+        const line = buffered.slice(0, i)
+        buffered = buffered.slice(i + 1)
+        onLine(line)
       }
     })
     child.stderr.resume()
@@ -150,6 +198,6 @@ export function renderPreview(input: RenderInput, env: Record<string, string | u
     child.stdin.on('error', () => {
       // The child exited before reading its input; `close` reports it.
     })
-    child.stdin.end(payload)
+    child.stdin.write(`${payload}\n`)
   })
 }

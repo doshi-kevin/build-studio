@@ -22,6 +22,7 @@ vi.mock('@/lib/studio/db', () => ({
   listActiveMemories: vi.fn(async () => []),
   listRunMemoryProposals: vi.fn(async () => []),
   loadBuilderRun: vi.fn(),
+  loadSnapshotServer: vi.fn(),
   listBuilderSteps: vi.fn(async () => []),
   loadBuilderProject: vi.fn(),
   loadSnapshot: vi.fn(),
@@ -85,6 +86,7 @@ describe('who may call the builder', () => {
   const calls: [string, () => Promise<unknown>][] = [
     ['start', () => service.startBuild({ sectionId: SECTION, pluginProjectId: null, request: 'Flashcards', clientRequestId: crypto.randomUUID() })],
     ['stop', () => service.stopBuild({ sectionId: SECTION, runId: RUN })],
+    ['server call', () => service.draftServerCall({ sectionId: SECTION, pluginProjectId: PROJECT, snapshotHash: 'a'.repeat(64), view: 'student', action: 'go', args: {}, store: {} })],
     ['decide', () => service.decideApproval({ sectionId: SECTION, runId: RUN, proposalId: crypto.randomUUID(), deltaHash: 'a'.repeat(64), approve: true })],
     ['answer', () => service.answerQuestion({ sectionId: SECTION, runId: RUN, questionId: crypto.randomUUID(), answer: 'Yes' })],
     ['preview', () => service.issueDraftPreview({ sectionId: SECTION, pluginProjectId: PROJECT, snapshotHash: 'a'.repeat(64), view: 'student' })],
@@ -264,6 +266,8 @@ describe('draft preview', () => {
     vi.mocked(db.loadBuilderProject).mockResolvedValue({ ...project, ownerId: crypto.randomUUID() } as never)
     expect(await service.issueDraftPreview({ sectionId: SECTION, pluginProjectId: PROJECT, snapshotHash: hash, view: 'student' })).toEqual(DENIED)
     expect(db.loadSnapshot).not.toHaveBeenCalled()
+    expect(await service.draftServerCall({ sectionId: SECTION, pluginProjectId: PROJECT, snapshotHash: hash, view: 'student', action: 'go', args: {}, store: {} })).toEqual(DENIED)
+    expect(db.loadSnapshotServer).not.toHaveBeenCalled()
   })
 })
 

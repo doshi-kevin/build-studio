@@ -22,7 +22,10 @@ import { kickWorker } from '@/lib/jobs/enqueue'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logEvent } from '@/lib/supabase/event-logger'
 import { STUDIO_PAUSED, studioAccess } from '../access'
-import type { PreviewSample } from '../runtime/preview-bridge'
+import type { PreviewSample, PreviewStore } from '../runtime/preview-bridge'
+import type { RequestResult } from '../runtime/host'
+import { takeBridgeCall } from '../bridge/rate-limit'
+import { previewServerCall } from '../server-runtime/preview'
 import { approvalSummary } from './manifest-delta'
 import { allowedBridgeMethods } from '../bridge/catalog'
 import { requireProfessor, sessionUserId, type StudioProfessor } from '../context'
@@ -574,6 +577,35 @@ export async function issueDraftPreview(
   const frameUrl = draftFrameUrl(project.id, snapshot.hash, view)
   if (!frameUrl) return { ok: false, error: 'Previews aren’t available here right now.' }
   return { ok: true, value: { frameUrl, allowedMethods: allowedBridgeMethods(manifest.manifest, view), manifest: manifest.manifest, title: manifest.manifest.name, sample: (snapshot.sampleData as PreviewSample | null | undefined) ?? null } }
+}
+
+const PREVIEW_STORE_MAX_CHARS = 512 * 1024
+const previewCallInput = previewInput.extend({ action: z.string().max(40), args: z.unknown().optional(), store: z.unknown() })
+
+/** One server action of the professor's own draft snapshot, on the preview's records
+ * (server-runtime/preview.ts). Owner only, like the draft's frame; rate-limited like the
+ * Bridge's writes. The records are the preview's synthetic ones, sent by the page. */
+export async function draftServerCall(input: z.input<typeof previewCallInput>): Promise<ServiceResult<{ result: RequestResult; store: PreviewStore | null }>> {
+  const parsed = previewCallInput.safeParse(input)
+  if (!parsed.success || JSON.stringify(parsed.data.store ?? null).length > PREVIEW_STORE_MAX_CHARS) return denied()
+  const professor = await requireProfessor(parsed.data.sectionId)
+  if (!professor) return denied()
+  const project = await ownProject(professor, parsed.data.pluginProjectId)
+  if (!project) return denied()
+  if ((await studioAccess(professor.institutionId)) === 'off') return { ok: false, error: STUDIO_PAUSED }
+  if (!takeBridgeCall(professor.userId, project.id, 'write')) return { ok: false, error: 'Too many requests. Wait a moment and try again.' }
+  const snapshot = await db.loadSnapshotServer(project.id, parsed.data.snapshotHash)
+  const manifest = snapshot ? parseManifest(snapshot.manifest) : null
+  if (!snapshot || !manifest?.ok) return denied()
+  const value = await previewServerCall({
+    manifest: manifest.manifest,
+    view: parsed.data.view,
+    serverBundle: snapshot.serverBundle,
+    action: parsed.data.action,
+    args: parsed.data.args,
+    store: parsed.data.store as PreviewStore | null,
+  })
+  return { ok: true, value }
 }
 
 /** Save the current draft as a new immutable version: human-only (lifecycle.publishDraft). */

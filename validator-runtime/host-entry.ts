@@ -21,13 +21,21 @@ interface MountOptions {
   /** The draft's sample data (renderer). The validator uses placeholders. */
   sample?: PreviewSample | null
   className?: string
+  /** The renderer answers server.call through window.studioServerCall, which it exposes. */
+  server?: boolean
 }
+
+type ServerCallGlobal = { studioServerCall?: (json: string) => Promise<string> }
 
 function mount(frameUrl: string, view: 'student' | 'professor', rawManifest: unknown, scenario: Scenario, options: MountOptions = {}) {
   const parsed = parseManifest(rawManifest)
   if (!parsed.ok) throw new Error('manifest')
   const manifest = parsed.manifest
-  const preview = createPreviewBridge(manifest, view, { sample: options.sample ?? null })
+  const exposed = (window as unknown as ServerCallGlobal).studioServerCall
+  const preview = createPreviewBridge(manifest, view, {
+    sample: options.sample ?? null,
+    serverCall: options.server && exposed ? async (call) => JSON.parse(await exposed(JSON.stringify(call))) : undefined,
+  })
   const handleRequest = async (method: string, args: unknown): Promise<RequestResult> => {
     if (scenario === 'failing') return { ok: false, code: 'failed', message: SENTINEL }
     if (scenario === 'slow') await new Promise((r) => setTimeout(r, 2500))

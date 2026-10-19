@@ -686,7 +686,7 @@ describe('review fixes (Step 8C)', () => {
       counters: { modelTurns: 0, toolCalls: 0, writes: 0, bytesWritten: 0, repairRounds: 0, checkRuns: 0, costUsd: 0 },
       tokenRatio: 1000,
     })
-    expect(out.trims).toEqual(['memory_preferences', 'history', 'skills', 'action_log', 'kit_refs', 'findings'])
+    expect(out.trims).toEqual(['memory_preferences', 'history', 'skills', 'action_log', 'kit_refs', 'findings', 'files'])
     // Constraints are never trimmed.
     expect(out.memory.length).toBeGreaterThan(0)
     expect(out.memory.every((m) => m.kind === 'constraint')).toBe(true)

@@ -5,11 +5,11 @@
 import { z } from 'zod'
 import type { StudioManifestV2 } from '../manifest'
 import type { KitImportName } from '../kit/plugin-kit-types'
-import { STUDIO_BUILDER_PLAN_MAX_BYTES } from '../limits'
+import { STUDIO_BUILDER_PLAN_MAX_BYTES, STUDIO_PACKAGE_MAX_FILES } from '../limits'
 import type { BuilderFinding, CheckSummary } from './checks'
 import { emptyMaterial, type WorkMaterial } from './course-material'
 import { AVAILABLE_CAPABILITIES, type DeltaItem } from './manifest-delta'
-import { PLUGIN_PATHS, type PluginPath, characterProblem, utf8Bytes } from './paths'
+import { isPackagePath, type PluginPath, characterProblem, utf8Bytes } from './paths'
 
 export interface LastCheck {
   work_hash: string
@@ -25,9 +25,9 @@ export interface Work {
   work_rev: number
   manifest: StudioManifestV2 | null
   files: Partial<Record<PluginPath, string>>
-  /** Views whose text the model sees: read, written or edited in this run. */
+  /** Files whose text the model sees: read, written or edited in this run. */
   working_set: PluginPath[]
-  /** Views written in this run (the plan gate counts them). */
+  /** Files written or deleted in this run (the plan gate counts them). */
   changed: PluginPath[]
   /** Kit names the model looked up, newest last. */
   kit_refs: KitImportName[]
@@ -52,7 +52,8 @@ export interface Work {
     /** The draft the latest review saw: it passed every check and rendered without crashing. */
     good?: { manifest: StudioManifestV2; files: Partial<Record<PluginPath, string>>; sample: SampleData | null } | null
   }
-  /** What educational product this build is for (Step 12B). Null when the run has none, which
+  /** Build metadata, never the product: what the builder is asked to build. The product is the
+   * source package in `files` and the versions saved from it. What educational product this build is for (Step 12B). Null when the run has none, which
    * is every run until something fills it; nothing reads it yet. */
   product_intelligence: ProductIntelligence | null
   /** What Product Intelligence spent seeding this run, inside the run's cost counter but outside
@@ -104,7 +105,7 @@ const items = (maxItems: number, maxChars: number) => z.array(prose(maxChars)).m
 
 const planFields = {
   goal: prose(500),
-  files_to_change: z.array(z.enum(PLUGIN_PATHS)).min(1).max(2),
+  files_to_change: z.array(z.string().max(80).refine(isPackagePath, 'a file of the tool, like views/student.tsx or server/index.ts')).min(1).max(STUDIO_PACKAGE_MAX_FILES),
   manifest_changes: z.array(prose(200)).max(10),
   capabilities_needed: z.array(z.enum(AVAILABLE_CAPABILITIES as [string, ...string[]])).max(10),
   checks: z.array(prose(200)).max(5),

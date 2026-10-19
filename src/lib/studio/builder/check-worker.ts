@@ -1,5 +1,5 @@
 /**
- * Runs the builder's compile and typecheck in a worker thread, with a heap cap and a
+ * Runs the builder's package compile and typecheck in a worker thread, with a heap cap and a
  * wall-clock limit (STUDIO_BUILDER_CHECK_TIMEOUT_MS, STUDIO_BUILDER_CHECK_WORKER_MAX_MB).
  * A check that runs over, exhausts its heap or crashes is terminated, and the next call
  * starts a fresh worker. Calls run one at a time; the limit starts when a call is sent
@@ -14,13 +14,12 @@ import { Worker } from 'node:worker_threads'
 import { STUDIO_BUILDER_CHECK_TIMEOUT_MS, STUDIO_BUILDER_CHECK_WORKER_MAX_MB } from '../limits'
 import { CHECK_WORKER_SOURCE } from './check-worker.generated'
 import { CheckFault, CheckTimeout } from './check-worker-errors'
-import type { CompileResult } from './compile'
-import type { PluginPath } from './paths'
+import type { PackageCompileResult } from './compile'
 import type { TypecheckResult } from './typecheck'
 
 export interface WorkerCheck {
   compiler: string
-  compile: Record<PluginPath, CompileResult>
+  compile: PackageCompileResult
   typecheck: TypecheckResult
 }
 
@@ -49,7 +48,7 @@ function stop(w: Worker) {
   void w.terminate()
 }
 
-function dispatch(files: Record<PluginPath, string>, timeoutMs: number): Promise<WorkerCheck> {
+function dispatch(files: Record<string, string>, timeoutMs: number): Promise<WorkerCheck> {
   const w = (worker ??= start())
   const id = nextId++
   return new Promise<WorkerCheck>((resolve, reject) => {
@@ -84,8 +83,8 @@ function dispatch(files: Record<PluginPath, string>, timeoutMs: number): Promise
   })
 }
 
-/** Compile and typecheck both views. Throws CheckTimeout or CheckFault. */
-export function runWorkerCheck(files: Record<PluginPath, string>, timeoutMs = STUDIO_BUILDER_CHECK_TIMEOUT_MS): Promise<WorkerCheck> {
+/** Compile and typecheck the package. Throws CheckTimeout or CheckFault. */
+export function runWorkerCheck(files: Record<string, string>, timeoutMs = STUDIO_BUILDER_CHECK_TIMEOUT_MS): Promise<WorkerCheck> {
   const call = queue.then(() => dispatch(files, timeoutMs))
   // The queue continues whatever this call's outcome.
   queue = call.catch(() => undefined)

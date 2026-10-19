@@ -77,6 +77,35 @@ export const humanize = (name: string) => name.replace(/([A-Z])/g, ' $1').toLowe
 /** How the tool sits on the page, not something a person can do with it. */
 const PRESENTATION: ReadonlySet<string> = new Set(['ui.resize', 'ui.toast'])
 
+/** One line per server action a role may run: what the card's approval covers. */
+function serverLines(manifest: StudioManifest, role: 'student' | 'professor'): string[] {
+  if (manifest.manifestVersion !== 2 || !manifest.server) return []
+  return Object.entries(manifest.server.actions)
+    .filter(([, a]) => a.roles.includes(role))
+    .map(([name, a]) => {
+      // What the platform enforces: the code may read these. What it sends back is the tool's own choice.
+      const hidden = role === 'student' && (a.reads ?? []).length > 0 ? `, which can look at ${(a.reads ?? []).map(humanize).join(', ')} (hidden from students). The tool’s code decides what the student gets back` : ''
+      return `Run the tool’s server code “${humanize(name)}”${hidden}`
+    })
+}
+
+/** A collection only the tool's own code writes: who reads it, with no writer the frame could be. */
+const SERVER_LABEL: Record<StudioManifest['collections'][string]['access'], string> = {
+  perStudent: 'Recorded by the tool’s own code. Each student sees only theirs; course staff see everyone’s',
+  staffPerStudent: 'Recorded by the tool’s own code for each student. Each student sees only their own',
+  shared: 'Recorded by the tool’s own code. Everyone in the course can read it',
+  staffOnly: 'Recorded by the tool’s own code. Only you and your TAs see it',
+}
+
+/** What each role can do with a collection from the tool's screens. */
+function collectionLine(c: StudioManifest['collections'][string], name: string, role: 'student' | 'professor'): string | null {
+  const a = ACCESS[c.access]
+  if (c.writes !== 'server') return role === 'student' ? (a.students ? `${a.students} ${humanize(name)}` : null) : `${a.staff} ${humanize(name)}`
+  // Read-only from every screen: the tool's code does the writing.
+  if (role === 'student') return c.access === 'staffOnly' ? null : c.access === 'shared' ? `Read ${humanize(name)}` : `Read their own ${humanize(name)}`
+  return c.access === 'perStudent' || c.access === 'staffPerStudent' ? `Read every student’s ${humanize(name)}` : `Read ${humanize(name)}`
+}
+
 export function buildPluginCard(manifest: StudioManifest, storage: StorageFigures | null): PluginCard {
   const collections = Object.entries(manifest.collections)
   const abilities = (view: 'student' | 'professor') =>
@@ -88,13 +117,14 @@ export function buildPluginCard(manifest: StudioManifest, storage: StorageFigure
     description: manifest.description,
     students: [
       ...abilities('student'),
-      ...collections.flatMap(([name, c]) => (ACCESS[c.access].students ? [`${ACCESS[c.access].students} ${humanize(name)}`] : [])),
+      ...collections.flatMap(([name, c]) => collectionLine(c, name, 'student') ?? []),
+      ...serverLines(manifest, 'student'),
     ],
-    professors: [...abilities('professor'), ...collections.map(([name, c]) => `${ACCESS[c.access].staff} ${humanize(name)}`)],
+    professors: [...abilities('professor'), ...collections.flatMap(([name, c]) => collectionLine(c, name, 'professor') ?? []), ...serverLines(manifest, 'professor')],
     data: collections.map(([name, c]) => ({
       name: humanize(name),
       fields: Object.keys(c.fields).map(humanize),
-      access: ACCESS[c.access].label,
+      access: c.writes === 'server' ? SERVER_LABEL[c.access] : ACCESS[c.access].label,
     })),
     ai: 'This tool doesn’t use AI.',
     grading: 'This tool doesn’t grade or send scores to the gradebook.',

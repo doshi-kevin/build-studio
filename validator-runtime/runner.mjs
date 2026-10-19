@@ -145,6 +145,8 @@ export async function waitFor(fn, timeoutMs, stepMs = 100) {
 /** One scenario of one view in a fresh browser context. `options` ({ sample, className })
  * is for the preview renderer (render.mjs). */
 export async function openScenario(browser, servers, artifact, view, scenario, viewport, options = {}) {
+  // beforeMount runs here, in Node, before the frame mounts (the renderer exposes its server call).
+  const { beforeMount, ...mountOptions } = options
   const context = await browser.newContext({ viewport })
   const outbound = []
   await context.route('**/*', (route) => {
@@ -154,10 +156,11 @@ export async function openScenario(browser, servers, artifact, view, scenario, v
     return route.abort('blockedbyclient')
   })
   const page = await context.newPage()
+  if (beforeMount) await beforeMount(page)
   await page.goto(`${servers.app}/host.html`)
   await page.evaluate(
     ([url, v, manifest, s, o]) => window.validator.mount(url, v, manifest, s, o),
-    [`${servers.runtime}/frame/${view}`, view, artifact.manifest, scenario, options],
+    [`${servers.runtime}/frame/${view}`, view, artifact.manifest, scenario, mountOptions],
   )
   const snapshot = () => page.evaluate(() => window.validator.snapshot())
   const frame = () => page.frames().find((f) => f.url().startsWith(servers.runtime))

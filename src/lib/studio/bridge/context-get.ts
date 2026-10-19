@@ -10,7 +10,7 @@ import 'server-only'
 import type { StudioViewer } from '../context'
 import { loadSectionCourse } from '../db'
 import { slotSkillNames } from '../skill-bindings'
-import { decide, viewOf } from '../policy'
+import { decideForFrame, viewOf } from '../policy'
 import type { HostContext } from './envelope'
 
 export interface PluginContext {
@@ -43,8 +43,8 @@ export async function contextFor(viewer: StudioViewer, host: HostContext): Promi
     Object.entries(viewer.manifest.collections).map(([name, collection]) => [
       name,
       {
-        read: decide(viewer.role, collection.access, 'list', state).allow,
-        write: decide(viewer.role, collection.access, 'create', state).allow,
+        read: decideForFrame(viewer.role, collection, 'list', state).allow,
+        write: decideForFrame(viewer.role, collection, 'create', state).allow,
       },
     ]),
   )

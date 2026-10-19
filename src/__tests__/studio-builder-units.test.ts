@@ -27,19 +27,20 @@ const ok = <T extends { ok: boolean }>(r: T) => {
   return r as Extract<T, { ok: true }>
 }
 
-describe('file tools accept exactly two paths', () => {
+describe('file tools accept only package paths', () => {
   const schema = TOOLS.write_file.schema
   it.each([
     '../.env', '../../.env', 'views/../../src/middleware.ts', '/etc/passwd', 'C:\\Projects\\x', '\\\\host\\share', 'views\\student.tsx',
-    'views%2fstudent.tsx', '%2e%2e/', 'views/Student.tsx', 'views/student.tsx.', 'views/student.tsx ', 'views/student.tsx\u0000.png',
+    'views%2fstudent.tsx', '%2e%2e/', 'Views/student.tsx', 'views/student.tsx.', 'server/index.tsx', 'shared/a/b/c.ts', 'views/a.js', 'views/.hidden.tsx', 'views/student.tsx ', 'views/student.tsx\u0000.png',
     'views/stu\u202Edent.tsx', 'views/ѕtudent.tsx', 'views／student.tsx', 'views/student.tsx'.normalize('NFD') + '\u0301',
     '.env', '.git/config', 'package.json', '.npmrc', 'node_modules/x', 'src/lib/studio/db.ts', 'plugin.manifest.json', '__proto__', 'constructor',
   ])('refuses %j', (path) => {
     expect(schema.safeParse({ path, content: 'x' }).success).toBe(false)
   })
-  it('accepts the two views', () => {
-    expect(schema.safeParse({ path: 'views/student.tsx', content: 'x' }).success).toBe(true)
-    expect(schema.safeParse({ path: 'views/professor.tsx', content: 'x' }).success).toBe(true)
+  it('accepts the two views and files under views/, shared/ and server/', () => {
+    for (const path of ['views/student.tsx', 'views/professor.tsx', 'views/components/QuestionCard.tsx', 'shared/grading.ts', 'server/index.ts']) {
+      expect(schema.safeParse({ path, content: 'x' }).success).toBe(true)
+    }
   })
   it('refuses extra arguments: no tool takes a scope', () => {
     expect(schema.safeParse({ path: 'views/student.tsx', content: 'x', projectId: 'p' }).success).toBe(false)
@@ -178,8 +179,8 @@ describe('the manifest pipeline', () => {
 })
 
 describe('the tool registry', () => {
-  it('has exactly the twelve approved tools', () => {
-    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'write_sample_data', 'finish'])
+  it('has exactly the approved tools', () => {
+    expect(TOOL_NAMES).toEqual(['read_file', 'get_kit_reference', 'write_file', 'edit_file', 'delete_file', 'propose_manifest_change', 'run_checks', 'submit_plan', 'ask_professor', 'propose_memory', 'search_course_material', 'write_sample_data', 'finish'])
     expect(Object.keys(TOOLS).sort()).toEqual([...TOOL_NAMES].sort())
     expect(toolDeclarations().map((d) => d.name)).toEqual([...TOOL_NAMES])
   })

@@ -6,7 +6,8 @@
  *   runs        'host': answered by Scholera's page, never sent to the server.
  *               'server': sent to POST /api/studio/bridge and handled by registry.ts.
  *   capability  the manifest capability the current view must declare, or null when a
- *               declared collection is what grants access (records).
+ *               declared collection (records) or a server action this view may call
+ *               (server.call) is what grants access.
  *   views       which views may call it at all.
  *   kind        'read' or 'write', for rate limits and read-only installations.
  *   args        the strict argument schema.
@@ -19,6 +20,7 @@ import { z } from 'zod'
 import { CAPABILITIES, type CapabilityName } from '../capabilities'
 import { STUDIO_RECORD_BATCH_MAX, STUDIO_RECORD_PAGE_MAX, STUDIO_TOAST_MAX_CHARS } from '../limits'
 import type { StudioManifest } from '../manifest'
+import { hasServerActions } from '../server-runtime/contract'
 import type { PluginView } from '../runtime/protocol'
 
 export interface MethodSpec {
@@ -87,6 +89,15 @@ export const METHOD_CATALOG = {
         .max(STUDIO_RECORD_BATCH_MAX),
     }),
   },
+  // The plugin's own server code (server-runtime/). Which actions exist, and who may call
+  // each, is the manifest's server block; the arguments are checked against it there.
+  'server.call': {
+    runs: 'server',
+    capability: null,
+    views: BOTH,
+    kind: 'write',
+    args: z.strictObject({ action: z.string().regex(/^[a-z][a-zA-Z0-9]{0,39}$/), args: z.unknown().optional() }),
+  },
   // Host only. The host clamps the height to its own limits; the plugin only asks.
   'ui.resize': {
     runs: 'host',
@@ -127,6 +138,7 @@ export function parseMethodArgs(spec: MethodSpec, args: unknown): { ok: true; ar
  * uses to refuse early and the server enforces on every call. */
 export function methodAllowed(spec: MethodSpec, manifest: StudioManifest, view: PluginView): boolean {
   if (!spec.views.includes(view)) return false
+  if (spec === METHOD_CATALOG['server.call']) return hasServerActions(manifest, view)
   if (spec.capability === null) return Object.keys(manifest.collections).length > 0
   return (
     (manifest.views[view].capabilities as readonly string[]).includes(spec.capability) &&

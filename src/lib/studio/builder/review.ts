@@ -19,7 +19,7 @@ import {
 } from '../limits'
 import type { StudioManifestV2 } from '../manifest'
 import type { ModelToolDecl } from './model'
-import { PLUGIN_PATHS, characterProblem, type PluginPath } from './paths'
+import { characterProblem, packagePaths, type PluginPath } from './paths'
 import type { Plan, ReviewRecord, SampleData } from './work'
 
 export const REVIEW_INSTRUCTIONS_VERSION = 'studio-review-v2'
@@ -124,7 +124,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     '# Collections',
     `${collections || 'none'}\nCapabilities: professor ${input.manifest.views.professor.capabilities.join(', ') || 'none'}; student ${input.manifest.views.student.capabilities.join(', ') || 'none'}.`,
     `Sample records shown: ${sampleCounts}.`,
-    ...PLUGIN_PATHS.map((p) => `# ${p}\n${block('plugin-code', 'plugin-code', input.files[p], STUDIO_BUILDER_FILE_MAX_BYTES + 1024)}`),
+    ...packagePaths(input.files).map((p) => `# ${p}\n${block('plugin-code', 'plugin-code', input.files[p], STUDIO_BUILDER_FILE_MAX_BYTES + 1024)}`),
     input.images.length
       ? `# Screenshots\nAttached after this text, in order: ${input.images.join('; ')}.`
       : '# Screenshots\nNone this time: review from the code only, and report no visual issues you can’t see in the code.',

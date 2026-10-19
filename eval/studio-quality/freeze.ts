@@ -5,6 +5,10 @@
  *
  * The hashes are of the instruction strings the model receives, which are the same on
  * every platform (template literals normalise line endings).
+ *
+ * Re-pinned 2026-10-17 to studio-builder-l1-v13: plugin packages (multi-file source and server
+ * code) change the builder on purpose. Results recorded against v12, the 12A baseline among
+ * them, describe the old builder and must be re-run before they are compared with new builds.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -15,8 +19,8 @@ import { STUDIO_BUILDER_MODEL } from '../../src/lib/ai/config'
 import { STUDIO_BUILDER_MAX_OUTPUT_TOKENS } from '../../src/lib/studio/limits'
 
 export const ACCEPTED = {
-  instructionsVersion: 'studio-builder-l1-v12',
-  instructionsSha256: 'aff3d51f37a4056fcdc3974d542d57397a4eec45d31244e3b8b628d134743b9e',
+  instructionsVersion: 'studio-builder-l1-v13',
+  instructionsSha256: '182e179111ee1728b33a5f0c80ddca7bf9c537e0da78f28177966bd99a18a9c8',
   reviewVersion: 'studio-review-v2',
   reviewSha256: '89749bc4bda366ea4b752016d1be1ec0d0bccadc503459ae9c3296a124dfcb44',
   model: 'gemini-3.1-pro-preview',

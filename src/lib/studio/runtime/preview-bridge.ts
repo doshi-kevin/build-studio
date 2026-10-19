@@ -15,7 +15,7 @@
  */
 import { methodAllowed, methodSpec, parseMethodArgs, type MethodArgs, type ServerMethodName } from '../bridge/catalog'
 import type { StudioManifest } from '../manifest'
-import { decide, type RecordOperation, type ViewerRole } from '../policy'
+import { decideForFrame, decideForServer, type RecordOperation, type ViewerRole } from '../policy'
 import { STUDIO_RECORD_PAGE_MAX } from '../limits'
 import { validateRecordData, type CollectionDef } from '../record-schema'
 import type { RequestResult } from './host'
@@ -26,7 +26,7 @@ import type { PluginView } from './protocol'
  * set exactly for perStudent and staffPerStudent records. */
 export type PreviewSample = Record<string, { student?: number; data: Record<string, unknown> }[]>
 
-interface PreviewRecord {
+export interface PreviewRecord {
   id: string
   data: Record<string, unknown>
   /** The synthetic student it belongs to, for perStudent and staffPerStudent. */
@@ -170,29 +170,76 @@ function sampleAssignments() {
 
 export interface PreviewBridge {
   handleRequest(method: string, args: unknown): Promise<RequestResult>
+  /** The records as they stand now: what a preview server call runs on. */
+  exportStore(): PreviewStore
 }
+
+/** The preview's records, by collection, as plain data: sent to the server for a server
+ * call and taken back from it. Owners index PREVIEW_ROSTER. */
+export type PreviewStore = Record<string, PreviewRecord[]>
+
+/** One preview server call, answered by Scholera's server (server-runtime/preview.ts). */
+export type PreviewServerCall = (call: { action: string; args: unknown; store: PreviewStore }) => Promise<{ result: RequestResult; store: PreviewStore | null }>
 
 export interface PreviewOptions {
   /** The draft's sample data. Without it, every collection gets placeholders. */
   sample?: PreviewSample | null
+  /** Records to start from instead of the sample: a store a server call returned. Checked like sample data. */
+  store?: PreviewStore | null
+  /** Set when the plugin's server code is the caller: its policy (decideForServer) with the
+   * action's declared reads, in place of the frame's. */
+  serverReads?: readonly string[]
+  /** How server.call reaches the draft's server code. Without it, server.call is refused. */
+  serverCall?: PreviewServerCall
+}
+
+const SERVER_UNAVAILABLE = { ok: false, code: 'failed', message: 'Couldn’t reach Scholera just now. Try again.' } as const
+const PREVIEW_STORE_MAX_RECORDS = 500
+
+/** A store from outside (a server call's input or reply): only well-formed records of declared
+ * collections, with owners exactly where the collection has them. */
+function importStore(manifest: StudioManifest, raw: unknown): Map<string, PreviewRecord[]> {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  return new Map(
+    Object.entries(manifest.collections).map(([name, c]) => {
+      const list = Object.hasOwn(input, name) && Array.isArray(input[name]) ? (input[name] as unknown[]).slice(0, PREVIEW_STORE_MAX_RECORDS) : []
+      const owned = OWNED.has(c.access)
+      const rows: PreviewRecord[] = []
+      for (const item of list) {
+        const r = item && typeof item === 'object' ? (item as Record<string, unknown>) : null
+        if (!r || typeof r.id !== 'string' || r.id.length > 64 || typeof r.createdAt !== 'string' || typeof r.updatedAt !== 'string') continue
+        const owner = owned ? rosterIndex(r.owner) : null
+        if (owned && owner === null) continue
+        const valid = validateRecordData('preview', name, c, r.data)
+        if (!valid.ok) continue
+        rows.push({ id: r.id, data: valid.data, owner, byViewer: r.byViewer === true, createdAt: r.createdAt.slice(0, 40), updatedAt: r.updatedAt.slice(0, 40) })
+      }
+      return [name, rows]
+    }),
+  )
 }
 
 export function createPreviewBridge(manifest: StudioManifest, view: PluginView, options: PreviewOptions = {}): PreviewBridge {
   // Staff preview the professor view as a professor; the student view as student 0.
   const role: ViewerRole = view === 'student' ? 'student' : 'professor'
   const sample = options.sample ? shiftSampleDates(options.sample) : null
-  const store = new Map(
-    Object.entries(manifest.collections).map(([name, c]) => [
-      name,
-      sample ? sampleRecords(name, c, Object.hasOwn(sample, name) ? sample[name] : [], view) : placeholderRecords(c, view),
-    ]),
-  )
+  let store = options.store
+    ? importStore(manifest, options.store)
+    : new Map(
+        Object.entries(manifest.collections).map(([name, c]) => [
+          name,
+          sample ? sampleRecords(name, c, Object.hasOwn(sample, name) ? sample[name] : [], view) : placeholderRecords(c, view),
+        ]),
+      )
   const handles = new Map(PREVIEW_ROSTER.map((s, i) => [s.handle, i]))
+  const serverReads = options.serverReads
 
   function scope(name: string, operation: RecordOperation) {
     if (!Object.hasOwn(manifest.collections, name)) return null
     const collection = manifest.collections[name]
-    const decision = decide(role, collection.access, operation, 'writable')
+    const decision = serverReads
+      ? decideForServer(role, collection, operation, 'writable', serverReads.includes(name))
+      : decideForFrame(role, collection, operation, 'writable')
     if (!decision.allow) return null
     const rows = store.get(name)!
     const visible = decision.ownerFilter === 'self' ? rows.filter((r) => r.owner === PREVIEW_VIEWER_STUDENT) : rows
@@ -256,7 +303,7 @@ export function createPreviewBridge(manifest: StudioManifest, view: PluginView, 
       const can = Object.fromEntries(
         Object.entries(manifest.collections).map(([name, c]) => [
           name,
-          { read: decide(role, c.access, 'list', 'writable').allow, write: decide(role, c.access, 'create', 'writable').allow },
+          { read: decideForFrame(role, c, 'list', 'writable').allow, write: decideForFrame(role, c, 'create', 'writable').allow },
         ]),
       )
       const options = Intl.DateTimeFormat().resolvedOptions()
@@ -306,9 +353,37 @@ export function createPreviewBridge(manifest: StudioManifest, view: PluginView, 
     },
   }
 
+  const exportStore = (): PreviewStore => Object.fromEntries(store)
+  let serverQueue: Promise<unknown> = Promise.resolve()
+
   return {
     async handleRequest(method, args) {
       const spec = methodSpec(method)
+      if (spec && method === 'server.call') {
+        if (!methodAllowed(spec, manifest, view)) return NOT_AVAILABLE
+        const parsed = parseMethodArgs(spec, args)
+        if (!parsed.ok) return INVALID
+        if (!options.serverCall) return SERVER_UNAVAILABLE
+        const call = parsed.args as MethodArgs<'server.call'>
+        const turn = serverQueue.then(async () => {
+          const sent = exportStore()
+          const sentIds = new Set(Object.values(sent).flatMap((rows) => rows.map((r) => r.id)))
+          const reply = await options.serverCall!({ action: call.action, args: call.args, store: sent }).catch(() => null)
+          if (!reply) return SERVER_UNAVAILABLE
+          if (reply.store) {
+            const next = importStore(manifest, reply.store)
+            // The frame's own writes during the call: records created meanwhile are kept.
+            for (const [name, rows] of store) {
+              const kept = next.get(name)!
+              for (const r of rows) if (!sentIds.has(r.id) && !kept.some((k) => k.id === r.id)) kept.unshift(r)
+            }
+            store = next
+          }
+          return reply.result
+        })
+        serverQueue = turn.catch(() => undefined)
+        return turn
+      }
       const handler = spec?.runs === 'server' && Object.hasOwn(handlers, method) ? handlers[method as ServerMethodName] : undefined
       if (!spec || !handler) return UNSUPPORTED
       if (!methodAllowed(spec, manifest, view)) return NOT_AVAILABLE
@@ -317,5 +392,6 @@ export function createPreviewBridge(manifest: StudioManifest, view: PluginView, 
       // The catalog's schema produced these arguments for exactly this handler (as dispatch.ts).
       return (handler as (a: unknown) => RequestResult)(parsed.args)
     },
+    exportStore,
   }
 }

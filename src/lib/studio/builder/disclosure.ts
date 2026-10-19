@@ -14,7 +14,7 @@
  */
 import ts from 'typescript'
 import type { StudioManifestV2 } from '../manifest'
-import { PLUGIN_PATHS, type PluginPath } from './paths'
+import { packagePaths, type PluginPath } from './paths'
 import { sampleTexts } from './sample-data'
 import type { SampleData } from './work'
 
@@ -57,9 +57,9 @@ export function words(text: string): string[] {
     .filter(Boolean)
 }
 
-/** Every string literal, template text and JSX text in one view, in source order, as words. */
+/** Every string literal, template text and JSX text in one source file, in source order, as words. */
 export function viewWords(path: PluginPath, source: string): string[] {
-  const sf = ts.createSourceFile(path, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX)
+  const sf = ts.createSourceFile(path, source, ts.ScriptTarget.ES2022, true, path.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.TSX)
   const out: string[] = []
   // Iterative, in source order: children are pushed in reverse.
   const stack: ts.Node[] = [sf]
@@ -100,7 +100,7 @@ export function findCopies(
   sources: readonly GuardSource[],
 ): GuardResult {
   const streams: { file: PluginPath | 'manifest' | 'sample'; words: string[] }[] = [
-    ...PLUGIN_PATHS.flatMap((p) => (typeof work.files[p] === 'string' ? [{ file: p, words: viewWords(p, work.files[p]!) }] : [])),
+    ...packagePaths(work.files).map((p) => ({ file: p, words: viewWords(p, work.files[p]!) })),
     { file: 'manifest' as const, words: manifestWords(work.manifest) },
     // Sample records are shown in the preview, so their text is held to the same guard.
     { file: 'sample' as const, words: sampleTexts(work.sample ?? null).flatMap(words) },

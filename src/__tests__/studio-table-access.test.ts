@@ -55,6 +55,8 @@ describe('Studio storage tables', () => {
       'src/lib/studio/navigation.ts',
       'src/lib/studio/records.ts',
       'src/lib/studio/runtime/frame.ts',
+      'src/lib/studio/server-runtime/capabilities.ts',
+      'src/lib/studio/server-runtime/execute.ts',
       'src/lib/studio/skill-bindings.ts',
       'src/lib/studio/student-visibility.ts',
       'src/lib/studio/validator/pipelines.ts',

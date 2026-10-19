@@ -41,7 +41,7 @@ export const KIT_IMPORTABLE_NAMES = [...KIT_IMPORTS.react, ...KIT_IMPORTS['@scho
 export const BRIDGE_METHOD_NAMES = [
   'context.get', 'course.skills', 'course.roster', 'course.assignments',
   'records.list', 'records.get', 'records.create', 'records.update', 'records.delete', 'records.batch',
-  'ui.resize', 'ui.toast',
+  'ui.resize', 'ui.toast', 'server.call',
 ] as const
 
 /**
@@ -91,8 +91,8 @@ export const KIT_REFERENCE: Record<KitImportName, string> = {
   Empty: 'Empty({ title: string, description?: string, children? }). Shown when there is nothing yet. Say what will appear and, for a professor, put the first action in children. Every view must use it.',
   ErrorState: 'ErrorState({ onRetry?: () => void }). Shown when a load fails; pass the hook\'s retry. It has no message prop: errors are never shown raw. Every view must use it.',
 
-  request: 'request<T>(method, args?): Promise<T>. One raw Bridge call. For collections use useRecords instead. Always handle rejection (.catch), or the tool reports a crash. The method must be declared for this view by the manifest.',
-  useRequest: 'useRequest<T>(method, args?): { status: "loading" | "ready" | "error", data?: T, retry: () => void }. A Bridge read that isn\'t a collection, as UI state. course.assignments returns { assignments: { title: string, dueAt: string | null, points: number | null }[] }; context.get returns { view, readOnly, course: { code, title }, can, skills }.',
+  request: 'request<T>(method, args?): Promise<T>. One raw Bridge call. For collections use useRecords instead. Always handle rejection (.catch), or the tool reports a crash. The method must be declared for this view by the manifest. A server action: request("server.call", { action: "submitAttempt", args: { ... } }) resolves to what the action returned.',
+  useRequest: 'useRequest<T>(method, args?): { status: "loading" | "ready" | "error", data?: T, retry: () => void }. A Bridge read that isn\'t a collection, as UI state. course.assignments returns { assignments: { title: string, dueAt: string | null, points: number | null }[] }; context.get returns { view, readOnly, course: { code, title }, can, skills }. A server action that loads data: useRequest("server.call", { action: "myWorksheet", args: {} }).',
   useRecords: 'useRecords<D>(collection: string): { status: "loading" | "ready" | "error", records: PluginRecord<D>[], retry, create(data: D, student?: string), update(record, data: D), remove(record), saveMany(changes) }. The way to read and write a collection: it loads every record (up to 1000) and keeps the list current after each write. Writes resolve to true when saved and false otherwise, and never throw: show an Alert on false. A record is { id, data, mine, student?, createdAt, updatedAt }. On a staffPerStudent collection, create(data, studentHandle) records something about one student and record.student is that handle. saveMany([{ op: "create", data, student? } | { op: "update", record, data } | { op: "delete", record }]) saves many at once, like "Mark everyone present". Example: const notes = useRecords<{ text: string }>("notes"); if (notes.status === "loading") return <Screen title="Notes"><Loading /></Screen>',
   useRoster: 'useRoster(): { status: "loading" | "ready" | "error", students: string[], retry }. The class as opaque handles ("st_…"), in no particular order. Professor view only, with the course.roster capability. Names never reach the tool: show students through RosterTable, and match records to students by record.student.',
   today: 'today(): string. Today as "YYYY-MM-DD" in the viewer\'s time zone. A natural key for daily records (attendance, check-ins).',
@@ -102,7 +102,8 @@ export const KIT_REFERENCE: Record<KitImportName, string> = {
 const methods = BRIDGE_METHOD_NAMES.map((m) => JSON.stringify(m)).join(' | ')
 
 /** The whole declaration world for plugin code. */
-export const PLUGIN_ENV_DTS = `
+/** The language core: what every plugin file sees, views and server alike. */
+export const PLUGIN_CORE_DTS = `
 // ── Language core (noLib: this is everything) ──
 interface Object {}
 interface Function { readonly length: number }
@@ -129,6 +130,8 @@ interface String {
   readonly length: number
   [index: number]: string
   charAt(i: number): string
+  charCodeAt(i: number): number
+  codePointAt(i: number): number | undefined
   includes(s: string): boolean
   indexOf(s: string): number
   startsWith(s: string): boolean
@@ -176,6 +179,7 @@ interface Array<T> extends ReadonlyArray<T> {
   length: number
   push(...items: T[]): number
   sort(compare?: (a: T, b: T) => number): this
+  splice(start: number, deleteCount?: number, ...items: T[]): T[]
   reverse(): this
   [Symbol.iterator](): IterableIterator<T>
 }
@@ -194,7 +198,7 @@ declare var Object: ObjectConstructor
 
 interface Math {
   round(x: number): number; floor(x: number): number; ceil(x: number): number; trunc(x: number): number; sign(x: number): number
-  min(...v: number[]): number; max(...v: number[]): number; abs(x: number): number; random(): number
+  min(...v: number[]): number; max(...v: number[]): number; abs(x: number): number; random(): number; imul(a: number, b: number): number
   // The rest of the standard Math object, which views already have at run time: models and
   // simulations (compound growth, van 't Hoff, kinematics) need them.
   pow(x: number, y: number): number; sqrt(x: number): number; cbrt(x: number): number; hypot(...v: number[]): number
@@ -243,10 +247,6 @@ declare function isNaN(n: number): boolean
 declare function isFinite(n: number): boolean
 declare var Infinity: number
 declare var NaN: number
-declare function setTimeout(callback: () => void, ms?: number): number
-declare function clearTimeout(id?: number): void
-declare function setInterval(callback: () => void, ms?: number): number
-declare function clearInterval(id?: number): void
 
 type Partial<T> = { [P in keyof T]?: T[P] }
 type Required<T> = { [P in keyof T]-?: T[P] }
@@ -258,6 +258,15 @@ type Extract<T, U> = T extends U ? T : never
 type Omit<T, K extends keyof any> = Pick<T, Exclude<keyof T, K>>
 type NonNullable<T> = T & {}
 type ReturnType<T extends (...args: any) => any> = T extends (...args: any) => infer R ? R : any
+
+`
+
+/** What a view sees: the core, timers, JSX and the two kit modules. */
+export const PLUGIN_ENV_DTS = PLUGIN_CORE_DTS + `
+declare function setTimeout(callback: () => void, ms?: number): number
+declare function clearTimeout(id?: number): void
+declare function setInterval(callback: () => void, ms?: number): number
+declare function clearInterval(id?: number): void
 
 // ── What a view renders ──
 declare const kitElementBrand: unique symbol

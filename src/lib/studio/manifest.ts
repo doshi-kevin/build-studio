@@ -1,7 +1,13 @@
 import { z } from 'zod'
 import { CAPABILITIES, CAPABILITY_NAMES, type PluginView } from './capabilities'
+import { SERVER_ENTRY } from './builder/paths'
 import { AI_FALLBACK_NAMES, PURPOSE_CATEGORY_NAMES, SIGNAL_NAMES } from './edtech'
-import { STUDIO_MANIFEST_MAX_COLLECTIONS, STUDIO_MANIFEST_MAX_FIELDS } from './limits'
+import {
+  STUDIO_MANIFEST_MAX_ACTION_ARGS,
+  STUDIO_MANIFEST_MAX_COLLECTIONS,
+  STUDIO_MANIFEST_MAX_FIELDS,
+  STUDIO_MANIFEST_MAX_SERVER_ACTIONS,
+} from './limits'
 import { BRIDGE_VERSIONS } from './runtime/protocol'
 
 // The contract is documented in docs/reference/studio-plugin-manifest.md.
@@ -43,9 +49,12 @@ function namedRecord<T extends z.ZodType>(value: T, what: string, max: number, r
  * staffPerStudent: staff write a record about one student, who reads only their own;
  * staff read all (attendance, feedback).
  * shared: staff write, everyone in the section reads.
- * staffOnly: never sent to a student's frame, e.g. answer keys (rule 5.2). */
+ * staffOnly: never sent to a student's frame, e.g. answer keys (rule 5.2).
+ * writes "server": no frame writes it, in any role; only the plugin's server actions do,
+ * so a student can't write their own score. */
 const collectionSchema = z.strictObject({
   access: z.enum(['perStudent', 'staffPerStudent', 'shared', 'staffOnly']),
+  writes: z.literal('server').optional(),
   fields: namedRecord(z.enum(['text', 'number', 'boolean']), 'field', STUDIO_MANIFEST_MAX_FIELDS, RESERVED_FIELDS)
     .refine((fields) => Object.keys(fields).length > 0, 'A collection needs at least one field'),
 })
@@ -99,6 +108,26 @@ const skillSlotSchema = z.strictObject({
 
 export const STUDIO_MANIFEST_MAX_SKILL_SLOTS = 10
 
+/** The plugin's server code (docs/reference/studio-plugin-package.md). Each action says who
+ * may call it, what arguments it takes, and which staffOnly collections it reads when a
+ * student calls it: the security contract, never the code. */
+export const ACTION_ARG_TYPES = ['text', 'number', 'boolean', 'json', 'text?', 'number?', 'boolean?', 'json?'] as const
+export type ActionArgType = (typeof ACTION_ARG_TYPES)[number]
+const actionSchema = z.strictObject({
+  roles: z
+    .array(z.enum(['student', 'professor']))
+    .min(1)
+    .max(2)
+    .refine((r) => new Set(r).size === r.length, 'Each role is listed once'),
+  args: namedRecord(z.enum(ACTION_ARG_TYPES), 'argument', STUDIO_MANIFEST_MAX_ACTION_ARGS),
+  reads: z.array(z.string().regex(NAME)).max(STUDIO_MANIFEST_MAX_COLLECTIONS).optional(),
+})
+const serverSchema = z.strictObject({
+  entry: z.literal(SERVER_ENTRY),
+  actions: namedRecord(actionSchema, 'action', STUDIO_MANIFEST_MAX_SERVER_ACTIONS).refine((a) => Object.keys(a).length > 0, 'Declare at least one action'),
+})
+export type ServerActionDef = z.infer<typeof actionSchema>
+
 /** Version 2: adds what the pre-publish validator checks. New Studio versions use it. */
 export const manifestV2Schema = z
   .strictObject({
@@ -114,8 +143,20 @@ export const manifestV2Schema = z
       .max(STUDIO_MANIFEST_MAX_SKILL_SLOTS)
       .refine((slots) => new Set(slots.map((x) => x.key)).size === slots.length, 'Each skill slot key is used once'),
     aiFallback: z.enum(AI_FALLBACK_NAMES),
+    server: serverSchema.optional(),
   })
   .superRefine((m, ctx) => {
+    // A student-called action may read a staffOnly collection only if it names it; naming
+    // anything else grants nothing, so it is refused rather than ignored.
+    for (const [name, action] of Object.entries(m.server?.actions ?? {})) {
+      for (const [i, c] of (action.reads ?? []).entries()) {
+        if (!Object.hasOwn(m.collections, c)) ctx.addIssue({ code: 'custom', path: ['server', 'actions', name, 'reads', i], message: `${c} isn’t a collection of this tool` })
+        else if (m.collections[c].access !== 'staffOnly') ctx.addIssue({ code: 'custom', path: ['server', 'actions', name, 'reads', i], message: `reads lists staffOnly collections only; students already read ${c} as its access allows` })
+      }
+    }
+    for (const [name, c] of Object.entries(m.collections)) {
+      if (c.writes === 'server' && !m.server) ctx.addIssue({ code: 'custom', path: ['collections', name, 'writes'], message: 'Only server actions write this collection, so the tool needs server actions' })
+    }
     // Rule 6.2: a tool that uses AI says what happens without it; one that doesn't, says so.
     const usesAi = (['student', 'professor'] as const).some((v) =>
       m.views[v].capabilities.some((c) => CAPABILITIES[c].usesAi === true),

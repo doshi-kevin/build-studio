@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { assertClassicScript, compileView, CompilerFault } from '@/lib/studio/builder/compile'
-import { typecheckViews } from '@/lib/studio/builder/typecheck'
+import { typecheckPackage as typecheckViews } from '@/lib/studio/builder/typecheck'
 import { runDraftChecks } from '@/lib/studio/builder/checks'
 import { runWorkerCheck } from '@/lib/studio/builder/check-worker'
 import { CheckTimeout } from '@/lib/studio/builder/check-worker-errors'
@@ -214,13 +214,13 @@ describe('the check worker', () => {
   it('runs the committed worker source in a real thread', async () => {
     const r = await runWorkerCheck(views as Record<'views/student.tsx' | 'views/professor.tsx', string>)
     expect(r.compiler).toBe(`studio-tsx-v1+ts${ts.version}`)
-    expect(r.compile['views/student.tsx'].ok).toBe(true)
+    expect(r.compile.ok && r.compile.bundles?.student).toBeTruthy()
     expect(r.typecheck.total).toBe(0)
   })
   it('is stopped at its time limit, and the next check gets a fresh worker', async () => {
     await expect(runWorkerCheck(views as never, 1)).rejects.toBeInstanceOf(CheckTimeout)
     const r = await runWorkerCheck(views as never)
-    expect(r.compile['views/professor.tsx'].ok).toBe(true)
+    expect(r.compile.ok && r.compile.bundles?.professor).toBeTruthy()
   })
   it('the committed worker source is the current build of its entry', async () => {
     const { bundleCheckWorker, generatedModule } = (await import('../../scripts/studio/build-check-worker.mjs')) as {

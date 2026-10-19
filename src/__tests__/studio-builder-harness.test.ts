@@ -174,6 +174,28 @@ describe('changing an existing draft', () => {
     expect(h.mem.state.run.status).not.toBe('waiting_for_approval')
   })
 
+  it('a follow-up edits the existing package’s server code and saves every file in a new draft', async () => {
+    const serverIndex = `import type { ActionContext } from '@scholera/plugin-server'\nimport { points } from './scoring'\nasync function score(_ctx: ActionContext, args: { known: number }) { return { points: points(args.known) } }\nexport const actions = { score }\n`
+    const scoring = 'export function points(known: number): number { return known * 1 }\n'
+    const manifest = stamped({ ...FLASHCARDS_MANIFEST, server: { entry: 'server/index.ts', actions: { score: { roles: ['student'], args: { known: 'number' } } } } })
+    const files = { ...views, 'server/index.ts': serverIndex, 'server/scoring.ts': scoring }
+    const h = harness(
+      [
+        { calls: [call('read_file', { path: 'server/scoring.ts' })] },
+        { calls: [call('edit_file', { path: 'server/scoring.ts', old_text: 'known * 1', new_text: 'known * 2' }), call('run_checks')] },
+        { calls: [finish('completed', 'Known cards now count double.')] },
+      ],
+      { base: { manifest, files } },
+    )
+    h.mem.state.run.request = 'Known cards should be worth twice as many points.'
+    await h.slice()
+    expect(refusals(h.mem)).toEqual([])
+    expect(h.mem.state.run.status).toBe('preview_ready')
+    const snapshot = [...h.mem.state.snapshots.values()][0] as { files: Record<string, string>; server_bundle?: string }
+    expect(snapshot.files).toEqual({ ...files, 'server/scoring.ts': scoring.replace('known * 1', 'known * 2') })
+    expect(snapshot.server_bundle).toContain('known * 2')
+  })
+
   it('a small edit saves a new draft with no plan and no approval card (eval 2)', async () => {
     const h = harness(
       [

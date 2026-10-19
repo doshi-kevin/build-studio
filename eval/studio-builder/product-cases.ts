@@ -14,9 +14,12 @@ export interface Built {
   status: string
   manifest: {
     views: Record<'student' | 'professor', { capabilities: string[] }>
-    collections: Record<string, { access: string; fields: Record<string, string> }>
+    collections: Record<string, { access: string; writes?: string; fields: Record<string, string> }>
     purpose: { category: string }
+    server?: { actions: Record<string, { roles: string[]; reads?: string[] }> }
   } | null
+  /** Every file of the committed package. */
+  files: Record<string, string>
   professor: string
   student: string
   sample: Record<string, unknown[]> | null
@@ -75,7 +78,40 @@ const LECTURE: MaterialPage[] = [
   },
 ]
 
+const serverCode = (b: Built) => Object.entries(b.files).filter(([p]) => p.startsWith('server/')).map(([, t]) => t).join('\n')
+const studentSide = (b: Built) => Object.entries(b.files).filter(([p]) => !p.startsWith('server/')).map(([, t]) => t).join('\n')
+
 export const PRODUCT_CASES: ProductCase[] = [
+  {
+    id: 'W-worksheet',
+    title: 'Plugin packages: a quantitative worksheet engine Studio writes, then a grading change',
+    request:
+      'Build me a custom quantitative worksheet system. I want to create a bank of questions tagged by topic and difficulty. When I open an assessment, every student should receive 10 questions selected randomly but deterministically so refreshing doesn’t change their test. Every student must receive questions across multiple topics. Numeric questions should support tolerance-based automatic grading. Students get two attempts. After submission, show them which questions were correct and explanations I wrote, but don’t reveal answers before they submit. Show me question-level accuracy, topic-level accuracy, and which questions are unexpectedly difficult.',
+    followUps: ['Difficult questions should now be worth twice as many points, and guarantee that every student receives at least two hard questions.'],
+    answer: 'Use your best judgement for a typical university quantitative course.',
+    checks: (b) => {
+      const collections = Object.values(b.manifest?.collections ?? {})
+      const actions = Object.values(b.manifest?.server?.actions ?? {})
+      return {
+        // The software exists as server code, not a predefined engine.
+        has_server_code: Object.keys(b.files).includes('server/index.ts'),
+        student_actions: actions.some((a) => a.roles.includes('student')),
+        professor_actions: actions.some((a) => a.roles.includes('professor')),
+        // The answer key never reaches a student's frame.
+        hidden_bank: collections.some((c) => c.access === 'staffOnly'),
+        student_reads_bank_only_in_server: actions.some((a) => a.roles.includes('student') && (a.reads ?? []).length > 0),
+        results_not_forgeable: collections.some((c) => c.writes === 'server'),
+        deterministic_selection: /ctx\.random\(/.test(serverCode(b)) && /handle/.test(serverCode(b)),
+        tolerance_grading: /tolerance/i.test(serverCode(b)),
+        two_attempts: /attempt/i.test(serverCode(b)),
+        no_key_in_views: !/\.answer\b|correctAnswer/.test(studentSide(b).replace(/import type[^\n]*\n/g, '')) || /server\.call/.test(b.student),
+        student_calls_server: /server\.call/.test(b.student),
+        // The follow-up changed the existing code: harder questions weigh more, two hard per student.
+        follow_up_edited: b.statuses.length === 2,
+        hard_weighting: /hard/i.test(serverCode(b)) && /\* ?2|2 ?\*|double/i.test(serverCode(b)),
+      }
+    },
+  },
   {
     id: 'G-attendance',
     title: 'A + B: attendance tracker, then professors mark',

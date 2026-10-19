@@ -4,8 +4,8 @@
  * kit states, nothing but kit components), and the scripted-model helpers the harness
  * tests drive it with.
  */
-import { compileView } from '@/lib/studio/builder/compile'
-import { typecheckViews } from '@/lib/studio/builder/typecheck'
+import { compilePackage } from '@/lib/studio/builder/compile'
+import { typecheckPackage } from '@/lib/studio/builder/typecheck'
 import { COMPILER_ID } from '@/lib/studio/builder/compile'
 import type { AgentModel, ModelStepInput, ModelStepResult } from '@/lib/studio/builder/model'
 import type { WorkerCheckLike } from '@/lib/studio/builder/checks'
@@ -91,8 +91,8 @@ export default function ProfessorView() {
 export async function inProcessWorkerCheck(files: Record<PluginPath, string>): Promise<WorkerCheckLike> {
   return {
     compiler: COMPILER_ID,
-    compile: { 'views/student.tsx': compileView('views/student.tsx', files['views/student.tsx']), 'views/professor.tsx': compileView('views/professor.tsx', files['views/professor.tsx']) },
-    typecheck: typecheckViews(files),
+    compile: compilePackage(files),
+    typecheck: typecheckPackage(files),
   }
 }
 

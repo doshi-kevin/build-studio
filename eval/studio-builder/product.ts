@@ -1,6 +1,8 @@
 /**
  * LIVE-MODEL product benchmark for the Studio builder (Step 11). Spends real money on the
- * configured Gemini model; never part of `npm run test`.
+ * configured model; never part of `npm run test`. --provider=anthropic runs the production
+ * path: the Anthropic builder model plus Product Intelligence before a first build
+ * (harness.ts realHarnessDeps), with ANTHROPIC_API_KEY. The default stays Gemini.
  *
  *   STUDIO_BUILDER_RENDERER=local npx tsx --tsconfig eval/tsconfig.json eval/studio-builder/product.ts \
  *     --case=G-attendance,E-office-hours-queue --max-usd=3 --out=tmp/product-bench
@@ -24,14 +26,19 @@ import { common, PRODUCT_CASES, type Built } from './product-cases'
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')))
 const MAX_USD = Number(args['max-usd'] ?? 3)
 const OUT = args.out ?? 'tmp/product-bench'
+const ANTHROPIC = args.provider === 'anthropic'
 
 async function main() {
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is not set. Export it in the shell for this command only.')
+  const keyName = ANTHROPIC ? 'ANTHROPIC_API_KEY' : 'GOOGLE_GENERATIVE_AI_API_KEY'
+  if (!process.env[keyName]) throw new Error(`${keyName} is not set. Export it in the shell for this command only.`)
   const leaked = leakedSecrets(process.env)
   if (leaked.length > 0) throw new Error(`Refusing to run with ${leaked.join(', ')} in the environment: the benchmark needs only the model key.`)
   if (!(MAX_USD > 0)) throw new Error('--max-usd must be a positive number of dollars.')
   const { runBuilderSlice, WORST_CASE_CALL_USD } = await import('../../src/lib/studio/builder/harness')
-  const { createGeminiModel } = await import('../../src/lib/studio/builder/model')
+  const { createAnthropicModel, createGeminiModel } = await import('../../src/lib/studio/builder/model')
+  const { productIntelligence } = await import('../../src/lib/studio/builder/specification')
+  const { STUDIO_PRODUCT_INTELLIGENCE_EFFORT, STUDIO_PRODUCT_INTELLIGENCE_MODEL } = await import('../../src/lib/ai/config')
+  const { computeCostUsd } = await import('../../src/lib/ai/cost')
   const { runDraftChecks } = await import('../../src/lib/studio/builder/checks')
   const { runWorkerCheck } = await import('../../src/lib/studio/builder/check-worker')
   const { renderPreview } = await import('../../src/lib/studio/builder/renderer')
@@ -67,7 +74,22 @@ async function main() {
       const excerpt = (p: (typeof corpus)[number]) => ({ key: p.key, label: p.label, disclosure: p.disclosure, opensAt: p.opensAt, text: p.text })
       const deps = {
         store: mem.store,
-        model: createGeminiModel(),
+        model: ANTHROPIC ? createAnthropicModel() : createGeminiModel(),
+        // As realHarnessDeps: Product Intelligence before a first build only, its spend on the run.
+        ...(ANTHROPIC
+          ? {
+              productIntelligence: async (r: { baseHash: string | null; id: string; request: string | null; counters: { costUsd: number } }, data: { course: unknown; skills: string[] }, mayCall: () => Promise<boolean>) => {
+                if (r.baseHash !== null) return null
+                const onCall = async ({ modelId, usage }: { modelId: string; usage: { input: number; cachedInput: number; output: number } }) => {
+                  const costUsd = computeCostUsd(modelId, { inputTokens: usage.input, cachedInputTokens: usage.cachedInput, outputTokens: usage.output })
+                  await mem.store.addCost(r.id, { input: usage.input, cached: usage.cachedInput, output: usage.output, costUsd })
+                }
+                const model = createAnthropicModel(STUDIO_PRODUCT_INTELLIGENCE_MODEL, STUDIO_PRODUCT_INTELLIGENCE_EFFORT)
+                const { artifact } = await productIntelligence(model, { request: r.request ?? '', course: data.course as never, skills: data.skills }, null, { mayCall, onCall: onCall as never, spentUsd: r.counters.costUsd })
+                return artifact
+              },
+            }
+          : {}),
         loadSliceData: async () => ({ slug: 'tool-bench0001', published: null, publishedVersions: [], base: startedFrom, course: { code: 'BIO 101', title: 'Introductory Biology' }, skills: ['Cell structure', 'Photosynthesis', 'Genetics'], history: [], materialSources: [] }),
         loadMemories: async () => [],
         gate: async () => (spent + mem.state.run.counters.costUsd + WORST_CASE_CALL_USD <= MAX_USD ? null : ('limit_cost' as const)),
@@ -113,6 +135,7 @@ async function main() {
         request,
         status: s.status,
         errorCode: s.errorCode,
+        files: committed ? Object.keys(committed.files as Record<string, string>).sort() : [],
         costUsd: Math.round(s.counters.costUsd * 10_000) / 10_000,
         modelTurns: s.counters.modelTurns,
         repairRounds: s.counters.repairRounds,
@@ -130,6 +153,7 @@ async function main() {
     const built: Built = {
       status: String(builds.at(-1)?.status),
       manifest: (base?.manifest ?? null) as Built['manifest'],
+      files,
       professor: files['views/professor.tsx'] ?? '',
       student: files['views/student.tsx'] ?? '',
       sample: (base?.sample ?? null) as Built['sample'],
@@ -138,8 +162,11 @@ async function main() {
     }
     const checks = { ...common(built), ...c.checks(built) }
     if (base) {
-      writeFileSync(join(dir, 'professor.tsx'), built.professor)
-      writeFileSync(join(dir, 'student.tsx'), built.student)
+      // Every file of the package, at its own path under src/.
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(dir, 'src', path, '..'), { recursive: true })
+        writeFileSync(join(dir, 'src', path), text)
+      }
       writeFileSync(join(dir, 'manifest.json'), JSON.stringify(base.manifest, null, 2))
       writeFileSync(join(dir, 'sample.json'), JSON.stringify(base.sample, null, 2))
       // Final screenshots of what the professor will preview. No model call.
@@ -147,7 +174,7 @@ async function main() {
       if (snapshot) {
         const shots = await renderPreview({
           manifest: snapshot.manifest as never,
-          bundles: { student: String(snapshot.student_bundle), professor: String(snapshot.professor_bundle) },
+          bundles: { student: String(snapshot.student_bundle), professor: String(snapshot.professor_bundle), server: (snapshot.server_bundle as string | undefined) ?? null },
           sample: (snapshot.sample_data ?? null) as never,
         })
         if (shots.ok) shots.images.forEach((img, i) => writeFileSync(join(dir, `${i + 1}-${img.label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.jpg`), img.bytes))

@@ -191,6 +191,7 @@ describe('method catalog and server handlers', () => {
       'records.update': ['server', null, 'write'],
       'records.delete': ['server', null, 'write'],
       'records.batch': ['server', null, 'write'],
+      'server.call': ['server', null, 'write'],
       'ui.resize': ['host', 'ui.resize', 'read'],
       'ui.toast': ['host', 'ui.toast', 'read'],
     })

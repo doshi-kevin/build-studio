@@ -10,7 +10,7 @@ import { PluginHost } from '@/components/studio/runtime/PluginHost'
 import type { PreviewSample } from '@/lib/studio/runtime/preview-bridge'
 import type { StudioManifest } from '@/lib/studio/manifest'
 import { cn } from '@/lib/utils'
-import { draftPreviewAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
+import { draftPreviewAction, draftServerCallAction } from '@/app/(dashboard)/professor/courses/[sectionId]/studio/actions'
 import { SEGMENT, SEGMENTED, type ViewMode } from './types'
 
 interface StudioPreviewProps {
@@ -72,6 +72,11 @@ function DraftFrame({ sectionId, pluginProjectId, snapshotHash, view }: { sectio
       allowedMethods={frame.allowedMethods}
       preview={frame.manifest}
       sample={frame.sample}
+      previewServer={(call) =>
+        draftServerCallAction({ sectionId, pluginProjectId, snapshotHash, view, ...call }).then((r) =>
+          'error' in r ? { result: { ok: false, code: 'failed', message: r.error }, store: null } : { result: r.result, store: r.store },
+        )
+      }
       reloading={reloading}
       onReload={() => {
         setFrame(null)

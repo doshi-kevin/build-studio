@@ -17,6 +17,8 @@ export const OPTIONAL_SERVER_VARS = [
   // Studio's builder and Product Intelligence call Anthropic. Read only from E2E_ANTHROPIC_API_KEY, never from a .env.
   'ANTHROPIC_API_KEY',
   'STUDIO_BUILDER_RENDERER',
+  // Opts in to running plugin server code in a local child process (server-runtime/executor.ts).
+  'STUDIO_PLUGIN_EXECUTOR',
   // Where the local renderer finds validator-runtime and Playwright: the standalone build ships neither.
   'STUDIO_BUILDER_RENDERER_ROOT',
   // Local Stage 2 browser validation, and where it finds validator-runtime and Playwright.
